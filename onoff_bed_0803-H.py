@@ -66,6 +66,11 @@ import ssl
 global TAB_K
 TAB_K = 8
 
+# 確保 log_file 目錄存在
+LOG_DIR = "./log_file"
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
 #--------------------------------------------------------------------------
 class CustomViewBox(pg.ViewBox):
     def __init__(self, *args, **kwargs):
@@ -205,7 +210,7 @@ def MQTT_get_reg(mqtt_server, username, password, sn):
 
     client.username_pw_set(username, password)
     if radio_Normal.isChecked():
-        client.tls_set('/Users/chenhunglun/Documents/Procjects/Humetrics_RR/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
+        client.tls_set('/Users/chenhunglun/Documents/Procjects/Humetrics_raw/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
         client.connect(mqtt_server, 8883, 60)
     else:
         client.connect(mqtt_server, 1883, 60)
@@ -289,7 +294,8 @@ def OpenCmbFile():
     global x10_sel
 
     #---------------------------------------------------------
-    with open(f'{cmb_name[:-4]}.txt', mode='r', newline='') as file:
+    txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
+    with open(txt_path, mode='r', newline='') as file:
         reader = csv.reader(file)
         t = []
         filelen = []
@@ -308,7 +314,8 @@ def OpenCmbFile():
         bcg = np.median(filelen) == 3000
 
     #---------------------------------------------------------
-    with open(cmb_name, "rb") as f:            
+    cmb_path = os.path.join(LOG_DIR, cmb_name)
+    with open(cmb_path, "rb") as f:            
         iCueSN.setText(cmb_name.split('/')[-1][0:15])
         status_bar.showMessage('Converting to 24bit data ........')
         QApplication.processEvents()
@@ -380,12 +387,12 @@ def OpenCmbFile():
         n10.append(np.int32(n))
         # --------------------------------------------------------
         data_pd = pd.Series(data[:,ch]) # 將通道的數據轉換為Pandas的Series數據結構
-        med10 = data_pd.rolling(window=10, min_periods=1, center=True, axis=0).mean() # 計算每個窗口的最大值，窗口大小為30 
+        med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的最大值，窗口大小為30 
         med10 = np.array(med10)
         med10 = med10[::10]
         d10.append(np.int32(med10))
         # --------------------------------------------------------
-        max10 = data_pd.rolling(window=10, min_periods=1, center=True, axis=0).max() # 計算每個窗口的最大值，窗口大小為30 
+        max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為30 
         max10 = np.array(max10)
         max10 = np.int32(max10[::10])
         x10.append(np.int32(max10))
@@ -399,7 +406,7 @@ def OpenCmbFile():
         b = [1/1024, 0]
         pos_iirmean = lfilter(b, a, med10) # 1 second
         med10_pd = pd.Series(med10)
-        mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False, axis=0).mean() # 計算每個窗口的最大值，窗口大小為30 
+        mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為30 
         mean_30sec = np.int32(mean_30sec)        
         diff = (mean_30sec - pos_iirmean) / 256
         if ch == 1:
@@ -407,7 +414,7 @@ def OpenCmbFile():
         dist = dist + np.square(diff)
         dist[dist > 8000000] = 8000000
         # 計算 dist (air mattress) -------------------------------
-        mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False, axis=0).mean() # 計算每個窗口的最大值，窗口大小為60 
+        mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為60 
         mean_60sec = np.int32(mean_60sec)
         # [60][60][60][60][60][60][60][60][60][60]
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        
@@ -875,26 +882,36 @@ def loadClicked(event):
 
     # 打開輸出檔案以二進制追加模式
     filelen = []  
-    with open(cmb_name, "ab") as comb_file:
+    cmb_path = os.path.join(LOG_DIR, cmb_name)
+    with open(cmb_path, 'ab') as comb_file:
         for file_name in file_list:
             if bcg == 1:
                 filelen.append(os.path.getsize(file_name)//55)
             else:
                 filelen.append(os.path.getsize(file_name)//24)
-            with open(file_name, "rb") as infile:
+            with open(file_name, 'rb') as infile:
                 # 將輸入檔案的內容複製到輸出檔案
                 shutil.copyfileobj(infile, comb_file) 
                 status_bar.showMessage('combining ' + file_name)   
 
-    with open(f'{cmb_name[:-4]}.txt', mode='w', newline='') as file:
+    # 修改 .txt 檔案的存放路徑
+    txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
+    with open(txt_path, mode='w', newline='') as file:
         writer = csv.writer(file)
         data_to_write = [[file_list[i], filelen[i]] for i in range(len(file_list))]            
-        # 将数据逐行写入CSV文件
         for row in data_to_write:
             writer.writerow(row)   
 
-    para = 'del *.dat'
-    returned_value = os.system(para)                
+    # 刪除 .dat 檔案 - 修改這部分
+    try:
+        for dat_file in file_list:
+            if os.path.exists(dat_file):
+                os.remove(dat_file)
+        status_bar.showMessage('Temporary .dat files cleaned up')
+    except Exception as e:
+        status_bar.showMessage(f'Error cleaning up .dat files: {str(e)}')
+    
+    QApplication.processEvents()
 
     if cmb_name:
         OpenCmbFile()
