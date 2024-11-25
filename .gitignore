@@ -163,3 +163,4 @@ cython_debug/
 
 log_file/
 filelist.txt
+humetric_mqtt_certificate.pem
