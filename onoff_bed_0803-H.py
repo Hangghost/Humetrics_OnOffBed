@@ -98,6 +98,7 @@ class PlotWidgetWithZoom(pg.PlotWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(viewBox=CustomViewBox(), *args, **kwargs)
         self.plotItem.getAxis('bottom').setPen(pg.mkPen(color=(128, 128, 128), style=QtCore.Qt.DotLine)) # Set X-axis grid color to green
+        # 移除這裡的 vLine 初始化
         
     def wheelEvent(self, event):
         # Determine mouse position in plot coordinates
@@ -250,7 +251,81 @@ def hex_to_rgb(hex_color):
     green = int(hex_color[2:4], 16)
     blue = int(hex_color[4:6], 16)
     return (red, green, blue)
+#-----------------------------------------------------------------------   
+def toggle_marker():
+    """切換標記線的顯示狀態"""
+    # 檢查是否已載入資料
+    if not hasattr(raw_plot, 'vLine') or not hasattr(bit_plot, 'vLine'):
+        status_bar.showMessage('請先載入資料!')
+        return
+    
+    try:
+        if raw_plot.vLine.isVisible():
+            raw_plot.vLine.hide()
+            bit_plot.vLine.hide()
+            marker_btn.setText('開始標記')
+            status_bar.showMessage('標記模式已關閉')
+        else:
+            # 取得目前視圖的中心位置
+            x_range = raw_plot.viewRange()[0]
+            center_x = (x_range[0] + x_range[1]) / 2
+            
+            # 設定標記線的位置到視圖中心
+            raw_plot.vLine.setPos(center_x)
+            bit_plot.vLine.setPos(center_x)
+            
+            # 移除舊的連接（如果存在）
+            try:
+                raw_plot.vLine.sigPositionChanged.disconnect()
+                bit_plot.vLine.sigPositionChanged.disconnect()
+            except:
+                pass
+                
+            # 同步兩個圖表的標記線
+            raw_plot.vLine.sigPositionChanged.connect(
+                lambda: bit_plot.vLine.setPos(raw_plot.vLine.value())
+            )
+            bit_plot.vLine.sigPositionChanged.connect(
+                lambda: raw_plot.vLine.setPos(bit_plot.vLine.value())
+            )
+            
+            raw_plot.vLine.show()
+            bit_plot.vLine.show()
+            marker_btn.setText('結束標記')
+            status_bar.showMessage('標記模式已開啟')
+    except Exception as e:
+        status_bar.showMessage(f'標記線錯誤: {str(e)}')
+#-----------------------------------------------------------------------   
+def save_marker():
+    """儲存目前標記線的位置"""
+    if not raw_plot.vLine.isVisible():
+        status_bar.showMessage('請先開啟標記線!')
+        return
+        
+    if not 't1sec' in globals():
+        status_bar.showMessage('請先載入資料!')
+        return
 
+    # 取得標記線位置的時間
+    marker_pos = raw_plot.vLine.value()
+    
+    # 使用 startday 作為基準日期，加上標記位置的秒數
+    timestamp = startday + timedelta(seconds=int(marker_pos))
+    
+    # 儲存標記
+    filename = f"{cmb_name[:-4]}_manual_marks.csv"
+    filepath = os.path.join(LOG_DIR, filename)
+    
+    # 檢查檔案是否存在，決定是否需要寫入標題
+    file_exists = os.path.isfile(filepath)
+    
+    with open(filepath, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:  # 如果是新檔案，寫入標題列
+            writer.writerow(['Timestamp', 'Event'])
+        writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S'), 'Off Bed'])
+    
+    status_bar.showMessage(f'已儲存標記點: {timestamp.strftime("%Y-%m-%d %H:%M:%S")}')
 #-----------------------------------------------------------------------    
 def GetParaTable():
     global preload_edit
@@ -538,6 +613,35 @@ def OpenCmbFile():
     update_bit_plot()
 
     status_bar.showMessage(cmb_name)    
+
+    # 在所有資料處理完成後，最後初始化標記線
+    try:
+        raw_plot.vLine.hide()
+        bit_plot.vLine.hide()
+    except:
+        pass
+        
+    # 重新創建標記線
+    raw_plot.vLine = pg.InfiniteLine(
+        angle=90, 
+        movable=True,
+        pen=pg.mkPen(color='r', width=2)
+    )
+    bit_plot.vLine = pg.InfiniteLine(
+        angle=90, 
+        movable=True,
+        pen=pg.mkPen(color='r', width=2)
+    )
+    
+    # 添加到圖表中
+    raw_plot.addItem(raw_plot.vLine)
+    bit_plot.addItem(bit_plot.vLine)
+    
+    # 預設隱藏
+    raw_plot.vLine.hide()
+    bit_plot.vLine.hide()
+    
+    status_bar.showMessage(cmb_name)
 
 #-----------------------------------------------------------------------
 def update_raw_plot():
@@ -1048,6 +1152,56 @@ def cell_clicked(row, column):
             raw_plot_ch[6].hide()
 
 #--------------------------------------------------------------------------
+def generate_annotation():
+    if not 'd10' in globals():
+        status_bar.showMessage('請先載入資料!')
+        return
+        
+    status_bar.showMessage('產生標注檔案中...')
+    QApplication.processEvents()
+    
+    # 取得所有通道的基準值回歸點
+    annotations = []
+    for ch in range(6):
+        med10 = d10[ch] + offset_edit[ch]
+        baseline = base_final[ch]
+        
+        # 找出數值回到基準值的時間點
+        back_to_base = np.where(np.abs(med10 - baseline) < 10)[0]
+        
+        # 過濾出有效的離床點(前一個點要是在床上)
+        valid_points = []
+        for idx in back_to_base:
+            if idx > 0 and np.abs(med10[idx-1] - baseline[idx-1]) > 100:
+                valid_points.append(idx)
+                
+        annotations.append(valid_points)
+    
+    # 合併所有通道的標注點
+    all_points = []
+    for ch_points in annotations:
+        all_points.extend([(p, ch) for ch in range(6)])
+    
+    # 按時間排序
+    all_points.sort()
+    
+    # 寫入CSV檔案
+    filename = f"{cmb_name[:-4]}_annotations.csv"
+    filepath = os.path.join(LOG_DIR, filename)
+    
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Timestamp', 'Channel', 'Event'])
+        
+        for point, channel in all_points:
+            timestamp = startday + timedelta(seconds=t1sec[point])
+            writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S'), 
+                           f'Channel {channel+1}',
+                           'Off Bed'])
+            
+    status_bar.showMessage(f'標注檔案已儲存: {filename}')
+
+#--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
 global startday
 startday = datetime.now()
@@ -1105,14 +1259,15 @@ check_NightMode.setChecked(True)
 check_NightMode.stateChanged.connect(change_NightMode)
 check_NightMode.setChecked(False)
 
+# 更新 MQTT 參數
 Mqtt_set = QPushButton('MQTT_SET_PARA')
-Mqtt_set.clicked.connect(MqttSetDialog)
-Mqtt_set.setToolTip('MQTT設定參數')
+# Mqtt_set.clicked.connect(MqttSetDialog)
+# Mqtt_set.setToolTip('MQTT設定參數')
 
 
 Mqtt_get = QPushButton('MQTT_GET_PARA')
-Mqtt_get.clicked.connect(MQTT_get_reg)
-Mqtt_get.setToolTip('MQTT讀取參數')
+# Mqtt_get.clicked.connect(MQTT_get_reg)
+# Mqtt_get.setToolTip('MQTT讀取參數')
 
 
 
@@ -1201,6 +1356,19 @@ row_layout.addWidget(check_NightMode)
 row_layout.addWidget(Mqtt_set)
 row_layout.addWidget(Mqtt_get)
 
+# 在這裡加入新按鈕
+marker_btn = QPushButton('開始標記')
+marker_btn.clicked.connect(toggle_marker)
+marker_btn.setToolTip('顯示/隱藏標記線')
+
+save_marker_btn = QPushButton('儲存標記')
+save_marker_btn.clicked.connect(save_marker)
+save_marker_btn.setToolTip('儲存目前標記線位置')
+
+# 將按鈕加入layout
+row_layout.addWidget(marker_btn)
+row_layout.addWidget(save_marker_btn)
+
 layout.addWidget(row_widget,0,0,1,3)
 layout.addWidget(status_bar,5,0,1,9)
 
@@ -1216,3 +1384,4 @@ mw.setWindowIcon(QIcon('Humetrics.ico'))  # 設置視窗圖標為'Humetrics.ico'
 mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
 app.exec_()
+
