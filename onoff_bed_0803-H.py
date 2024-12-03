@@ -319,13 +319,16 @@ def save_marker():
     # 檢查檔案是否存在，決定是否需要寫入標題
     file_exists = os.path.isfile(filepath)
     
+    # 取得目前選擇的事件類型
+    event_type = marker_type_combo.currentText()
+    
     with open(filepath, 'a', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:  # 如果是新檔案，寫入標題列
             writer.writerow(['Timestamp', 'Event'])
-        writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S'), 'Off Bed'])
+        writer.writerow([timestamp.strftime('%Y-%m-%d %H:%M:%S'), event_type])
     
-    status_bar.showMessage(f'已儲存標記點: {timestamp.strftime("%Y-%m-%d %H:%M:%S")}')
+    status_bar.showMessage(f'已儲存{event_type}標記點: {timestamp.strftime("%Y-%m-%d %H:%M:%S")}')
 #-----------------------------------------------------------------------    
 def GetParaTable():
     global preload_edit
@@ -662,6 +665,11 @@ def update_raw_plot():
     except:
         None
     # --------------------------------------------------------------------
+    # 在清除之前先保存當前的視圖範圍
+    x_range = raw_plot.viewRange()[0]
+    y_range = raw_plot.viewRange()[1]
+    
+    # 清除並重新繪製
     raw_plot.clear()
     raw_plot_ch = []
     for ch in range(6):            
@@ -714,6 +722,10 @@ def update_raw_plot():
                 raw_plot_ch[ch].show()
             else:
                 raw_plot_ch[ch].hide()
+
+    # 恢復原來的視圖範圍
+    raw_plot.setXRange(x_range[0], x_range[1], padding=0)
+    raw_plot.setYRange(y_range[0], y_range[1], padding=0)
 
 #-----------------------------------------------------------------------
 def update_bit_plot():
@@ -1180,7 +1192,7 @@ def generate_annotation():
     # 合併所有通道的標注點
     all_points = []
     for ch_points in annotations:
-        all_points.extend([(p, ch) for ch in range(6)])
+        all_points.extend([(point, ch) for point in ch_points for ch in range(6)])
     
     # 按時間排序
     all_points.sort()
@@ -1361,12 +1373,17 @@ marker_btn = QPushButton('開始標記')
 marker_btn.clicked.connect(toggle_marker)
 marker_btn.setToolTip('顯示/隱藏標記線')
 
+marker_type_combo = QComboBox()
+marker_type_combo.addItems(['離床', '上床', '翻身'])
+marker_type_combo.setToolTip('選擇要標記的事件類型')
+
 save_marker_btn = QPushButton('儲存標記')
 save_marker_btn.clicked.connect(save_marker)
 save_marker_btn.setToolTip('儲存目前標記線位置')
 
 # 將按鈕加入layout
 row_layout.addWidget(marker_btn)
+row_layout.addWidget(marker_type_combo)  # 新增的下拉選單
 row_layout.addWidget(save_marker_btn)
 
 layout.addWidget(row_widget,0,0,1,3)
