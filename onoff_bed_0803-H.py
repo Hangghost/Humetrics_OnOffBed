@@ -67,7 +67,7 @@ global TAB_K
 TAB_K = 8
 
 # 確保 log_file 目錄存在
-LOG_DIR = "./log_file"
+LOG_DIR = "./_log_file"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
@@ -482,15 +482,15 @@ def OpenCmbFile():
         # 計算 dist ----------------------------------------------   
         a = [1, -1023/1024]
         b = [1/1024, 0]
-        pos_iirmean = lfilter(b, a, med10) # 1 second
+        pos_iirmean = lfilter(b, a, med10) # 1 second # IIR濾波
         med10_pd = pd.Series(med10)
         mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為30 
         mean_30sec = np.int32(mean_30sec)        
         diff = (mean_30sec - pos_iirmean) / 256
         if ch == 1:
             diff = diff / 3
-        dist = dist + np.square(diff)
-        dist[dist > 8000000] = 8000000
+        dist = dist + np.square(diff) # 累加平方差
+        dist[dist > 8000000] = 8000000 # 限制最大值
         # 計算 dist (air mattress) -------------------------------
         mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為60 
         mean_60sec = np.int32(mean_60sec)
@@ -509,6 +509,7 @@ def OpenCmbFile():
             diff = diff / 3
         dist_air = dist_air + np.square(diff / 256)
 
+    # 一般床墊的位移差值計算
     # Convert to pandas Series
     dist = pd.Series(dist)
     # Calculate the difference with a shift of 60
@@ -520,6 +521,7 @@ def OpenCmbFile():
     rising_dist = rising_dist // 127
     rising_dist[rising_dist > 1000] = 1000
 
+    # 空氣床墊的位移差值計算
     # Convert to pandas Series
     dist_air = pd.Series(dist_air)
     # Calculate the difference with a shift of 60
@@ -555,9 +557,15 @@ def OpenCmbFile():
             t_blank = 0
 
         # 將索引值加入對應的陣列中
+        # 生成三種不同採樣率的索引：
+        # - idx1sec: 1秒一個點
+        # - idx100: 100ms一個點
+        # - idx10: 10ms一個點
         idx1sec = np.append(idx1sec, np.floor(np.linspace(0, filelen[i]//10 - 1, t_diff)) + idx100_sum//10)
         idx100 = np.append(idx100, np.floor(np.linspace(0, filelen[i] - 1, t_diff*10)) + idx100_sum)
         idx10 = np.append(idx10, np.floor(np.linspace(0, filelen[i]*10 - 1, t_diff*100)) + idx10_sum)
+
+        # 處理空白時間
         idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
         idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
         idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
@@ -589,8 +597,11 @@ def OpenCmbFile():
     x_range, y_range = raw_plot.viewRange()
     center = (x_range[0] + x_range[1]) / 2
 
+    # 設定新的顯示範圍，以中心點為基準，前後各10單位
     st = center - 10
     ed = center + 10
+
+    # 調整顯示範圍，確保不超出資料範圍
     if st < t100ms[0]:
         st = t100ms[0]
         ed = st + 20
@@ -646,6 +657,103 @@ def OpenCmbFile():
     
     status_bar.showMessage(cmb_name)
 
+    # 在處理完所有數據後，加入以下代碼來保存CSV
+    try:
+        # 建立輸出檔案名稱
+        csv_filename = f"{cmb_name[:-4]}_data.csv"
+        csv_filepath = os.path.join(LOG_DIR, csv_filename)
+        
+        # 準備數據
+        data_dict = {
+            'Timestamp': [startday + timedelta(seconds=t) for t in t1sec],
+        }
+        
+        # 添加各通道的數據
+        for ch in range(6):
+            data_dict[f'Channel_{ch+1}_Raw'] = d10[ch][idx1sec]
+            data_dict[f'Channel_{ch+1}_Noise'] = n10[ch][idx1sec]
+            data_dict[f'Channel_{ch+1}_Max'] = x10[ch][idx1sec]
+        
+        # 添加位移和翻身數據
+        data_dict['Rising_Dist_Normal'] = rising_dist[idx1sec]
+        data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
+        data_dict['OnBed_Status'] = onbed
+        
+        # 轉換為DataFrame並保存
+        df = pd.DataFrame(data_dict)
+        df.to_csv(csv_filepath, index=False)
+        
+        # 儲存參數設定
+        param_filename = f"{cmb_name[:-4]}_parameters.csv"
+        param_filepath = os.path.join(LOG_DIR, param_filename)
+        
+        # 準備參數數據，新增 Noise_2 和 Mattress_Type 欄位
+        param_dict = {
+            'Parameter': [],
+            'Channel_1': [], 'Channel_2': [], 'Channel_3': [],
+            'Channel_4': [], 'Channel_5': [], 'Channel_6': [],
+            'Total': [], 'Noise_1': [], 'Noise_2': [], 
+            'Threshold': [], 'Mattress_Type': []
+        }
+        
+        # 收集參數表中的所有數據
+        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset_level']
+        for row in range(4):
+            param_dict['Parameter'].append(param_names[row])
+            for col in range(6):  # 前6個通道
+                value = para_table.item(row, col).text()
+                param_dict[f'Channel_{col+1}'].append(value)
+            
+            # Total
+            value = para_table.item(row, 6).text() if para_table.item(row, 6) else ''
+            param_dict['Total'].append(value)
+            
+            # Noise_1
+            value = para_table.item(row, 7).text() if para_table.item(row, 7) and not para_table.item(row, 7).text() in ['Noise 2', ''] else ''
+            param_dict['Noise_1'].append(value)
+            
+            # Noise_2
+            value = para_table.item(row, 7).text() if para_table.item(row, 7) and para_table.item(row, 7).text() == '60' else ''
+            param_dict['Noise_2'].append(value)
+            
+            # Threshold
+            value = para_table.item(row, 8).text() if para_table.item(row, 8) and not para_table.item(row, 8).text() == 'Normal / Air' else ''
+            param_dict['Threshold'].append(value)
+            
+            # Mattress_Type
+            value = para_table.item(row, 8).text() if para_table.item(row, 8) and para_table.item(row, 8).text() == '0' else ''
+            param_dict['Mattress_Type'].append(value)
+        
+        # 添加其他重要參數
+        param_dict['Parameter'].append('Air_Mattress')
+        param_dict['Channel_1'].append(str(air_mattress))
+        for col in param_dict.keys():
+            if col != 'Parameter' and col != 'Channel_1':
+                param_dict[col].append('')
+                
+        param_dict['Parameter'].append('Device_SN')
+        param_dict['Channel_1'].append(iCueSN.text())
+        for col in param_dict.keys():
+            if col != 'Parameter' and col != 'Channel_1':
+                param_dict[col].append('')
+                
+        param_dict['Parameter'].append('Start_Time')
+        param_dict['Channel_1'].append(str(startday))
+        for col in param_dict.keys():
+            if col != 'Parameter' and col != 'Channel_1':
+                param_dict[col].append('')
+        
+        # 轉換為DataFrame並保存
+        df_param = pd.DataFrame(param_dict)
+        df_param.to_csv(param_filepath, index=False)
+        
+        status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'保存檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+
 #-----------------------------------------------------------------------
 def update_raw_plot():
     global raw_plot_ch
@@ -683,6 +791,7 @@ def update_raw_plot():
 
     flip_interval = 60
 
+    # 繪製一般床墊的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[6]))
     x = t1sec[::flip_interval]
     y = rising_dist[idx1sec[::flip_interval]] * -100
@@ -690,6 +799,7 @@ def update_raw_plot():
 
     raw_plot_ch[6].hide()
 
+    # 繪製氣墊床的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[7]))
     x = t1sec[::flip_interval]
     y = rising_dist_air[idx1sec[::flip_interval]] * -100
@@ -697,6 +807,7 @@ def update_raw_plot():
 
     raw_plot_ch[7].hide()
 
+    # 繪製閾值線
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[8]))
     x = np.array([t1sec[0], t1sec[-1]])
     y = np.array([dist_thr, dist_thr]) * -100
@@ -707,6 +818,7 @@ def update_raw_plot():
     else:
         flip = (rising_dist_air > dist_thr) * dist_thr
 
+    # 繪製翻身數據
     x = t1sec[::flip_interval]
     y = flip[idx1sec[::flip_interval]] * -100
     raw_plot_ch.append(raw_plot.plot(x, y, fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
@@ -1018,7 +1130,7 @@ def loadClicked(event):
         for row in data_to_write:
             writer.writerow(row)   
 
-    # 刪除 .dat 檔案 - 修改這部分
+    # 刪除 .dat 檔案
     try:
         for dat_file in file_list:
             if os.path.exists(dat_file):
@@ -1049,11 +1161,6 @@ def MQTT_set_reg(mqtt_server, username, password, sn, payload):
     client.publish(topic_set_regs, json.dumps(payload))
 
     client.disconnect() # Stop the MQTT client loop when done
-
-#--------------------------------------------------------------------------
-def MqttSetDialog():
-    reg_table = {}
-
     
 #--------------------------------------------------------------------------
 def MQTT_set_reg(mqtt_server, username, password, sn, payload):
@@ -1239,7 +1346,7 @@ data_source.setToolTip('選擇FTP下載目錄')
 
 # 在第 0 列的第 1 個位置，加入一個 QLineEdit 物件，並設置初始值為 "SPS2021PA000000"
 iCueSN = QLineEdit()
-iCueSN.setText('SPS2022HB000011')
+iCueSN.setText('SPS2021PA000329')
 iCueSN.setFixedWidth(120)
 iCueSN.setToolTip('輸入iCue編號')
 # Get the current datetime in GMT
