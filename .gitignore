@@ -164,3 +164,4 @@ cython_debug/
 _*
 filelist.txt
 humetric_mqtt_certificate.pem
+.DS_Store

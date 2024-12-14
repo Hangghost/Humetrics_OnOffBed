@@ -71,6 +71,10 @@ LOG_DIR = "./_log_file"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
+DATA_DIR = "./_data"
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
 #--------------------------------------------------------------------------
 class CustomViewBox(pg.ViewBox):
     def __init__(self, *args, **kwargs):
@@ -314,7 +318,7 @@ def save_marker():
     
     # 儲存標記
     filename = f"{cmb_name[:-4]}_manual_marks.csv"
-    filepath = os.path.join(LOG_DIR, filename)
+    filepath = os.path.join(DATA_DIR, filename)
     
     # 檢查檔案是否存在，決定是否需要寫入標題
     file_exists = os.path.isfile(filepath)
@@ -337,7 +341,7 @@ def GetParaTable():
     global offset_edit
     global bed_threshold
     global noise_onbed
-    global noisd_offbed
+    global noise_offbed
     global dist_thr
     global air_mattress
 
@@ -354,7 +358,7 @@ def GetParaTable():
 
     bed_threshold = int(para_table.item(0, 6).text())
     noise_onbed   = int(para_table.item(0, 7).text())
-    noisd_offbed  = int(para_table.item(2, 7).text())
+    noise_offbed  = int(para_table.item(2, 7).text())
     dist_thr      = int(para_table.item(0, 8).text())
     air_mattress  = int(para_table.item(2, 8).text())
 
@@ -657,11 +661,12 @@ def OpenCmbFile():
     
     status_bar.showMessage(cmb_name)
 
+    # --------------------------------------------------------------------
     # 在處理完所有數據後，加入以下代碼來保存CSV
     try:
         # 建立輸出檔案名稱
         csv_filename = f"{cmb_name[:-4]}_data.csv"
-        csv_filepath = os.path.join(LOG_DIR, csv_filename)
+        csv_filepath = os.path.join(DATA_DIR, csv_filename)
         
         # 準備數據
         data_dict = {
@@ -685,15 +690,13 @@ def OpenCmbFile():
         
         # 儲存參數設定
         param_filename = f"{cmb_name[:-4]}_parameters.csv"
-        param_filepath = os.path.join(LOG_DIR, param_filename)
+        param_filepath = os.path.join(DATA_DIR, param_filename)
         
-        # 準備參數數據，新增 Noise_2 和 Mattress_Type 欄位
+        # 準備參數數據
         param_dict = {
             'Parameter': [],
             'Channel_1': [], 'Channel_2': [], 'Channel_3': [],
-            'Channel_4': [], 'Channel_5': [], 'Channel_6': [],
-            'Total': [], 'Noise_1': [], 'Noise_2': [], 
-            'Threshold': [], 'Mattress_Type': []
+            'Channel_4': [], 'Channel_5': [], 'Channel_6': []
         }
         
         # 收集參數表中的所有數據
@@ -703,44 +706,23 @@ def OpenCmbFile():
             for col in range(6):  # 前6個通道
                 value = para_table.item(row, col).text()
                 param_dict[f'Channel_{col+1}'].append(value)
-            
-            # Total
-            value = para_table.item(row, 6).text() if para_table.item(row, 6) else ''
-            param_dict['Total'].append(value)
-            
-            # Noise_1
-            value = para_table.item(row, 7).text() if para_table.item(row, 7) and not para_table.item(row, 7).text() in ['Noise 2', ''] else ''
-            param_dict['Noise_1'].append(value)
-            
-            # Noise_2
-            value = para_table.item(row, 7).text() if para_table.item(row, 7) and para_table.item(row, 7).text() == '60' else ''
-            param_dict['Noise_2'].append(value)
-            
-            # Threshold
-            value = para_table.item(row, 8).text() if para_table.item(row, 8) and not para_table.item(row, 8).text() == 'Normal / Air' else ''
-            param_dict['Threshold'].append(value)
-            
-            # Mattress_Type
-            value = para_table.item(row, 8).text() if para_table.item(row, 8) and para_table.item(row, 8).text() == '0' else ''
-            param_dict['Mattress_Type'].append(value)
         
         # 添加其他重要參數
-        param_dict['Parameter'].append('Air_Mattress')
-        param_dict['Channel_1'].append(str(air_mattress))
-        for col in param_dict.keys():
-            if col != 'Parameter' and col != 'Channel_1':
-                param_dict[col].append('')
-                
-        param_dict['Parameter'].append('Device_SN')
-        param_dict['Channel_1'].append(iCueSN.text())
-        for col in param_dict.keys():
-            if col != 'Parameter' and col != 'Channel_1':
-                param_dict[col].append('')
-                
-        param_dict['Parameter'].append('Start_Time')
-        param_dict['Channel_1'].append(str(startday))
-        for col in param_dict.keys():
-            if col != 'Parameter' and col != 'Channel_1':
+        additional_params = [
+            ('Total', str(bed_threshold)),
+            ('Noise_1', str(noise_onbed)),
+            ('Noise_2', str(noise_offbed)),
+            ('Set Flip', str(dist_thr)),
+            ('Air_Mattress', str(air_mattress)),
+            ('Device_SN', iCueSN.text()),
+            ('Start_Time', str(startday))
+        ]
+
+        for param_name, param_value in additional_params:
+            param_dict['Parameter'].append(param_name)
+            param_dict['Channel_1'].append(param_value)
+            # 只填充其他通道的空值
+            for col in ['Channel_2', 'Channel_3', 'Channel_4', 'Channel_5', 'Channel_6']:
                 param_dict[col].append('')
         
         # 轉換為DataFrame並保存
@@ -921,7 +903,7 @@ def EvalParameters():
         med10 = d10[ch] + offset_edit[ch]
         n = n10[ch]
         preload = preload_edit[ch]
-        zeroing = np.less(n * np.right_shift(max10, 5), noisd_offbed * np.right_shift(preload, 5))
+        zeroing = np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5))
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
         approach = max10 - (th1 + th2)
@@ -1057,8 +1039,22 @@ def download_files_by_time_range(FILE_PATH, ST_TIME, ED_TIME, FTP_ADDR, USER, PA
 
 #--------------------------------------------------------------------------
 def loadClicked(event):
+    global cmb_name  # 將global宣告移到函數開頭
+    
     ST_TIME = start_time.text()
     ED_TIME = end_time.text()
+    
+    # 檢查預計產生的.cmb檔案是否已存在
+    cmb_name = iCueSN.text() + '_' + ST_TIME[:-4] + '_' + ED_TIME[:-4] + '.cmb'
+    cmb_path = os.path.join(LOG_DIR, cmb_name)
+    
+    if os.path.exists(cmb_path):
+        status_bar.showMessage(f'檔案 {cmb_name} 已存在，直接開啟')
+        QApplication.processEvents()
+        OpenCmbFile()
+        return
+        
+    # 如果檔案不存在，執行原有的下載邏輯
     n = 0
     bcg = 0
     if data_source.currentText() == '\\RAW':
@@ -1103,10 +1099,6 @@ def loadClicked(event):
 
     with open('filelist.txt', 'r') as f:        
         file_list = f.read().splitlines()
-
-    global cmb_name
-
-    cmb_name = iCueSN.text() + '_' + ST_TIME[:-4] + '_' + ED_TIME[:-4] + '.cmb'
 
     # 打開輸出檔案以二進制追加模式
     filelen = []  
@@ -1381,12 +1373,14 @@ check_NightMode.setChecked(False)
 # 更新 MQTT 參數
 Mqtt_set = QPushButton('MQTT_SET_PARA')
 # Mqtt_set.clicked.connect(MqttSetDialog)
-# Mqtt_set.setToolTip('MQTT設定參數')
+# Mqtt_set.setToolTip('MQTT設定��數')
+
 
 
 Mqtt_get = QPushButton('MQTT_GET_PARA')
 # Mqtt_get.clicked.connect(MQTT_get_reg)
 # Mqtt_get.setToolTip('MQTT讀取參數')
+
 
 
 
