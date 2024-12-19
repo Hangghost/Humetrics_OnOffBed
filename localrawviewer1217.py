@@ -51,40 +51,43 @@ def fetch_sensor_data(serial_id, start_time, end_time):
 
 # 函数：绘制合并图表
 def plot_combined_data(sensor_data):
-    if not sensor_data and not notify_data:
+    if not sensor_data:
         messagebox.showwarning("Warning", "缺少数据，无法绘制图表。")
         return
 
-    # 将 sensor_data 转换为 DataFrame
-    sensor_df = pd.DataFrame(sensor_data)
-    if not sensor_df.empty:
-        sensor_df['time_at'] = pd.to_datetime(sensor_df['time_at'])
-        sensor_df.set_index('time_at', inplace=True)
-        sensor_df.sort_index(inplace=True)
+    # 将绘图操作移到主线程
+    def show_plot():
+        # 将 sensor_data 转换为 DataFrame
+        sensor_df = pd.DataFrame(sensor_data)
+        if not sensor_df.empty:
+            sensor_df['time_at'] = pd.to_datetime(sensor_df['time_at'])
+            sensor_df.set_index('time_at', inplace=True)
+            sensor_df.sort_index(inplace=True)
 
-        # 计算时间差，标记超过 10 分钟的间隔为 NaN
-        time_diff = sensor_df.index.to_series().diff().dt.total_seconds()
-        for ch in ['ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5']:
-            sensor_df.loc[time_diff > 1000, ch] = None
-    else:
-        messagebox.showinfo("Info", "Sensor Data 数据为空。")
+            # 计算时间差，标记超过 10 分钟的间隔为 NaN
+            time_diff = sensor_df.index.to_series().diff().dt.total_seconds()
+            for ch in ['ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5']:
+                sensor_df.loc[time_diff > 1000, ch] = None
+        else:
+            messagebox.showinfo("Info", "Sensor Data 数据为空。")
 
-    # 绘制图表
-    fig, ax1 = plt.subplots(figsize=(14, 7))
+        # 绘制图表
+        plt.figure(figsize=(14, 7))
+        
+        if not sensor_df.empty:
+            for ch in ['ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5']:
+                if ch in sensor_df.columns:
+                    plt.plot(sensor_df.index, sensor_df[ch], label=ch, alpha=0.7)
+            plt.xlabel('Time')
+            plt.ylabel('Sensor Values')
+            plt.legend(loc='upper left')
+            plt.grid()
 
-    # 绘制 sensor_data 的 y 轴（左侧）
-    if not sensor_df.empty:
-        for ch in ['ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5']:
-            if ch in sensor_df.columns:
-                ax1.plot(sensor_df.index, sensor_df[ch], label=ch, alpha=0.7)
-        ax1.set_xlabel('Time')
-        ax1.set_ylabel('Sensor Values')
-        ax1.legend(loc='upper left')
-        ax1.grid()
+        plt.title('Combined Sensor and Notify Data')
+        plt.show()
 
-    # 显示图表
-    plt.title('Combined Sensor and Notify Data with Interactive Clicks')
-    plt.show()
+    # 在主线程中执行绘图
+    root.after(100, show_plot)
 
 
 # 查询函数，带有超时检查
@@ -115,8 +118,8 @@ def query_and_plot():
             return
 
         sensor_data = fetch_sensor_data(serial_id, start_time, end_time)
-
-        plot_combined_data(sensor_data)
+        if sensor_data:
+            plot_combined_data(sensor_data)
         query_done.set()
 
     threading.Thread(target=query_thread).start()
