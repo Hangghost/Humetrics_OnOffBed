@@ -293,13 +293,16 @@ root = tk.Tk()
 root.title("Sensor and Notify Data Viewer")
 
 # 获取当天早上 6:00:00 和中午 12:00:00 的时间
-current_date = datetime.now().date()
+# current_date = datetime.now().date()
+# 指定為2024-12-16
+current_date = datetime(2024, 12, 18)
 default_start_time = datetime.combine(current_date, datetime.min.time()) - timedelta(hours=12)
 default_end_time = datetime.combine(current_date, datetime.min.time()) + timedelta(hours=12)
 
 # 输入框和标签
 ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456
 serial_id_entry = ttk.Entry(root)
+serial_id_entry.insert(0, 'SPS2021PA000456')
 serial_id_entry.grid(row=0, column=1, padx=5, pady=5)
 
 ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
