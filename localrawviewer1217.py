@@ -361,30 +361,111 @@ def plot_combined_data(sensor_data):
                 messagebox.showerror("Error", "事件檢測失敗")
                 return
                 
-            # 繪製圖表
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+            # 創建新視窗來顯示圖表
+            plot_window = tk.Toplevel(root)
+            plot_window.title("Interactive Plot")
             
-            # 上半部分：原始數據
+            # 創建控制面板框架
+            control_frame = ttk.Frame(plot_window)
+            control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+            
+            # 創建顯示控制變數
+            show_vars = {
+                'bed_status': tk.BooleanVar(value=True),
+                'movement': tk.BooleanVar(value=True),
+                'flip': tk.BooleanVar(value=True)
+            }
+            
+            # 創建顯示控制選項
+            ttk.Checkbutton(control_frame, text="在床狀態", 
+                          variable=show_vars['bed_status'],
+                          command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            ttk.Checkbutton(control_frame, text="移動狀態", 
+                          variable=show_vars['movement'],
+                          command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            ttk.Checkbutton(control_frame, text="翻身狀態", 
+                          variable=show_vars['flip'],
+                          command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            
+            # 使用 matplotlib 的 tkinter 後端
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+            from matplotlib.figure import Figure
+            
+            # 創建圖表
+            fig = Figure(figsize=(14, 10))
+            ax1 = fig.add_subplot(211)
+            ax2 = fig.add_subplot(212, sharex=ax1)
+            
+            # 繪製數據
             for ch in range(6):
                 ax1.plot(processed_data['d10'][ch], label=f'CH{ch}', alpha=0.7)
             ax1.set_ylabel('Sensor Values')
             ax1.legend()
             ax1.grid(True)
             
-            # 下半部分：事件標記
-            ax2.plot(events['bed_status'], label='Bed Status', color='blue')
-            ax2.plot(events['movement'], label='Movement', color='green')
-            ax2.plot(events['flip'], label='Flip', color='red')
-            ax2.set_ylabel('Events')
-            ax2.set_ylim(-0.2, 1.2)
-            ax2.legend()
-            ax2.grid(True)
+            # 創建畫布
+            canvas = FigureCanvasTkAgg(fig, master=plot_window)
+            canvas.draw()
             
-            plt.xlabel('Time')
-            plt.show()
+            # 添加工具欄
+            toolbar = NavigationToolbar2Tk(canvas, plot_window)
+            toolbar.update()
+            
+            # 打包畫布
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+            
+            def update_plot():
+                # 重新獲取參數並更新圖表
+                new_params = get_parameters_from_table(parameter_table)
+                if new_params:
+                    new_events = detect_bed_events(processed_data, new_params)
+                    if new_events:
+                        ax2.clear()
+                        # 根據選項顯示/隱藏各個事件
+                        if show_vars['bed_status'].get():
+                            ax2.plot(new_events['bed_status'], label='Bed Status', color='blue')
+                        if show_vars['movement'].get():
+                            ax2.plot(new_events['movement'], label='Movement', color='green')
+                        if show_vars['flip'].get():
+                            ax2.plot(new_events['flip'], label='Flip', color='red')
+                        ax2.set_ylabel('Events')
+                        ax2.set_ylim(-0.2, 1.2)
+                        ax2.legend()
+                        ax2.grid(True)
+                        canvas.draw()
+            
+            # 初始繪製事件
+            update_plot()
+            
+            # 添加點擊事件處理
+            def on_click(event):
+                if event.inaxes:
+                    index = int(event.xdata)
+                    if 0 <= index < len(processed_data['d10'][0]):
+                        values = [processed_data['d10'][ch][index] for ch in range(6)]
+                        status = "在床" if events['bed_status'][index] else "離床"
+                        movement = "有移動" if events['movement'][index] else "無移動"
+                        flip = "翻身" if events['flip'][index] else "無翻身"
+                        
+                        info = f"時間點: {index}\n"
+                        for ch, val in enumerate(values):
+                            info += f"CH{ch}: {val}\n"
+                        info += f"狀態: {status}\n"
+                        info += f"移動: {movement}\n"
+                        info += f"翻身: {flip}"
+                        
+                        messagebox.showinfo("數據點資訊", info)
+            
+            # 綁定點擊事件
+            canvas.mpl_connect('button_press_event', on_click)
+            
+            # 添加更新按鈕
+            update_button = ttk.Button(plot_window, text="更新參數", command=update_plot)
+            update_button.pack(side=tk.BOTTOM, pady=5)
 
         except Exception as e:
             messagebox.showerror("Error", f"繪圖錯誤: {str(e)}")
+            traceback.print_exc()
 
     root.after(100, show_plot)
 
