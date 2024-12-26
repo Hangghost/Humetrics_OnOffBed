@@ -1053,8 +1053,39 @@ def loadClicked(event):
         QApplication.processEvents()
         OpenCmbFile()
         return
+    
+    # 如果選擇了先獲取參數
+    if check_get_para.isChecked():
+        status_bar.showMessage('正在獲取MQTT參數...')
+        QApplication.processEvents()
         
-    # 如果檔案不存在，執行原有的下載邏輯
+        try:
+            if radio_Normal.isChecked():
+                reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", 
+                    "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+            else:
+                reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", 
+                    "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+            
+            # 儲存參數到檔案
+            param_filename = f"{cmb_name[:-4]}_init_parameters.csv"
+            param_filepath = os.path.join(DATA_DIR, param_filename)
+            
+            with open(param_filepath, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Register', 'Value'])
+                for key, value in reg_table.items():
+                    writer.writerow([key, value])
+                    
+            status_bar.showMessage('MQTT參數已儲存')
+            QApplication.processEvents()
+            
+        except Exception as e:
+            status_bar.showMessage(f'獲取MQTT參數失敗: {str(e)}')
+            QApplication.processEvents()
+            return
+    
+    # 繼續原有的下載邏輯
     n = 0
     bcg = 0
     if data_source.currentText() == '\\RAW':
@@ -1155,23 +1186,24 @@ def MQTT_set_reg(mqtt_server, username, password, sn, payload):
     client.disconnect() # Stop the MQTT client loop when done
     
 #--------------------------------------------------------------------------
-def MQTT_set_reg(mqtt_server, username, password, sn, payload):
-    # Create a MQTT client
-    client = mqtt.Client()
-    client.username_pw_set(username, password)
-    # Connect to the broker
-    if radio_Normal.isChecked():
-        client.tls_set('/Users/hugolin/Documents/PY/Ethan/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
-        client.connect(mqtt_server, 8883, 60)
-    else:
-        client.connect(mqtt_server, 1883, 60)    
+# duplicate from above
+#  def MQTT_set_reg(mqtt_server, username, password, sn, payload):
+#     # Create a MQTT client
+#     client = mqtt.Client()
+#     client.username_pw_set(username, password)
+#     # Connect to the broker
+#     if radio_Normal.isChecked():
+#         client.tls_set('/Users/hugolin/Documents/PY/Ethan/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
+#         client.connect(mqtt_server, 8883, 60)
+#     else:
+#         client.connect(mqtt_server, 1883, 60)
 
-    # Create the message payload / Publish the message
-    topic_set_regs = "algoParam/" + sn + "/set"
-    payload.update({'taskID':4881})
-    client.publish(topic_set_regs, json.dumps(payload))
+#     # Create the message payload / Publish the message
+#     topic_set_regs = "algoParam/" + sn + "/set"
+#     payload.update({'taskID':4881})
+#     client.publish(topic_set_regs, json.dumps(payload))
 
-    client.disconnect() # Stop the MQTT client loop when done
+#     client.disconnect() # Stop the MQTT client loop when done
 
 #--------------------------------------------------------------------------
 def MqttSetDialog():
@@ -1497,7 +1529,12 @@ script_name = script_path.split('\\')[-1]
 mw.setWindowTitle(f'OnOFF Bed   ({script_name})')  # 設置視窗標題為'OnOFF Bed'
 mw.setWindowIcon(QIcon('Humetrics.ico'))  # 設置視窗圖標為'Humetrics.ico'
 
+# 在 UI 元件初始化部分新增
+check_get_para = QCheckBox('Get Parameters First')
+check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
 
+# 在 row_layout 中加入這個新的 checkbox
+row_layout.addWidget(check_get_para)
 
 mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
