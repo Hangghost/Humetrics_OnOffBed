@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import pymysql
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,6 +13,7 @@ import json
 from scipy.signal import savgol_filter, lfilter
 import numpy as np
 import traceback
+import matplotlib.dates as mdates
 
 # 確保 log_file 目錄存在
 LOG_DIR = "./_log_file"
@@ -40,8 +43,8 @@ class BedParameters:
     def __init__(self):
         # 基本閾值
         self.bed_threshold = 0      # 判斷在床/離床的基本閾值
-        self.noise_onbed = 0        # 在床時的噪音閾值
-        self.noise_offbed = 0       # 離床時的噪音閾值 (Noise 2)
+        self.noise_1 = 0           # 第一噪音閾值
+        self.noise_2 = 0           # 第二噪音閾值
         self.movement_threshold = 0  # 移動判定閾值
         
         # 各通道參數
@@ -69,9 +72,9 @@ def init_parameter_table(root):
     
     # 預設的通道參數值
     default_channel_values = [
-        [60000, 60000, 60000, 60000, 60000, 60000],  # min_preload
-        [100000, 100000, 100000, 100000, 100000, 100000],  # threshold_1
-        [100000, 100000, 100000, 100000, 100000, 100000],  # threshold_2
+        [40000, 40000, 40000, 40000, 40000, 40000],  # min_preload
+        [60000, 60000, 60000, 60000, 60000, 60000],  # threshold_1
+        [90000, 90000, 90000, 90000, 90000, 90000],  # threshold_2
         [0, 0, 0, 0, 0, 0]               # offset level
     ]
     
@@ -102,7 +105,7 @@ def init_parameter_table(root):
     single_entries = []
     
     # 獨立參數的預設值
-    default_single_values = [30000, 60, 60, 200]  # Total Sum, Noise 1, Set Flip
+    default_single_values = [30000, 80, 80, 200]  # Total Sum, Noise 1, Set Flip
     
     # 創建獨立參數的標籤和輸入框
     single_frame = ttk.Frame(root)
@@ -142,8 +145,8 @@ def get_parameters_from_table(parameter_table):
         
         # 獲取獨立參數
         params.bed_threshold = int(parameter_table['single_entries'][0].get())    # Total Sum
-        params.noise_onbed = int(parameter_table['single_entries'][1].get())      # Noise 1
-        params.noise_offbed = int(parameter_table['single_entries'][2].get())     # Noise 2
+        params.noise_1 = int(parameter_table['single_entries'][1].get())         # Noise 1
+        params.noise_2 = int(parameter_table['single_entries'][2].get())         # Noise 2
         params.movement_threshold = int(parameter_table['single_entries'][3].get()) # Set Flip
         
     except ValueError as e:
@@ -355,12 +358,23 @@ def plot_combined_data(sensor_data):
                 messagebox.showerror("Error", "數據處理失敗")
                 return
             
+            # 生成時間軸
+            timestamps = []
+            for row in sensor_data:
+                timestamp_str = str(row['timestamp'])
+                timestamp_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                time_at = timestamp_dt + timedelta(hours=8)
+                timestamps.append(time_at)
+            
+            # 取每10個點的時間
+            timestamps = timestamps[::10]
+            
             # 檢測事件
             events = detect_bed_events(processed_data, params)
             if events is None:
                 messagebox.showerror("Error", "事件檢測失敗")
                 return
-                
+            
             # 創建新視窗來顯示圖表
             plot_window = tk.Toplevel(root)
             plot_window.title("Interactive Plot")
@@ -380,9 +394,9 @@ def plot_combined_data(sensor_data):
             ttk.Checkbutton(control_frame, text="在床狀態", 
                           variable=show_vars['bed_status'],
                           command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
-            ttk.Checkbutton(control_frame, text="移動狀態", 
-                          variable=show_vars['movement'],
-                          command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            # ttk.Checkbutton(control_frame, text="移動狀態", 
+            #               variable=show_vars['movement'],
+            #               command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
             ttk.Checkbutton(control_frame, text="翻身狀態", 
                           variable=show_vars['flip'],
                           command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
@@ -396,9 +410,14 @@ def plot_combined_data(sensor_data):
             ax1 = fig.add_subplot(211)
             ax2 = fig.add_subplot(212, sharex=ax1)
             
-            # 繪製數據
+            # 繪製數據（使用時間軸）
             for ch in range(6):
-                ax1.plot(processed_data['d10'][ch], label=f'CH{ch}', alpha=0.7)
+                ax1.plot(timestamps, processed_data['d10'][ch], label=f'CH{ch}', alpha=0.7)
+            
+            # 設置x軸格式
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
+            fig.autofmt_xdate()  # 自動旋轉日期標籤
+            
             ax1.set_ylabel('Sensor Values')
             ax1.legend()
             ax1.grid(True)
@@ -423,31 +442,39 @@ def plot_combined_data(sensor_data):
                         ax2.clear()
                         # 根據選項顯示/隱藏各個事件
                         if show_vars['bed_status'].get():
-                            ax2.plot(new_events['bed_status'], label='Bed Status', color='blue')
-                        if show_vars['movement'].get():
-                            ax2.plot(new_events['movement'], label='Movement', color='green')
+                            ax2.plot(timestamps, new_events['bed_status'], label='Bed Status', color='blue')
                         if show_vars['flip'].get():
-                            ax2.plot(new_events['flip'], label='Flip', color='red')
+                            ax2.plot(timestamps, new_events['flip'], label='Flip', color='red')
+                            
+                        # 設置x軸格式
+                        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
+                        
                         ax2.set_ylabel('Events')
                         ax2.set_ylim(-0.2, 1.2)
                         ax2.legend()
                         ax2.grid(True)
+                        fig.autofmt_xdate()
                         canvas.draw()
             
             # 初始繪製事件
             update_plot()
             
-            # 添加點擊事件處理
+            # 修改點擊事件處理
             def on_click(event):
                 if event.inaxes:
-                    index = int(event.xdata)
+                    # 獲取點擊位置的時間
+                    clicked_time = mdates.num2date(event.xdata)
+                    # 找到最接近的時間點索引
+                    time_diffs = [abs((t - clicked_time).total_seconds()) for t in timestamps]
+                    index = time_diffs.index(min(time_diffs))
+                    
                     if 0 <= index < len(processed_data['d10'][0]):
                         values = [processed_data['d10'][ch][index] for ch in range(6)]
                         status = "在床" if events['bed_status'][index] else "離床"
                         movement = "有移動" if events['movement'][index] else "無移動"
                         flip = "翻身" if events['flip'][index] else "無翻身"
                         
-                        info = f"時間點: {index}\n"
+                        info = f"時間: {timestamps[index].strftime('%Y-%m-%d %H:%M:%S')}\n"
                         for ch, val in enumerate(values):
                             info += f"CH{ch}: {val}\n"
                         info += f"狀態: {status}\n"
@@ -561,68 +588,72 @@ def process_sensor_data(sensor_data, params):
         return None
 
 def calculate_movement_indicators(processed_data, params):
-    """計算位移指標"""
+    """計算位移指標和基線"""
     try:
-        dist = 0
-        dist_air = 0
+        # 初始化
+        l = len(processed_data['d10'][0])
+        onbed = np.zeros((l,))
+        onload = []
+        total = 0
+        zdata_final = []
+        base_final = []
         
+        # 對每個通道進行處理
         for ch in range(6):
-            med10 = processed_data['d10'][ch]
+            # 取得數據
+            max10 = processed_data['x10'][ch] + params.channel_params['offset'][ch]
+            med10 = processed_data['d10'][ch] + params.channel_params['offset'][ch]
+            n = processed_data['n10'][ch]
+            preload = params.channel_params['preload'][ch]
             
-            # 計算一般床墊位移
-            a = [1, -1023/1024]
-            b = [1/1024, 0]
-            pos_iirmean = lfilter(b, a, med10)
+            # 零點判定
+            zeroing = np.less(n * np.right_shift(max10, 5), 
+                            params.noise_2 * np.right_shift(preload, 5))
             
-            med10_pd = pd.Series(med10)
-            mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
-            mean_30sec = np.int32(mean_30sec)
+            # 計算基線參數
+            th1 = params.channel_params['threshold1'][ch]
+            th2 = params.channel_params['threshold2'][ch]
+            approach = max10 - (th1 + th2)
+            speed = n // (params.noise_1 * 4)
+            np.clip(speed, 1, 16, out=speed)
+            app_sp = approach * speed
+            sp_1024 = 1024 - speed
             
-            diff = (mean_30sec - pos_iirmean) / 256
-            if ch == 1:
-                diff = diff / 3
-            dist = dist + np.square(diff)
-            dist[dist > 8000000] = 8000000
-
-            # 計算空氣床墊位移
-            mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
-            mean_60sec = np.int32(mean_60sec)
+            # 動態基線計算
+            base = (app_sp[0] // 1024 + med10[0]) // 2
+            base = np.int64(base)
+            baseline = np.zeros_like(med10)
             
-            a = np.zeros([780,])
-            a[0] = 1
-            b = np.zeros([780,])
-            for s in range(10):
-                b[s*60 + 180] = -0.1
-            b[60] = 1
+            for i in range(l):
+                if zeroing[i]:
+                    base = np.int64(med10[i])
+                base = (base * sp_1024[i] + app_sp[i]) // 1024
+                baseline[i] = base
             
-            diff = lfilter(b, a, mean_60sec)
-            if ch == 1:
-                diff = diff / 3
-            dist_air = dist_air + np.square(diff / 256)
-
-        # 計算位移差值
-        dist = pd.Series(dist)
-        rising_dist = dist.shift(-60) - dist
-        rising_dist = rising_dist.fillna(0)
-        rising_dist = np.int32(rising_dist)
-        rising_dist[rising_dist < 0] = 0
-        rising_dist = rising_dist // 127
-        rising_dist[rising_dist > 1000] = 1000
-
-        # 計算空氣床墊位移差值
-        dist_air = pd.Series(dist_air)
-        rising_dist_air = dist_air.shift(-60) - dist_air
-        rising_dist_air = rising_dist_air.fillna(0)
-        rising_dist_air = np.int32(rising_dist_air)
-        rising_dist_air[rising_dist_air < 0] = 0
-        rising_dist_air = rising_dist_air // 127
-        rising_dist_air[rising_dist_air > 1000] = 1000
-
+            # 計算負載和在床狀態
+            total = total + med10[:] - baseline
+            o = np.less(th1, med10[:] - baseline)
+            onload.append(o)
+            onbed = onbed + o
+            
+            # 保存零點數據和基線
+            d_zero = med10 - baseline
+            zdata_final.append(d_zero)
+            base_final.append(baseline)
+        
+        # 最終在床判定
+        onbed = onbed + np.less(params.bed_threshold, total)
+        onbed = np.int32(onbed > 0)
+        
+        # 返回所有計算結果
         return {
-            'rising_dist': rising_dist,
-            'rising_dist_air': rising_dist_air
+            'onbed': onbed,
+            'onload': onload,
+            'zdata': zdata_final,
+            'baseline': base_final,
+            'total': total
         }
-
+        
     except Exception as e:
         print(f"位移指標計算錯誤: {str(e)}")
         return None
@@ -677,7 +708,7 @@ def save_processed_data(sensor_data, processed_data, parameters):
         
         # 保存為CSV
         df = pd.DataFrame(data_dict)
-        filename = f"processed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"local_processed_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         filepath = os.path.join(DATA_DIR, filename)
         df.to_csv(filepath, index=False)
         
@@ -693,68 +724,89 @@ def detect_bed_events(processed_data, params):
     """檢測床上事件（離床/上床/翻身）
     
     Args:
-        processed_data: 處理過的感測器數據，包含：
-            - d10: 10點移動平均
-            - n10: 高通濾波後的噪聲值
-            - x10: 10點最大值
-        params: BedParameters 物件，包含：
-            - bed_threshold: 判斷在床/離床的基本閾值
-            - noise_onbed: 在床時的噪音閾值
-            - movement_threshold: 移動判定閾值
-            
-    Returns:
-        dict: 包含各種事件的時間點和類型
+        processed_data: 處理過的感測器數據
+        params: 參數物件
     """
     try:
         # 初始化結果
+        l = len(processed_data['d10'][0])
         events = {
-            'bed_status': [],  # 0:離床, 1:在床
-            'movement': [],    # 0:靜止, 1:移動
-            'flip': [],       # 0:無翻身, 1:翻身
-            'timestamps': []   # 事件發生的時間點
+            'bed_status': np.zeros((l,)),  # 0:離床, 1:在床
+            'movement': [],    # 移動狀態
+            'flip': np.zeros((l,)),       # 翻身狀態
+            'rising_dist': np.zeros((l,)),  # 一般床墊位移
+            'rising_dist_air': np.zeros((l,))  # 氣墊床位移
         }
         
-        # 計算總和信號
-        total_signal = np.zeros(len(processed_data['d10'][0]))
-        for ch in range(6):
-            total_signal += processed_data['d10'][ch]
+        # 計算位移指標
+        dist = 0       # 一般床墊
+        dist_air = 0   # 氣墊床
         
-        # 計算總和噪聲
-        total_noise = np.zeros(len(processed_data['n10'][0]))
         for ch in range(6):
-            total_noise += processed_data['n10'][ch]
+            med10 = processed_data['d10'][ch]
+            med10_pd = pd.Series(med10)
+            
+            # 一般床墊位移計算
+            a = [1, -1023/1024]
+            b = [1/1024, 0]
+            pos_iirmean = lfilter(b, a, med10)
+            mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
+            mean_30sec = np.int32(mean_30sec)
+            diff = (mean_30sec - pos_iirmean) / 256
+            if ch == 1:
+                diff = diff / 3
+            dist = dist + np.square(diff)
+            dist[dist > 8000000] = 8000000
+            
+            # 氣墊床位移計算
+            mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
+            mean_60sec = np.int32(mean_60sec)
+            a = np.zeros(780)
+            a[0] = 1
+            b = np.zeros(780)
+            for s in range(10):
+                b[s*60 + 180] = -0.1
+            b[60] = 1
+            diff = lfilter(b, a, mean_60sec)
+            if ch == 1:
+                diff = diff / 3
+            dist_air = dist_air + np.square(diff / 256)
         
-        # 逐點檢測狀態
-        for i in range(len(total_signal)):
-            current_status = {
-                'bed': 0,
-                'move': 0,
-                'flip': 0
-            }
-            
-            # 1. 離床/在床檢測
-            if total_signal[i] > params.bed_threshold:
-                current_status['bed'] = 1
-                # 在床時使用 noise_onbed
-                noise_threshold = params.noise_onbed
-            else:
-                # 離床時使用 noise_offbed
-                noise_threshold = params.noise_offbed
-            
-            # 2. 移動檢測
-            if total_noise[i] > noise_threshold:
-                current_status['move'] = 1
-            
-            # 3. 翻身檢測
-            if (current_status['move'] == 1 and 
-                total_noise[i] > params.movement_threshold):
-                current_status['flip'] = 1
-            
-            # 保存結果
-            events['bed_status'].append(current_status['bed'])
-            events['movement'].append(current_status['move'])
-            events['flip'].append(current_status['flip'])
-            
+        # 計算位移差值
+        shift = 60
+        # 一般床墊
+        dist_series = pd.Series(dist)
+        rising_dist = dist_series.shift(-shift) - dist_series
+        rising_dist = rising_dist.fillna(0)
+        rising_dist = np.int32(rising_dist)
+        rising_dist[rising_dist < 0] = 0
+        rising_dist = rising_dist // 127
+        rising_dist[rising_dist > 1000] = 1000
+        
+        # 氣墊床
+        dist_air_series = pd.Series(dist_air)
+        rising_dist_air = dist_air_series.shift(-shift) - dist_air_series
+        rising_dist_air = rising_dist_air.fillna(0)
+        rising_dist_air = np.int32(rising_dist_air)
+        rising_dist_air[rising_dist_air < 0] = 0
+        rising_dist_air = rising_dist_air // 127
+        rising_dist_air[rising_dist_air > 1000] = 1000
+        
+        # 儲存位移結果
+        events['rising_dist'] = rising_dist
+        events['rising_dist_air'] = rising_dist_air
+        
+        # 判斷翻身事件
+        if params.is_air_mattress == 0:  # 一般床墊
+            events['flip'] = (rising_dist > params.movement_threshold)
+        else:  # 氣墊床
+            events['flip'] = (rising_dist_air > params.movement_threshold)
+        
+        # 取得在床狀態
+        movement_data = calculate_movement_indicators(processed_data, params)
+        if movement_data:
+            events['bed_status'] = movement_data['onbed']
+        
         return events
         
     except Exception as e:
@@ -780,12 +832,15 @@ if __name__ == "__main__":
     # 初始化參數表和其他UI元素
     setup_main_window()
     
-    # 获取当天早上 6:00:00 和中午 12:00:00 的时间
-    # current_date = datetime.now().date()
-    # 指定為2024-12-16
-    current_date = datetime(2024, 12, 18)
+    # 获取当天早上 12:00:00 和前一天 12:00:00 的时间
+    current_date = datetime.now().date()
     default_start_time = datetime.combine(current_date, datetime.min.time()) - timedelta(hours=12)
     default_end_time = datetime.combine(current_date, datetime.min.time()) + timedelta(hours=12)
+ 
+    # 指定為2024-12-16
+    # current_date = datetime(2024, 12, 18)
+    # default_start_time = datetime.combine(current_date, datetime.min.time()) - timedelta(hours=12)
+    # default_end_time = datetime.combine(current_date, datetime.min.time()) + timedelta(hours=12)
 
     # 输入框和标签
     ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456

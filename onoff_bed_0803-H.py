@@ -469,12 +469,12 @@ def OpenCmbFile():
         n10.append(np.int32(n))
         # --------------------------------------------------------
         data_pd = pd.Series(data[:,ch]) # 將通道的數據轉換為Pandas的Series數據結構
-        med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的最大值，窗口大小為30 
+        med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的中位數，窗口大小為10
         med10 = np.array(med10)
         med10 = med10[::10]
         d10.append(np.int32(med10))
         # --------------------------------------------------------
-        max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為30 
+        max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為10 
         max10 = np.array(max10)
         max10 = np.int32(max10[::10])
         x10.append(np.int32(max10))
@@ -488,7 +488,7 @@ def OpenCmbFile():
         b = [1/1024, 0]
         pos_iirmean = lfilter(b, a, med10) # 1 second # IIR濾波
         med10_pd = pd.Series(med10)
-        mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為30 
+        mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為30 
         mean_30sec = np.int32(mean_30sec)        
         diff = (mean_30sec - pos_iirmean) / 256
         if ch == 1:
@@ -496,7 +496,7 @@ def OpenCmbFile():
         dist = dist + np.square(diff) # 累加平方差
         dist[dist > 8000000] = 8000000 # 限制最大值
         # 計算 dist (air mattress) -------------------------------
-        mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的最大值，窗口大小為60 
+        mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為60 
         mean_60sec = np.int32(mean_60sec)
         # [60][60][60][60][60][60][60][60][60][60]
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        
@@ -894,44 +894,45 @@ def EvalParameters():
     base_final = []
 
     l = d10[0].shape[0]
-    onbed = np.zeros((l,))
-    onload = []
-    total = 0
+    onbed = np.zeros((l,))  # 初始化在床狀態陣列
+    onload = []             # 初始化負載狀態列表
+    total = 0              # 初始化總負載
 
     for ch in range(6):
-        max10 = x10[ch] + offset_edit[ch]
-        med10 = d10[ch] + offset_edit[ch]
-        n = n10[ch]
-        preload = preload_edit[ch]
+        max10 = x10[ch] + offset_edit[ch]    # 最大值加上偏移
+        med10 = d10[ch] + offset_edit[ch]     # 中值加上偏移
+        n = n10[ch]                           # 噪聲值
+        preload = preload_edit[ch]            # 預載值
+        # 判斷是否為零點（無負載狀態）
         zeroing = np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5))
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
-        approach = max10 - (th1 + th2)
-        speed = n // (noise_onbed * 4)            
-        np.clip(speed, 1, 16, out=speed)
-        app_sp = approach * speed
-        sp_1024 = 1024 - speed
+        approach = max10 - (th1 + th2)           # 計算接近度
+        speed = n // (noise_onbed * 4)           # 計算速度
+        np.clip(speed, 1, 16, out=speed)         # 限制速度範圍
+        app_sp = approach * speed                # 接近度與速度的乘積
+        sp_1024 = 1024 - speed                   # 速度的補數
         #----------------------------------------------------
         base = (app_sp[0] // 1024 + med10[0]) // 2
         base = np.int64(base)
         baseline = np.zeros_like(med10)           
         for i in range(l):
             if zeroing[i]:
-                base = np.int64(med10[i])
-            base = (base * sp_1024[i] + app_sp[i]) // 1024
-            baseline[i] = base            
+                base = np.int64(med10[i])        # 如果是零點，直接使用當前值
+            base = (base * sp_1024[i] + app_sp[i]) // 1024  # 動態更新基線
+            baseline[i] = base
         
-        total = total + med10[:] - baseline
-        o = np.less(th1, med10[:] - baseline)
-        onload.append(o)
-        onbed = onbed + o
+        total = total + med10[:] - baseline      # 累加所有通道的淨負載
+        o = np.less(th1, med10[:] - baseline)    # 判斷是否超過閾值
+        onload.append(o)                         # 記錄該通道的負載狀態
+        onbed = onbed + o                        # 累加到總體在床狀態
 
         d_zero = med10 - baseline
         zdata_final.append(d_zero)
         base_final.append(baseline)
 
-    onbed = onbed + np.less(bed_threshold, total) 
-    onbed = np.int32(onbed > 0)
+    onbed = onbed + np.less(bed_threshold, total)  # 加入總負載判斷
+    onbed = np.int32(onbed > 0)                    # 轉換為0/1狀態
     
     return onload, onbed
 
