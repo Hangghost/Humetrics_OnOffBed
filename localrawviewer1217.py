@@ -386,20 +386,25 @@ def plot_combined_data(sensor_data):
             # 創建顯示控制變數
             show_vars = {
                 'bed_status': tk.BooleanVar(value=True),
-                'movement': tk.BooleanVar(value=True),
-                'flip': tk.BooleanVar(value=True)
+                'flip': tk.BooleanVar(value=True),
+                'channels': [tk.BooleanVar(value=True) for _ in range(6)]  # 為每個通道創建變數
             }
             
-            # 創建顯示控制選項
+            # 創建事件控制選項
             ttk.Checkbutton(control_frame, text="在床狀態", 
                           variable=show_vars['bed_status'],
                           command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
-            # ttk.Checkbutton(control_frame, text="移動狀態", 
-            #               variable=show_vars['movement'],
-            #               command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            
             ttk.Checkbutton(control_frame, text="翻身狀態", 
                           variable=show_vars['flip'],
                           command=lambda: update_plot()).pack(side=tk.LEFT, padx=5)
+            
+            # 添加通道控制
+            for i in range(6):
+                ttk.Checkbutton(control_frame, 
+                              text=f"Ch{i+1}",
+                              variable=show_vars['channels'][i],
+                              command=lambda: update_plot()).pack(side=tk.LEFT, padx=2)
             
             # 使用 matplotlib 的 tkinter 後端
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -434,27 +439,53 @@ def plot_combined_data(sensor_data):
             canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
             
             def update_plot():
-                # 重新獲取參數並更新圖表
-                new_params = get_parameters_from_table(parameter_table)
-                if new_params:
-                    new_events = detect_bed_events(processed_data, new_params)
-                    if new_events:
-                        ax2.clear()
-                        # 根據選項顯示/隱藏各個事件
-                        if show_vars['bed_status'].get():
-                            ax2.plot(timestamps, new_events['bed_status'], label='Bed Status', color='blue')
-                        if show_vars['flip'].get():
-                            ax2.plot(timestamps, new_events['flip'], label='Flip', color='red')
+                """更新圖表顯示"""
+                try:
+                    # 重新獲取參數並更新圖表
+                    new_params = get_parameters_from_table(parameter_table)
+                    if new_params:
+                        new_events = detect_bed_events(processed_data, new_params)
+                        if new_events:
+                            # 清除現有圖表
+                            ax2.clear()
                             
-                        # 設置x軸格式
-                        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
-                        
-                        ax2.set_ylabel('Events')
-                        ax2.set_ylim(-0.2, 1.2)
-                        ax2.legend()
-                        ax2.grid(True)
-                        fig.autofmt_xdate()
-                        canvas.draw()
+                            # 獲取移動指標數據
+                            movement_data = calculate_movement_indicators(processed_data, new_params)
+                            if not movement_data:
+                                return
+                            
+                            # 繪製各通道在床狀態
+                            for ch in range(6):
+                                if show_vars['channels'][ch].get():  # 使用 show_vars 中的通道變數
+                                    ax2.plot(timestamps, 
+                                            movement_data['onload'][ch],
+                                            label=f'Ch{ch+1}',
+                                            alpha=0.5)
+                            
+                            # 繪製整體在床狀態
+                            if show_vars['bed_status'].get():
+                                ax2.plot(timestamps, new_events['bed_status'], 
+                                        label='Bed Status', color='blue', linewidth=2)
+                            
+                            # 繪製翻身標記
+                            if show_vars['flip'].get() and 'flip_points' in new_events:
+                                flip_times = [timestamps[idx] for idx in new_events['flip_points']]
+                                ax2.plot(flip_times, [-0.1] * len(flip_times), 'v',
+                                        label='Flip', color='red', markersize=10)
+                            
+                            # 設置圖表格式
+                            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
+                            ax2.set_ylabel('Events')
+                            ax2.set_ylim(-0.2, 1.2)
+                            ax2.legend()
+                            ax2.grid(True)
+                            fig.autofmt_xdate()
+                            canvas.draw()
+                            
+                except Exception as e:
+                    print(f"更新圖表時發生錯誤: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
             
             # 初始繪製事件
             update_plot()
@@ -721,21 +752,15 @@ def save_processed_data(sensor_data, processed_data, parameters):
         return None
 
 def detect_bed_events(processed_data, params):
-    """檢測床上事件（離床/上床/翻身）
-    
-    Args:
-        processed_data: 處理過的感測器數據
-        params: 參數物件
-    """
+    """檢測床上事件（離床/上床/翻身）"""
     try:
-        # 初始化結果
         l = len(processed_data['d10'][0])
         events = {
-            'bed_status': np.zeros((l,)),  # 0:離床, 1:在床
-            'movement': [],    # 移動狀態
-            'flip': np.zeros((l,)),       # 翻身狀態
-            'rising_dist': np.zeros((l,)),  # 一般床墊位移
-            'rising_dist_air': np.zeros((l,))  # 氣墊床位移
+            'bed_status': np.zeros((l,)),
+            'movement': [],
+            'flip_points': [],  # 改為儲存翻身的時間點
+            'rising_dist': np.zeros((l,)),
+            'rising_dist_air': np.zeros((l,))
         }
         
         # 計算位移指標
@@ -796,11 +821,29 @@ def detect_bed_events(processed_data, params):
         events['rising_dist'] = rising_dist
         events['rising_dist_air'] = rising_dist_air
         
-        # 判斷翻身事件
-        if params.is_air_mattress == 0:  # 一般床墊
-            events['flip'] = (rising_dist > params.movement_threshold)
-        else:  # 氣墊床
-            events['flip'] = (rising_dist_air > params.movement_threshold)
+        # 檢測翻身事件並找出中間點
+        if params.is_air_mattress == 0:
+            flip_mask = (rising_dist > params.movement_threshold)
+        else:
+            flip_mask = (rising_dist_air > params.movement_threshold)
+            
+        # 找出連續翻身區間
+        flip_regions = []
+        start_idx = None
+        
+        for i in range(len(flip_mask)):
+            if flip_mask[i] and start_idx is None:
+                start_idx = i
+            elif not flip_mask[i] and start_idx is not None:
+                flip_regions.append((start_idx, i-1))
+                start_idx = None
+                
+        # 如果最後一個區間還沒結束
+        if start_idx is not None:
+            flip_regions.append((start_idx, len(flip_mask)-1))
+        
+        # 計算每個翻身區間的中間點
+        events['flip_points'] = [(start + (end - start)//2) for start, end in flip_regions]
         
         # 取得在床狀態
         movement_data = calculate_movement_indicators(processed_data, params)
