@@ -14,6 +14,7 @@ from scipy.signal import savgol_filter, lfilter
 import numpy as np
 import traceback
 import matplotlib.dates as mdates
+from matplotlib.ticker import FuncFormatter, AutoLocator
 
 # 確保 log_file 目錄存在
 LOG_DIR = "./_log_file"
@@ -415,6 +416,57 @@ def plot_combined_data(sensor_data):
             ax1 = fig.add_subplot(211)
             ax2 = fig.add_subplot(212, sharex=ax1)
             
+            # 設置時間軸格式器
+            def format_time(x, p):
+                date = mdates.num2date(x)
+                # 獲取當前視圖的x軸範圍
+                current_range = ax1.get_xlim()
+                range_width = current_range[1] - current_range[0]
+                
+                # 根據視圖範圍決定時間格式
+                if range_width < 0.05:  # 極度放大時（約1小時範圍）
+                    return date.strftime('%H:%M:%S')
+                elif range_width < 0.5:  # 中等放大時（約12小時範圍）
+                    return date.strftime('%H:%M')
+                else:  # 正常視圖
+                    return date.strftime('%H:%M')
+            
+            # 使用正確的格式器和定位器
+            ax1.xaxis.set_major_formatter(FuncFormatter(format_time))
+            
+            def update_ticks(axes):
+                range_width = axes.get_xlim()[1] - axes.get_xlim()[0]
+                
+                if range_width < 0.01:  # 極度放大時（約15分鐘範圍）
+                    axes.xaxis.set_major_locator(mdates.SecondLocator(interval=1))  # 每秒
+                    axes.xaxis.set_minor_locator(mdates.SecondLocator(interval=1))  # 每秒的次刻度
+                elif range_width < 0.05:  # 很放大時（約1小時範圍）
+                    axes.xaxis.set_major_locator(mdates.SecondLocator(interval=30))  # 每30秒
+                    axes.xaxis.set_minor_locator(mdates.SecondLocator(interval=10))  # 每10秒
+                elif range_width < 0.5:  # 中等放大時（約12小時範圍）
+                    axes.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))  # 每5分鐘
+                    axes.xaxis.set_minor_locator(mdates.MinuteLocator(interval=1))  # 每分鐘
+                else:  # 正常視圖
+                    axes.xaxis.set_major_locator(mdates.MinuteLocator(interval=10))  # 每10分鐘
+                    axes.xaxis.set_minor_locator(mdates.MinuteLocator(interval=5))  # 每5分鐘
+                
+                # 限制刻度數量
+                if len(axes.get_xticks()) > 50:  # 如果刻度太多
+                    axes.xaxis.set_major_locator(AutoLocator())
+                
+                fig.canvas.draw_idle()
+            
+            # 綁定縮放事件
+            def on_xlims_change(axes):
+                update_ticks(axes)
+            
+            ax1.callbacks.connect('xlim_changed', on_xlims_change)
+            ax2.callbacks.connect('xlim_changed', on_xlims_change)
+            
+            # 初始化刻度設置
+            update_ticks(ax1)
+            update_ticks(ax2)
+            
             # 繪製數據（使用時間軸）
             for ch in range(6):
                 ax1.plot(timestamps, processed_data['d10'][ch], label=f'CH{ch}', alpha=0.7)
@@ -426,6 +478,15 @@ def plot_combined_data(sensor_data):
             ax1.set_ylabel('Sensor Values')
             ax1.legend()
             ax1.grid(True)
+            
+            # 添加網格線（包括次要網格）
+            ax1.grid(True, which='major', linestyle='-')
+            ax1.grid(True, which='minor', linestyle=':')
+            ax2.grid(True, which='major', linestyle='-')
+            ax2.grid(True, which='minor', linestyle=':')
+            
+            # 確保時間軸標籤不重疊
+            fig.autofmt_xdate()
             
             # 創建畫布
             canvas = FigureCanvasTkAgg(fig, master=plot_window)
