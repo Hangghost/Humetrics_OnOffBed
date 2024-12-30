@@ -4,6 +4,10 @@ from tensorflow.keras.models import load_model
 import os
 from datetime import datetime, timedelta
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+import matplotlib.dates as mdates
+from matplotlib.widgets import CheckButtons
 
 # 設定參數
 WINDOW_SIZE = 15  # 15秒的窗口
@@ -78,7 +82,12 @@ def create_sequences_for_prediction(df):
 
 def load_latest_model():
     """載入最新的模型"""
-    log_dir = 'logs/bed_monitor'
+    log_dir = '_logs/bed_monitor'
+    
+    # 檢查目錄是否存在
+    if not os.path.exists(log_dir):
+        raise FileNotFoundError(f"模型目錄不存在: {log_dir}，請確保已訓練模型並將其保存在正確的位置")
+    
     model_files = [f for f in os.listdir(log_dir) if f.endswith('.keras')]
     
     if not model_files:
@@ -103,6 +112,59 @@ def calculate_metrics(y_true, y_pred):
         'F1分數': f1_score(y_true, y_pred)
     }
     return metrics
+
+def visualize_predictions(results):
+    """視覺化預測結果"""
+    # 創建主圖和子圖
+    fig, ax = plt.subplots(figsize=(15, 6))
+    
+    # 繪製實際狀態和預測狀態
+    line1, = ax.plot(results.index, results['Actual_Status'], 'b-', label='Actual Status', alpha=0.5)
+    line2, = ax.plot(results.index, results['Predicted_Status'], 'r--', label='Predicted Status', alpha=0.7)
+    
+    # 設置圖表標題和標籤
+    ax.set_title('Bed Status Prediction Results', fontsize=14)
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Status (0:Empty, 1:Occupied)', fontsize=12)
+    
+    # 設置 x 軸時間格式
+    ax.xaxis.set_major_formatter(DateFormatter('%H:%M:%S'))
+    fig.autofmt_xdate()  # 自動調整日期標籤角度
+    
+    # 設置 y 軸範圍和刻度
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(['Empty', 'Occupied'])
+    
+    # 添加網格
+    ax.grid(True, alpha=0.3)
+    
+    # 創建 CheckButtons
+    rax = plt.axes([0.02, 0.87, 0.15, 0.1])  # 控制項位置 [left, bottom, width, height]
+    check = CheckButtons(
+        rax, 
+        ['Actual Status', 'Predicted Status'], 
+        [True, True]  # 初始狀態都為顯示
+    )
+    
+    def func(label):
+        if label == 'Actual Status':
+            line1.set_visible(not line1.get_visible())
+        elif label == 'Predicted Status':
+            line2.set_visible(not line2.get_visible())
+        plt.draw()
+    
+    check.on_clicked(func)
+    
+    # 調整布局
+    plt.tight_layout()
+    
+    # 保存圖片（注意：保存的圖片不會包含互動控制項）
+    plt.savefig('_data/predictions/prediction_visualization.png', dpi=300, bbox_inches='tight')
+    print("Prediction visualization saved to: _data/predictions/prediction_visualization.png")
+    
+    # 顯示圖表
+    plt.show()
 
 def predict_bed_status(data_file):
     """預測床上狀態並評估準確度"""
@@ -162,6 +224,9 @@ def predict_bed_status(data_file):
         for metric_name, score in metrics.items():
             print(f"{metric_name}: {score:.4f}")
         print(f"\n預測完成，結果已保存至: {output_file}")
+        
+        # 在保存預測結果後添加視覺化
+        visualize_predictions(results)
         
         return results, metrics
         
