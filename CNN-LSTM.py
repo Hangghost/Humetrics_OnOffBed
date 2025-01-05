@@ -96,14 +96,14 @@ def create_sequences(df):
 
 # 載入數據
 try:
-    dataset = pd.read_csv("./_data/SPS2021PA000329_20241212_04_20241213_04_data.csv")
+    dataset = pd.read_csv("./_data/SPS2021PA000015_20241227_04_20241228_04_data.csv")
     print(f"數據集形狀: {dataset.shape}")
     print(f"數據集列: {dataset.columns.tolist()}")
     X, y = create_sequences(dataset)
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
-    print(f"數據��理錯誤: {e}")
+    print(f"數據處理錯誤: {e}")
     raise
 
 # 分割訓練和測試集
@@ -123,17 +123,23 @@ training_history_path = os.path.join(log_dir, 'training_history.png')
 input_layer = Input(shape=(WINDOW_SIZE, X_train.shape[2]))
 x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(input_layer)
 x = BatchNormalization()(x)
+x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(x)
+x = BatchNormalization()(x)
 x = MaxPooling1D(pool_size=2)(x)
 x = Dropout(0.2)(x)
 
 x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
 x = BatchNormalization()(x)
+x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
+x = BatchNormalization()(x)
 x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.2)(x)
+x = Dropout(0.3)(x)
 
 x = LSTM(units=256, return_sequences=True)(x)
+x = BatchNormalization()(x)
 x = Dropout(0.3)(x)
 x = LSTM(units=128)(x)
+x = BatchNormalization()(x)
 x = Dropout(0.3)(x)
 
 output_layer = Dense(1, activation='sigmoid')(x)
@@ -151,7 +157,7 @@ model.compile(
 callbacks = [
     EarlyStopping(
         monitor='val_accuracy',
-        patience=10,
+        patience=15,
         restore_best_weights=True
     ),
     ModelCheckpoint(
