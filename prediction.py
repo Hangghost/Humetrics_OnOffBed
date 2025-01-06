@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
-import matplotlib.dates as mdates
 from matplotlib.widgets import CheckButtons
+import csv
 
 # 設定參數
 WINDOW_SIZE = 15  # 15秒的窗口
@@ -83,11 +83,6 @@ def create_sequences_for_prediction(df):
 def load_latest_model():
     """載入最新的模型"""
     log_dir = '_logs/bed_monitor'
-    
-    # 檢查目錄是否存在
-    if not os.path.exists(log_dir):
-        raise FileNotFoundError(f"模型目錄不存在: {log_dir}，請確保已訓練模型並將其保存在正確的位置")
-    
     model_files = [f for f in os.listdir(log_dir) if f.endswith('.keras')]
     
     if not model_files:
@@ -99,7 +94,8 @@ def load_latest_model():
         key=lambda x: os.path.getmtime(os.path.join(log_dir, x))
     )
     model_path = os.path.join(log_dir, latest_model)
-    
+
+    print(f"模型路徑: {model_path}")
     print(f"正在載入模型: {latest_model}")
     return load_model(model_path)
 
@@ -166,6 +162,42 @@ def visualize_predictions(results):
     # 顯示圖表
     plt.show()
 
+def save_prediction_metrics(data_file, metrics, predictions_log='_data/predictions/prediction_metrics_log.csv'):
+    """保存預測指標到記錄檔"""
+    # 準備要記錄的數據
+    file_name = os.path.basename(data_file)
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 準備記錄的欄位
+    headers = ['Timestamp', 'File_Name', 'Accuracy', 'Precision', 'Recall', 'F1_Score']
+    row_data = [
+        current_time,
+        file_name,
+        metrics['準確率 (Accuracy)'],
+        metrics['精確率 (Precision)'],
+        metrics['召回率 (Recall)'],
+        metrics['F1分數']
+    ]
+    
+    # 檢查記錄檔是否存在
+    file_exists = os.path.isfile(predictions_log)
+    
+    # 確保目錄存在
+    os.makedirs(os.path.dirname(predictions_log), exist_ok=True)
+    
+    # 寫入記錄
+    with open(predictions_log, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        
+        # 如果檔案不存在，寫入標題列
+        if not file_exists:
+            writer.writerow(headers)
+        
+        # 寫入數據
+        writer.writerow(row_data)
+    
+    print(f"\n預測指標已記錄到: {predictions_log}")
+
 def predict_bed_status(data_file):
     """預測床上狀態並評估準確度"""
     try:
@@ -205,28 +237,26 @@ def predict_bed_status(data_file):
             results['Predicted_Status']
         )
         
-        # 創建預測結果目錄
+        # 保存預測結果
         predictions_dir = os.path.join(os.path.dirname(data_file), 'predictions')
         os.makedirs(predictions_dir, exist_ok=True)
-        
-        # 使用原始檔案名稱，但存在 predictions 目錄下
-        base_filename = os.path.basename(data_file)
         output_file = os.path.join(
             predictions_dir,
-            f"{os.path.splitext(base_filename)[0]}_predictions.csv"
+            f"{os.path.splitext(os.path.basename(data_file))[0]}_predictions.csv"
         )
-        
-        # 保存預測結果
         results.to_csv(output_file)
+        
+        # 視覺化預測結果
+        visualize_predictions(results)
+        
+        # 保存預測指標到記錄檔
+        save_prediction_metrics(data_file, metrics)
         
         # 輸出評估結果
         print(f"\n預測評估結果:")
         for metric_name, score in metrics.items():
             print(f"{metric_name}: {score:.4f}")
         print(f"\n預測完成，結果已保存至: {output_file}")
-        
-        # 在保存預測結果後添加視覺化
-        visualize_predictions(results)
         
         return results, metrics
         
@@ -236,5 +266,5 @@ def predict_bed_status(data_file):
 
 if __name__ == "__main__":
     # 示例使用
-    data_file = "./_data/data_prediction2.csv"
+    data_file = "./_data/SPS2021PA000317_20241229_04_20241230_04_data.csv"
     results, metrics = predict_bed_status(data_file)

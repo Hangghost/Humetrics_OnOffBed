@@ -18,7 +18,23 @@ WINDOW_SIZE = 15  # 15秒的窗口
 OVERLAP = 0.8    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
-def create_sequences(df):
+def get_cleaned_data_path(raw_data_path):
+    """根據原始數據路徑生成清理後數據的路徑"""
+    # 獲取原始檔案名（不含路徑）
+    raw_filename = os.path.basename(raw_data_path)
+    # 在檔名前加上 'cleaned_' 前綴
+    cleaned_filename = f"cleaned_{raw_filename}"
+    # 組合完整路徑
+    return os.path.join("./_data/training", cleaned_filename)
+
+def save_processed_sequences(sequences, labels, cleaned_data_path):
+    """保存處理後的序列資料"""
+    # 將 .csv 副檔名改為 .npz
+    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    np.savez(sequences_path, sequences=sequences, labels=labels)
+    print(f"序列資料已保存至: {sequences_path}")
+
+def create_sequences(df, cleaned_data_path):
     """創建時間序列窗口"""
     sequences = []
     labels = []
@@ -92,18 +108,57 @@ def create_sequences(df):
     if len(sequences) == 0:
         raise ValueError("沒有生成任何有效的序列")
     
-    return np.array(sequences), np.array(labels)
+    sequences = np.array(sequences)
+    labels = np.array(labels)
+    
+    # 保存清理後的原始數據和序列資料
+    os.makedirs(os.path.dirname(cleaned_data_path), exist_ok=True)
+    df.to_csv(cleaned_data_path, index=False)
+    save_processed_sequences(sequences, labels, cleaned_data_path)
+    
+    return sequences, labels
 
-# 載入數據
+def load_and_process_data(raw_data_path):
+    """載入並處理數據，如果有清理過的數據則直接讀取"""
+    # 獲取對應的清理後數據路徑
+    cleaned_data_path = get_cleaned_data_path(raw_data_path)
+
+    # Save a CSV file for test
+    df = pd.read_csv(raw_data_path)
+    df.to_csv(cleaned_data_path, index=False)
+    
+    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    
+    # 檢查是否存在已處理的序列資料
+    if os.path.exists(sequences_path):
+        try:
+            # 直接載入處理好的序列資料
+            data = np.load(sequences_path)
+            sequences = data['sequences']
+            labels = data['labels']
+            print(f"發現已處理的序列資料，直接讀取: {sequences_path}")
+            return sequences, labels
+        except Exception as e:
+            print(f"讀取序列資料時發生錯誤: {e}")
+            print("將重新處理原始數據...")
+    
+    # 如果沒有處理好的序列資料，則從頭處理
+    try:
+        dataset = pd.read_csv(raw_data_path)
+        print(f"數據集形狀: {dataset.shape}")
+        print(f"數據集列: {dataset.columns.tolist()}")
+        return create_sequences(dataset, cleaned_data_path)
+    except Exception as e:
+        print(f"數據處理錯誤: {e}")
+        raise
+
+# 修改原本的數據載入部分
 try:
-    dataset = pd.read_csv("./_data/SPS2021PA000329_20241212_04_20241213_04_data.csv")
-    print(f"數據集形狀: {dataset.shape}")
-    print(f"數據集列: {dataset.columns.tolist()}")
-    X, y = create_sequences(dataset)
+    X, y = load_and_process_data("./_data/SPS2021PA000015_20241227_04_20241228_04_data.csv")
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
-    print(f"數據��理錯誤: {e}")
+    print(f"數據處理錯誤: {e}")
     raise
 
 # 分割訓練和測試集
@@ -123,17 +178,23 @@ training_history_path = os.path.join(log_dir, 'training_history.png')
 input_layer = Input(shape=(WINDOW_SIZE, X_train.shape[2]))
 x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(input_layer)
 x = BatchNormalization()(x)
+x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(x)
+x = BatchNormalization()(x)
 x = MaxPooling1D(pool_size=2)(x)
 x = Dropout(0.2)(x)
 
 x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
 x = BatchNormalization()(x)
+x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
+x = BatchNormalization()(x)
 x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.2)(x)
+x = Dropout(0.3)(x)
 
 x = LSTM(units=256, return_sequences=True)(x)
+x = BatchNormalization()(x)
 x = Dropout(0.3)(x)
 x = LSTM(units=128)(x)
+x = BatchNormalization()(x)
 x = Dropout(0.3)(x)
 
 output_layer = Dense(1, activation='sigmoid')(x)
@@ -151,7 +212,7 @@ model.compile(
 callbacks = [
     EarlyStopping(
         monitor='val_accuracy',
-        patience=10,
+        patience=15,
         restore_best_weights=True
     ),
     ModelCheckpoint(
@@ -166,7 +227,7 @@ callbacks = [
 # 訓練模型
 history = model.fit(
     X_train, y_train,
-    epochs=10,
+    epochs=1,
     batch_size=32,
     validation_split=0.2,
     callbacks=callbacks,
