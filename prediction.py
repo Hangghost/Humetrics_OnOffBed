@@ -19,18 +19,18 @@ def create_sequences_for_prediction(df):
     sequences = []
     timestamps = []
     
-    # 確保所有需要的列都存在
-    required_columns = (
-        [f'Channel_{i}_Raw' for i in range(1, 7)] +
-        [f'Channel_{i}_Noise' for i in range(1, 7)]
-    )
+    # 只保留需要的列
+    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
     
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
     
+    # 使用 .copy() 創建數據的深度複製
+    df = df[required_columns].copy()
+    
     # 確保數據類型為 float64
     for col in required_columns:
-        df[col] = df[col].astype('float64')
+        df.loc[:, col] = df[col].astype('float64')
     
     # 檢查數值是否有效
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
@@ -41,38 +41,9 @@ def create_sequences_for_prediction(df):
         timestamps.append(window.index[-1])  # 保存每個窗口的最後一個時間戳
         
         try:
-            # 確保數據類型為 float64
+            # 只使用原始壓力值
             raw_values = window[[f'Channel_{i}_Raw' for i in range(1, 7)]].values.astype('float64')
-            noise_values = window[[f'Channel_{i}_Noise' for i in range(1, 7)]].values.astype('float64')
-            
-            # 使用 np.divide 進行安全的除法運算
-            noise_ratios = np.divide(
-                noise_values, 
-                raw_values, 
-                out=np.zeros_like(noise_values, dtype='float64'), 
-                where=raw_values!=0
-            )
-            
-            pressure_changes = np.diff(raw_values, axis=0)
-            pressure_changes = np.vstack([pressure_changes, pressure_changes[-1]])
-            
-            pressure_center = np.average(raw_values, axis=1, weights=range(1, 7))
-            
-            stats_features = np.concatenate([
-                np.mean(raw_values, axis=0),
-                np.std(raw_values, axis=0),
-                np.percentile(raw_values, [25, 50, 75], axis=0).flatten()
-            ])
-            
-            features = np.concatenate([
-                raw_values,
-                noise_ratios,
-                pressure_changes,
-                pressure_center.reshape(-1, 1),
-                stats_features.reshape(1, -1).repeat(WINDOW_SIZE, axis=0)
-            ], axis=1)
-            
-            sequences.append(features)
+            sequences.append(raw_values)
             
         except Exception as e:
             print(f"處理窗口 {i} 時發生錯誤: {e}")
@@ -266,5 +237,5 @@ def predict_bed_status(data_file):
 
 if __name__ == "__main__":
     # 示例使用
-    data_file = "./_data/SPS2021PA000317_20241229_04_20241230_04_data.csv"
+    data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
     results, metrics = predict_bed_status(data_file)

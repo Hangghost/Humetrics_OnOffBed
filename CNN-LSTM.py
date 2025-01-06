@@ -42,19 +42,18 @@ def create_sequences(df, cleaned_data_path):
     # 先檢查數據
     print(f"原始數據長度: {len(df)}")
     
-    # 確保所有需要的列都存在
-    required_columns = (
-        [f'Channel_{i}_Raw' for i in range(1, 7)] +
-        [f'Channel_{i}_Noise' for i in range(1, 7)] +
-        ['OnBed_Status']
-    )
+    # 只保留需要的列
+    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)] + ['OnBed_Status']
     
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
     
+    # 使用 .copy() 創建數據的深度複製
+    df = df[required_columns].copy()
+    
     # 確保數據類型為 float64
     for col in required_columns[:-1]:  # 除了 OnBed_Status
-        df[col] = df[col].astype('float64')
+        df.loc[:, col] = df[col].astype('float64')
     
     # 檢查數值是否有效
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
@@ -65,38 +64,10 @@ def create_sequences(df, cleaned_data_path):
         window = df.iloc[i:(i + WINDOW_SIZE)]
         
         try:
-            # 確保數據類型為 float64
+            # 只使用原始壓力值
             raw_values = window[[f'Channel_{i}_Raw' for i in range(1, 7)]].values.astype('float64')
-            noise_values = window[[f'Channel_{i}_Noise' for i in range(1, 7)]].values.astype('float64')
             
-            # 使用 np.divide 進行安全的除法運算
-            noise_ratios = np.divide(
-                noise_values, 
-                raw_values, 
-                out=np.zeros_like(noise_values, dtype='float64'), 
-                where=raw_values!=0
-            )
-            
-            pressure_changes = np.diff(raw_values, axis=0)
-            pressure_changes = np.vstack([pressure_changes, pressure_changes[-1]])
-            
-            pressure_center = np.average(raw_values, axis=1, weights=range(1, 7))
-            
-            stats_features = np.concatenate([
-                np.mean(raw_values, axis=0),
-                np.std(raw_values, axis=0),
-                np.percentile(raw_values, [25, 50, 75], axis=0).flatten()
-            ])
-            
-            features = np.concatenate([
-                raw_values,
-                noise_ratios,
-                pressure_changes,
-                pressure_center.reshape(-1, 1),
-                stats_features.reshape(1, -1).repeat(WINDOW_SIZE, axis=0)
-            ], axis=1)
-            
-            sequences.append(features)
+            sequences.append(raw_values)
             labels.append(window['OnBed_Status'].iloc[-1])
             
         except Exception as e:
