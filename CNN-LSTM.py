@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization
+from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization, Multiply, Bidirectional, Add, Concatenate
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping
 from tensorflow.keras.layers import Input
 from sklearn.model_selection import train_test_split
@@ -108,6 +108,17 @@ def create_sequences(df, cleaned_data_path):
     sequences = []
     labels = []
     
+    # 增強特徵工程
+    df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
+    df['pressure_std'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].std(axis=1)
+    df['pressure_change'] = df['pressure_sum'].diff()
+    df['pressure_rolling_mean'] = df['pressure_sum'].rolling(window=5).mean()  # 新增
+    df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()   # 新增
+    df['pressure_acceleration'] = df['pressure_change'].diff()                # 新增
+    
+    # 填充NaN值
+    df = df.fillna(method='ffill').fillna(method='bfill')
+    
     # 檢測事件
     events = detect_bed_events(df)
     # 創建標籤
@@ -124,22 +135,38 @@ def create_sequences(df, cleaned_data_path):
     # 存一份CSV
     df_features.to_csv(cleaned_data_path, index=False)
     
-    # 創建序列
+    # 分別收集正負樣本
+    positive_sequences = []
+    positive_labels = []
+    negative_sequences = []
+    negative_labels = []
+    
     for i in range(0, len(df) - WINDOW_SIZE + 1, STEP_SIZE):
         window = df_features.iloc[i:(i + WINDOW_SIZE)]
-        label = event_labels[i + WINDOW_SIZE - 1]  # 使用窗口最後一個時間點的標籤
+        label = event_labels[i + WINDOW_SIZE - 1]
         
-        try:
-            raw_values = window.values.astype('float64')
-            sequences.append(raw_values)
-            labels.append(label)
-            
-        except Exception as e:
-            print(f"處理窗口 {i} 時發生錯誤: {e}")
-            continue
+        if label == 1:
+            positive_sequences.append(window.values.astype('float64'))
+            positive_labels.append(label)
+        else:
+            negative_sequences.append(window.values.astype('float64'))
+            negative_labels.append(label)
     
-    sequences = np.array(sequences)
-    labels = np.array(labels)
+    # 對負樣本進行下採樣
+    neg_sample_size = len(positive_sequences) * 3  # 保持1:3的比例
+    if len(negative_sequences) > neg_sample_size:
+        indices = np.random.choice(len(negative_sequences), neg_sample_size, replace=False)
+        negative_sequences = [negative_sequences[i] for i in indices]
+        negative_labels = [negative_labels[i] for i in indices]
+    
+    # 合併正負樣本
+    sequences = positive_sequences + negative_sequences
+    labels = positive_labels + negative_labels
+    
+    # 打亂順序
+    combined = list(zip(sequences, labels))
+    np.random.shuffle(combined)
+    sequences, labels = zip(*combined)
     
     # 保存處理後的數據
     save_processed_sequences(sequences, labels, cleaned_data_path)
@@ -176,18 +203,7 @@ def load_and_process_data(raw_data_path):
         raise
 
 def evaluate_predictions(y_true, y_pred, timestamps, threshold=0.5):
-    """
-    評估預測結果
-    
-    參數:
-    - y_true: 真實標籤
-    - y_pred: 預測機率
-    - timestamps: 對應的時間戳
-    - threshold: 預測閾值
-    
-    返回:
-    - 評估指標字典
-    """
+    """提高預測閾值以減少誤報"""
     predictions = (y_pred >= threshold).astype(int)
     events_detected = []
     
@@ -277,10 +293,48 @@ def evaluate_predictions(y_true, y_pred, timestamps, threshold=0.5):
     
     return metrics
 
+def build_model(input_shape):
+    input_layer = Input(shape=input_shape)
+    
+    # 增加殘差連接
+    conv1 = Conv1D(128, kernel_size=5, padding='same', activation='relu')(input_layer)
+    conv1 = BatchNormalization()(conv1)
+    conv2 = Conv1D(128, kernel_size=3, padding='same', activation='relu')(conv1)
+    conv2 = BatchNormalization()(conv2)
+    # 添加殘差連接
+    conv2 = Add()([conv1, conv2])
+    
+    x = MaxPooling1D(pool_size=2)(conv2)
+    x = Dropout(0.3)(x)
+    
+    # 增強注意力機制
+    attention1 = Dense(128, activation='tanh')(x)
+    attention2 = Dense(128, activation='relu')(x)
+    attention = Concatenate()([attention1, attention2])
+    attention = Dense(1, activation='sigmoid')(attention)
+    x = Multiply()([x, attention])
+    
+    # 使用更大的LSTM單元
+    x = Bidirectional(LSTM(512, return_sequences=True))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    
+    x = Bidirectional(LSTM(256))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    
+    # 添加額外的密集層
+    x = Dense(128, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.3)(x)
+    
+    output_layer = Dense(1, activation='sigmoid')(x)
+    
+    return Model(inputs=input_layer, outputs=output_layer)
 
 # 修改原本的數據載入部分
 try:
-    X, y = load_and_process_data("./_data/SPS2021PA000015_20241227_04_20241228_04_data.csv")
+    X, y = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
@@ -301,38 +355,20 @@ final_model_path = os.path.join(log_dir, 'final_model.keras')
 training_history_path = os.path.join(log_dir, 'training_history.png')
 
 # 建立模型
-input_layer = Input(shape=(WINDOW_SIZE, X_train.shape[2]))
-x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(input_layer)
-x = BatchNormalization()(x)
-x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.2)(x)
-
-x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.3)(x)
-
-x = LSTM(units=256, return_sequences=True)(x)
-x = BatchNormalization()(x)
-x = Dropout(0.3)(x)
-x = LSTM(units=128)(x)
-x = BatchNormalization()(x)
-x = Dropout(0.3)(x)
-
-output_layer = Dense(1, activation='sigmoid')(x)
-
-model = Model(inputs=input_layer, outputs=output_layer)
+model = build_model((WINDOW_SIZE, X_train.shape[2]))
 
 # 編譯模型
 model.compile(
-    optimizer='adam',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
     loss='binary_crossentropy',
-    metrics=['accuracy']
+    metrics=['accuracy', 'recall', 'precision']
 )
+
+# 增加類別權重處理不平衡問題
+class_weights = {
+    0: 1.0,
+    1: 3.0  # 增加正樣本權重
+}
 
 # 生成完整的時間戳序列
 timestamps = np.arange(len(X))  # 使用完整數據集的長度
@@ -344,9 +380,10 @@ test_timestamps = timestamps[len(X_train):]
 # 設置回調
 callbacks = [
     EarlyStopping(
-        monitor='val_accuracy',
-        patience=15,
-        restore_best_weights=True
+        monitor='val_recall',
+        patience=20,
+        restore_best_weights=True,
+        mode='max'
     ),
     ModelCheckpoint(
         filepath=model_checkpoint_path,
@@ -364,16 +401,21 @@ callbacks = [
 # 訓練模型
 history = model.fit(
     X_train, y_train,
-    epochs=10,  # 增加訓練輪數
+    epochs=5,
     batch_size=32,
     validation_split=0.2,
+    class_weight=class_weights,
     callbacks=callbacks,
     verbose=1
 )
 
 # 評估模型
-test_loss, test_accuracy = model.evaluate(X_test, y_test)
-print(f"\nTest accuracy: {test_accuracy:.4f}")
+test_metrics = model.evaluate(X_test, y_test)
+print("\nTest Metrics:")
+print(f"Loss: {test_metrics[0]:.4f}")
+print(f"Accuracy: {test_metrics[1]:.4f}")
+print(f"Recall: {test_metrics[2]:.4f}")
+print(f"Precision: {test_metrics[3]:.4f}")
 
 # 在測試集上進行預測和評估
 y_pred = model.predict(X_test)
