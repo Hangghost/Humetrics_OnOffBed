@@ -37,14 +37,18 @@ class EventEvaluationCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         x_val, y_val = self.validation_data
         y_pred = self.model.predict(x_val)
-        metrics = evaluate_predictions(y_val, y_pred, self.timestamps)
+        metrics, threshold = evaluate_predictions(y_val, y_pred, self.timestamps)
         
-        print(f"\nEpoch {epoch + 1} - Evaluation Metrics:")
-        print(f"Early Detections: {metrics['early_detections']}")
-        print(f"Immediate Detections: {metrics['immediate_detections']}")
-        print(f"Critical Detections: {metrics['critical_detections']}")
-        print(f"Missed Events: {metrics['missed_events']}")
-        print(f"False Alarms: {metrics['false_alarms']}")
+        # 確保metrics不為None
+        if metrics is not None:
+            print(f"\nEpoch {epoch + 1} - Evaluation Metrics (threshold={threshold:.2f}):")
+            print(f"Early Detections: {metrics['early_detections']}")
+            print(f"Immediate Detections: {metrics['immediate_detections']}")
+            print(f"Critical Detections: {metrics['critical_detections']}")
+            print(f"Missed Events: {metrics['missed_events']}")
+            print(f"False Alarms: {metrics['false_alarms']}")
+        else:
+            print(f"\nEpoch {epoch + 1} - No valid metrics available")
 
 def get_cleaned_data_path(raw_data_path):
     """根據原始數據路徑生成清理後數據的路徑"""
@@ -202,96 +206,137 @@ def load_and_process_data(raw_data_path):
         print(f"數據處理錯誤: {e}")
         raise
 
-def evaluate_predictions(y_true, y_pred, timestamps, threshold=0.5):
-    """提高預測閾值以減少誤報"""
-    predictions = (y_pred >= threshold).astype(int)
-    events_detected = []
-    
-    # 找出所有預測事件
-    i = 0
-    while i < len(predictions):
-        if predictions[i] == 1:
-            # 找出連續預測的起始和結束
-            start_idx = i
-            while i < len(predictions) and predictions[i] == 1:
-                i += 1
-            end_idx = i - 1
-            
-            # 記錄預測事件
-            events_detected.append({
-                'start_time': timestamps[start_idx],
-                'end_time': timestamps[end_idx],
-                'prediction_time': timestamps[start_idx]  # 使用最早的預測時間
-            })
-        else:
-            i += 1
-    
-    # 找出實際事件
-    actual_events = []
-    i = 0
-    while i < len(y_true):
-        if y_true[i] == 1:
-            start_idx = i
-            while i < len(y_true) and y_true[i] == 1:
-                i += 1
-            end_idx = i - 1
-            
-            actual_events.append({
-                'start_time': timestamps[start_idx],
-                'end_time': timestamps[end_idx],
-                'event_time': timestamps[end_idx]  # 實際事件發生時間
-            })
-        else:
-            i += 1
-    
-    # 評估結果
-    metrics = {
-        'early_detections': 0,     # 提前15秒預測到
-        'immediate_detections': 0,  # 提前5秒預測到
-        'critical_detections': 0,   # 提前2秒預測到
-        'missed_events': 0,        # 漏報
-        'false_alarms': 0          # 誤報
-    }
-    
-    # 配對預測事件和實際事件
-    for actual_event in actual_events:
-        event_detected = False
-        best_prediction_time = None
+def evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=False):
+    """評估預測結果並尋找最佳閾值"""
+    def evaluate_with_threshold(threshold):
+        predictions = (y_pred >= threshold).astype(int)
+        events_detected = []
         
-        for pred_event in events_detected:
-            time_diff = actual_event['event_time'] - pred_event['prediction_time']
-            
-            # 只考慮提前預測的情況
-            if 0 < time_diff <= WARNING_TIMES['EARLY']:
-                event_detected = True
-                if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
-                    best_prediction_time = pred_event['prediction_time']
+        # 找出所有預測事件
+        i = 0
+        while i < len(predictions):
+            if predictions[i] == 1:
+                # 找出連續預測的起始和結束
+                start_idx = i
+                while i < len(predictions) and predictions[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                # 記錄預測事件
+                events_detected.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'prediction_time': timestamps[start_idx]  # 使用最早的預測時間
+                })
+            else:
+                i += 1
         
-        if event_detected and best_prediction_time is not None:
-            time_diff = actual_event['event_time'] - best_prediction_time
-            
-            # 根據預測提前時間分類
-            if time_diff >= WARNING_TIMES['EARLY']:
-                metrics['early_detections'] += 1
-            elif time_diff >= WARNING_TIMES['IMMEDIATE']:
-                metrics['immediate_detections'] += 1
-            elif time_diff >= WARNING_TIMES['CRITICAL']:
-                metrics['critical_detections'] += 1
-        else:
-            metrics['missed_events'] += 1
-    
-    # 計算誤報數（未匹配到實際事件的預測）
-    for pred_event in events_detected:
-        matched = False
+        # 找出實際事件
+        actual_events = []
+        i = 0
+        while i < len(y_true):
+            if y_true[i] == 1:
+                start_idx = i
+                while i < len(y_true) and y_true[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                actual_events.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'event_time': timestamps[end_idx]  # 實際事件發生時間
+                })
+            else:
+                i += 1
+        
+        # 評估結果
+        metrics = {
+            'early_detections': 0,     # 提前15秒預測到
+            'immediate_detections': 0,  # 提前5秒預測到
+            'critical_detections': 0,   # 提前2秒預測到
+            'missed_events': 0,        # 漏報
+            'false_alarms': 0          # 誤報
+        }
+        
+        # 配對預測事件和實際事件
         for actual_event in actual_events:
-            time_diff = actual_event['event_time'] - pred_event['prediction_time']
-            if 0 < time_diff <= WARNING_TIMES['EARLY']:
-                matched = True
-                break
-        if not matched:
-            metrics['false_alarms'] += 1
-    
-    return metrics
+            event_detected = False
+            best_prediction_time = None
+            
+            for pred_event in events_detected:
+                time_diff = actual_event['event_time'] - pred_event['prediction_time']
+                
+                # 只考慮提前預測的情況
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    event_detected = True
+                    if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
+                        best_prediction_time = pred_event['prediction_time']
+            
+            if event_detected and best_prediction_time is not None:
+                time_diff = actual_event['event_time'] - best_prediction_time
+                
+                # 根據預測提前時間分類
+                if time_diff >= WARNING_TIMES['EARLY']:
+                    metrics['early_detections'] += 1
+                elif time_diff >= WARNING_TIMES['IMMEDIATE']:
+                    metrics['immediate_detections'] += 1
+                elif time_diff >= WARNING_TIMES['CRITICAL']:
+                    metrics['critical_detections'] += 1
+            else:
+                metrics['missed_events'] += 1
+        
+        # 計算誤報數（未匹配到實際事件的預測）
+        for pred_event in events_detected:
+            matched = False
+            for actual_event in actual_events:
+                time_diff = actual_event['event_time'] - pred_event['prediction_time']
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    matched = True
+                    break
+            if not matched:
+                metrics['false_alarms'] += 1
+        
+        # 計算綜合指標
+        total_detections = metrics['early_detections'] + metrics['immediate_detections'] + metrics['critical_detections']
+        false_alarm_rate = metrics['false_alarms'] / (total_detections + 1e-6)  # 避免除以零
+        detection_rate = total_detections / (total_detections + metrics['missed_events'] + 1e-6)
+        
+        # 確保即使分數為0也返回有效的metrics
+        if total_detections == 0 and metrics['false_alarms'] == 0:
+            # 如果完全沒有檢測到任何事件，返回原始metrics和0分數
+            return metrics, 0.0
+        
+        # 計算F1-like分數
+        f1_score = 2 * (detection_rate * (1 - false_alarm_rate)) / (detection_rate + (1 - false_alarm_rate) + 1e-6)
+        return metrics, f1_score
+
+    if find_best_threshold:
+        # 測試不同的閾值
+        thresholds = np.arange(0.1, 0.9, 0.05)
+        best_threshold = 0.5
+        best_score = -1  # 改為-1作為初始值
+        best_metrics = None
+        
+        print("\n尋找最佳閾值...")
+        for threshold in thresholds:
+            metrics, score = evaluate_with_threshold(threshold)
+            print(f"閾值: {threshold:.2f}, 分數: {score:.4f}")
+            print(f"早期檢測: {metrics['early_detections']}, 誤報: {metrics['false_alarms']}")
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+                best_metrics = metrics
+        
+        # 確保即使所有分數都是0，也返回有效的metrics
+        if best_metrics is None:
+            best_metrics, _ = evaluate_with_threshold(0.5)  # 使用預設閾值
+        
+        print(f"\n最佳閾值: {best_threshold:.2f}, 最佳分數: {best_score:.4f}")
+        return best_metrics, best_threshold
+    else:
+        metrics, _ = evaluate_with_threshold(0.5)
+        return metrics, 0.5
 
 def build_model(input_shape):
     input_layer = Input(shape=input_shape)
@@ -334,7 +379,9 @@ def build_model(input_shape):
 
 # 修改原本的數據載入部分
 try:
-    X, y = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
+    sequences, labels = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
+    X = np.array(sequences)  # 將序列轉換為numpy數組
+    y = np.array(labels)     # 將標籤轉換為numpy數組
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
@@ -342,7 +389,7 @@ except Exception as e:
     raise
 
 # 分割訓練和測試集
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
 
 # 創建日誌目錄
 log_dir = '_logs/bed_monitor'
@@ -401,7 +448,7 @@ callbacks = [
 # 訓練模型
 history = model.fit(
     X_train, y_train,
-    epochs=5,
+    epochs=10,
     batch_size=32,
     validation_split=0.2,
     class_weight=class_weights,
@@ -419,9 +466,9 @@ print(f"Precision: {test_metrics[3]:.4f}")
 
 # 在測試集上進行預測和評估
 y_pred = model.predict(X_test)
-test_metrics = evaluate_predictions(y_test, y_pred, test_timestamps)  # 使用測試集的時間戳
+test_metrics, best_threshold = evaluate_predictions(y_test, y_pred, test_timestamps)
 
-print("\nFinal Test Metrics:")
+print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
 print(f"Early Detections (15s): {test_metrics['early_detections']}")
 print(f"Immediate Detections (5s): {test_metrics['immediate_detections']}")
 print(f"Critical Detections (2s): {test_metrics['critical_detections']}")
