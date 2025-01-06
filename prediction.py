@@ -14,6 +14,13 @@ WINDOW_SIZE = 15  # 15秒的窗口
 OVERLAP = 0.8    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
+# 添加新的常數定義在文件開頭
+WARNING_TIMES = {
+    'EARLY': 15,    # 15秒預警
+    'IMMEDIATE': 5, # 5秒預警
+    'CRITICAL': 2   # 2秒預警
+}
+
 def create_sequences_for_prediction(df):
     """為預測創建時間序列窗口"""
     sequences = []
@@ -135,39 +142,122 @@ def visualize_predictions(results):
 
 def save_prediction_metrics(data_file, metrics, predictions_log='_data/predictions/prediction_metrics_log.csv'):
     """保存預測指標到記錄檔"""
-    # 準備要記錄的數據
     file_name = os.path.basename(data_file)
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # 準備記錄的欄位
-    headers = ['Timestamp', 'File_Name', 'Accuracy', 'Precision', 'Recall', 'F1_Score']
+    headers = [
+        'Timestamp', 'File_Name', 
+        'Early_Detections', 'Immediate_Detections', 'Critical_Detections',
+        'Missed_Events', 'False_Alarms'
+    ]
+    
     row_data = [
         current_time,
         file_name,
-        metrics['準確率 (Accuracy)'],
-        metrics['精確率 (Precision)'],
-        metrics['召回率 (Recall)'],
-        metrics['F1分數']
+        metrics['early_detections'],
+        metrics['immediate_detections'],
+        metrics['critical_detections'],
+        metrics['missed_events'],
+        metrics['false_alarms']
     ]
     
-    # 檢查記錄檔是否存在
     file_exists = os.path.isfile(predictions_log)
-    
-    # 確保目錄存在
     os.makedirs(os.path.dirname(predictions_log), exist_ok=True)
     
-    # 寫入記錄
     with open(predictions_log, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        
-        # 如果檔案不存在，寫入標題列
         if not file_exists:
             writer.writerow(headers)
-        
-        # 寫入數據
         writer.writerow(row_data)
     
     print(f"\n預測指標已記錄到: {predictions_log}")
+
+def evaluate_prediction_results(y_true, y_pred, timestamps):
+    """評估預測結果"""
+    predictions = (y_pred >= 0.5).astype(int)
+    events_detected = []
+    
+    # 找出所有預測事件
+    i = 0
+    while i < len(predictions):
+        if predictions[i] == 1:
+            start_idx = i
+            while i < len(predictions) and predictions[i] == 1:
+                i += 1
+            end_idx = i - 1
+            
+            events_detected.append({
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx],
+                'prediction_time': timestamps[start_idx]
+            })
+        else:
+            i += 1
+    
+    # 找出實際事件
+    actual_events = []
+    i = 0
+    while i < len(y_true):
+        if y_true[i] == 1:
+            start_idx = i
+            while i < len(y_true) and y_true[i] == 1:
+                i += 1
+            end_idx = i - 1
+            
+            actual_events.append({
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx],
+                'event_time': timestamps[end_idx]
+            })
+        else:
+            i += 1
+    
+    # 評估結果
+    metrics = {
+        'early_detections': 0,     # 提前15秒預測到
+        'immediate_detections': 0,  # 提前5秒預測到
+        'critical_detections': 0,   # 提前2秒預測到
+        'missed_events': 0,        # 漏報
+        'false_alarms': 0          # 誤報
+    }
+    
+    # 評估每個實際事件
+    for actual_event in actual_events:
+        event_detected = False
+        best_prediction_time = None
+        
+        for pred_event in events_detected:
+            time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
+            
+            if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                event_detected = True
+                if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
+                    best_prediction_time = pred_event['prediction_time']
+        
+        if event_detected and best_prediction_time is not None:
+            time_diff = (actual_event['event_time'] - best_prediction_time).total_seconds()
+            
+            if time_diff >= WARNING_TIMES['EARLY']:
+                metrics['early_detections'] += 1
+            elif time_diff >= WARNING_TIMES['IMMEDIATE']:
+                metrics['immediate_detections'] += 1
+            elif time_diff >= WARNING_TIMES['CRITICAL']:
+                metrics['critical_detections'] += 1
+        else:
+            metrics['missed_events'] += 1
+    
+    # 計算誤報
+    for pred_event in events_detected:
+        matched = False
+        for actual_event in actual_events:
+            time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
+            if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                matched = True
+                break
+        if not matched:
+            metrics['false_alarms'] += 1
+    
+    return metrics
 
 def predict_bed_status(data_file):
     """預測床上狀態並評估準確度"""
@@ -202,11 +292,20 @@ def predict_bed_status(data_file):
         })
         results.set_index('Timestamp', inplace=True)
         
-        # 計算評估指標
-        metrics = calculate_metrics(
-            results['Actual_Status'], 
-            results['Predicted_Status']
+        # 修改評估部分
+        metrics = evaluate_prediction_results(
+            results['Actual_Status'].values, 
+            results['Predicted_Status'].values,
+            results.index
         )
+        
+        # 輸出新的評估結果
+        print(f"\n預測評估結果:")
+        print(f"提前15秒預測次數: {metrics['early_detections']}")
+        print(f"提前5秒預測次數: {metrics['immediate_detections']}")
+        print(f"提前2秒預測次數: {metrics['critical_detections']}")
+        print(f"漏報次數: {metrics['missed_events']}")
+        print(f"誤報次數: {metrics['false_alarms']}")
         
         # 保存預測結果
         predictions_dir = os.path.join(os.path.dirname(data_file), 'predictions')
