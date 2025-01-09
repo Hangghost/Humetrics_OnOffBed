@@ -8,10 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 from matplotlib.widgets import CheckButtons
 import csv
-<<<<<<< HEAD
-=======
 from sklearn.preprocessing import StandardScaler
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 
 # 設定參數
 WINDOW_SIZE = 15  # 15秒的窗口
@@ -73,13 +70,10 @@ def load_latest_model():
     model_path = os.path.join(log_dir, latest_model)
 
     print(f"模型路徑: {model_path}")
-<<<<<<< HEAD
-=======
     model = load_model(model_path)
     print(f"模型輸入形狀: {model.input_shape}")  # 添加形狀檢查
     print(f"模型輸出形狀: {model.output_shape}")  # 添加形狀檢查
     return model
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     print(f"正在載入模型: {latest_model}")
     return load_model(model_path)
 
@@ -146,40 +140,6 @@ def visualize_predictions(results):
     # 顯示圖表
     plt.show()
 
-<<<<<<< HEAD
-def save_prediction_metrics(data_file, metrics, predictions_log='_data/predictions/prediction_metrics_log.csv'):
-    """保存預測指標到記錄檔"""
-    # 準備要記錄的數據
-    file_name = os.path.basename(data_file)
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # 準備記錄的欄位
-    headers = ['Timestamp', 'File_Name', 'Accuracy', 'Precision', 'Recall', 'F1_Score']
-    row_data = [
-        current_time,
-        file_name,
-        metrics['準確率 (Accuracy)'],
-        metrics['精確率 (Precision)'],
-        metrics['召回率 (Recall)'],
-        metrics['F1分數']
-    ]
-    
-    # 檢查記錄檔是否存在
-    file_exists = os.path.isfile(predictions_log)
-    
-    # 確保目錄存在
-    os.makedirs(os.path.dirname(predictions_log), exist_ok=True)
-    
-    # 寫入記錄
-    with open(predictions_log, mode='a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        
-        # 如果檔案不存在，寫入標題列
-        if not file_exists:
-            writer.writerow(headers)
-        
-        # 寫入數據
-=======
 def save_prediction_metrics(data_file, metrics, threshold, predictions_log='_data/predictions/prediction_metrics_log.csv'):
     """保存預測指標到記錄檔"""
     file_name = os.path.basename(data_file)
@@ -209,13 +169,10 @@ def save_prediction_metrics(data_file, metrics, threshold, predictions_log='_dat
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(headers)
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         writer.writerow(row_data)
     
     print(f"\n預測指標已記錄到: {predictions_log}")
 
-<<<<<<< HEAD
-=======
 def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=False):
     """評估預測結果並尋找最佳閾值"""
     # 建議添加
@@ -346,7 +303,6 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         metrics, _ = evaluate_with_threshold(0.5)
         return metrics, 0.5
 
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 def predict_bed_status(data_file):
     """預測床上狀態並評估準確度"""
     try:
@@ -392,9 +348,6 @@ def predict_bed_status(data_file):
             results.index
         )
         
-<<<<<<< HEAD
-        # 保存預測結果
-=======
         # 使用最佳閾值更新預測結果
         results['Predicted_Status'] = (raw_predictions > best_threshold).astype(int).flatten()
         
@@ -407,30 +360,10 @@ def predict_bed_status(data_file):
         print(f"誤報次數: {metrics['false_alarms']}")
         
         # 保存預測結果時包含閾值信息
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         predictions_dir = os.path.join(os.path.dirname(data_file), 'predictions')
         os.makedirs(predictions_dir, exist_ok=True)
         output_file = os.path.join(
             predictions_dir,
-<<<<<<< HEAD
-            f"{os.path.splitext(os.path.basename(data_file))[0]}_predictions.csv"
-        )
-        results.to_csv(output_file)
-        
-        # 視覺化預測結果
-        visualize_predictions(results)
-        
-        # 保存預測指標到記錄檔
-        save_prediction_metrics(data_file, metrics)
-        
-        # 輸出評估結果
-        print(f"\n預測評估結果:")
-        for metric_name, score in metrics.items():
-            print(f"{metric_name}: {score:.4f}")
-        print(f"\n預測完成，結果已保存至: {output_file}")
-        
-        return results, metrics
-=======
             f"{os.path.splitext(os.path.basename(data_file))[0]}_predictions_threshold_{best_threshold:.2f}.csv"
         )
         results.to_csv(output_file)
@@ -458,7 +391,6 @@ def predict_bed_status(data_file):
         print(f"誤報次數: {metrics['false_alarms']}")
         
         return results, metrics, best_threshold
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         
     except Exception as e:
         print(f"預測過程中發生錯誤: {str(e)}")
@@ -466,10 +398,5 @@ def predict_bed_status(data_file):
 
 if __name__ == "__main__":
     # 示例使用
-<<<<<<< HEAD
-    data_file = "./_data/SPS2021PA000317_20241229_04_20241230_04_data.csv"
-    results, metrics = predict_bed_status(data_file)
-=======
     data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
     results, metrics, best_threshold = predict_bed_status(data_file)
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2

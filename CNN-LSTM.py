@@ -379,16 +379,9 @@ def build_model(input_shape):
 
 # 修改原本的數據載入部分
 try:
-<<<<<<< HEAD
-    dataset = pd.read_csv("./_data/SPS2021PA000015_20241227_04_20241228_04_data.csv")
-    print(f"數據集形狀: {dataset.shape}")
-    print(f"數據集列: {dataset.columns.tolist()}")
-    X, y = create_sequences(dataset)
-=======
     sequences, labels = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
     X = np.array(sequences)  # 將序列轉換為numpy數組
     y = np.array(labels)     # 將標籤轉換為numpy數組
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
@@ -409,35 +402,7 @@ final_model_path = os.path.join(log_dir, 'final_model.keras')
 training_history_path = os.path.join(log_dir, 'training_history.png')
 
 # 建立模型
-<<<<<<< HEAD
-input_layer = Input(shape=(WINDOW_SIZE, X_train.shape[2]))
-x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(input_layer)
-x = BatchNormalization()(x)
-x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.2)(x)
-
-x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = Conv1D(filters=128, kernel_size=3, padding='same', activation='relu')(x)
-x = BatchNormalization()(x)
-x = MaxPooling1D(pool_size=2)(x)
-x = Dropout(0.3)(x)
-
-x = LSTM(units=256, return_sequences=True)(x)
-x = BatchNormalization()(x)
-x = Dropout(0.3)(x)
-x = LSTM(units=128)(x)
-x = BatchNormalization()(x)
-x = Dropout(0.3)(x)
-
-output_layer = Dense(1, activation='sigmoid')(x)
-
-model = Model(inputs=input_layer, outputs=output_layer)
-=======
 model = build_model((WINDOW_SIZE, X_train.shape[2]))
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 
 # 編譯模型
 model.compile(
@@ -462,16 +427,10 @@ test_timestamps = timestamps[len(X_train):]
 # 設置回調
 callbacks = [
     EarlyStopping(
-<<<<<<< HEAD
-        monitor='val_accuracy',
-        patience=15,
-        restore_best_weights=True
-=======
         monitor='val_recall',
         patience=20,
         restore_best_weights=True,
         mode='max'
->>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     ),
     ModelCheckpoint(
         filepath=model_checkpoint_path,
