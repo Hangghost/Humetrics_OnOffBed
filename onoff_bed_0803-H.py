@@ -215,7 +215,19 @@ def MQTT_get_reg(mqtt_server, username, password, sn):
 
     client.username_pw_set(username, password)
     if radio_Normal.isChecked():
-        client.tls_set('/Users/chenhunglun/Documents/Procjects/Humetrics_raw/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
+        # 使用相對路徑獲取憑證檔案
+        cert_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),  # 獲取當前腳本所在目錄
+            'cert',  # 建議將憑證放在專案的 cert 資料夾下
+            'humetric_mqtt_certificate.pem'
+        )
+        try:
+            if not os.path.exists(cert_path):
+                raise FileNotFoundError(f"找不到憑證檔案：{cert_path}")
+            client.tls_set(cert_path, None, None, cert_reqs=ssl.CERT_NONE)
+        except Exception as e:
+            print(f"設定 TLS 時發生錯誤：{str(e)}")
+            return
         client.connect(mqtt_server, 8883, 60)
     else:
         client.connect(mqtt_server, 1883, 60)
