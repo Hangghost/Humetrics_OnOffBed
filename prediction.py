@@ -8,77 +8,54 @@ import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 from matplotlib.widgets import CheckButtons
 import csv
+<<<<<<< HEAD
+=======
+from sklearn.preprocessing import StandardScaler
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 
 # 設定參數
 WINDOW_SIZE = 15  # 15秒的窗口
 OVERLAP = 0.8    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
+# 添加新的常數定義在文件開頭
+WARNING_TIMES = {
+    'EARLY': 15,    # 15秒預警
+    'IMMEDIATE': 5, # 5秒預警
+    'CRITICAL': 2   # 2秒預警
+}
+
 def create_sequences_for_prediction(df):
     """為預測創建時間序列窗口"""
+    print(f"原始數據形狀: {df.shape}")
+    print(f"特徵列: {df.columns.tolist()}")
+    
     sequences = []
     timestamps = []
     
-    # 確保所有需要的列都存在
-    required_columns = (
-        [f'Channel_{i}_Raw' for i in range(1, 7)] +
-        [f'Channel_{i}_Noise' for i in range(1, 7)]
-    )
+    # 只使用原始通道數據（與訓練時一致）
+    raw_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
     
-    if not all(col in df.columns for col in required_columns):
-        raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
+    # 確保所有必要的列都存在
+    if not all(col in df.columns for col in raw_columns):
+        raise ValueError(f"缺少必要的列: {[col for col in raw_columns if col not in df.columns]}")
     
-    # 確保數據類型為 float64
-    for col in required_columns:
-        df[col] = df[col].astype('float64')
+    # 標準化原始通道數據
+    scaler = StandardScaler()
+    normalized_data = scaler.fit_transform(df[raw_columns])
+    df_normalized = pd.DataFrame(normalized_data, columns=raw_columns, index=df.index)
     
-    # 檢查數值是否有效
-    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    # 創建序列
+    for i in range(0, len(df_normalized) - WINDOW_SIZE + 1, STEP_SIZE):
+        window = df_normalized.iloc[i:(i + WINDOW_SIZE)]
+        timestamps.append(window.index[-1])
+        sequences.append(window.values.astype('float64'))
     
-    # 計算特徵
-    for i in range(0, len(df) - WINDOW_SIZE + 1, STEP_SIZE):
-        window = df.iloc[i:(i + WINDOW_SIZE)]
-        timestamps.append(window.index[-1])  # 保存每個窗口的最後一個時間戳
-        
-        try:
-            # 確保數據類型為 float64
-            raw_values = window[[f'Channel_{i}_Raw' for i in range(1, 7)]].values.astype('float64')
-            noise_values = window[[f'Channel_{i}_Noise' for i in range(1, 7)]].values.astype('float64')
-            
-            # 使用 np.divide 進行安全的除法運算
-            noise_ratios = np.divide(
-                noise_values, 
-                raw_values, 
-                out=np.zeros_like(noise_values, dtype='float64'), 
-                where=raw_values!=0
-            )
-            
-            pressure_changes = np.diff(raw_values, axis=0)
-            pressure_changes = np.vstack([pressure_changes, pressure_changes[-1]])
-            
-            pressure_center = np.average(raw_values, axis=1, weights=range(1, 7))
-            
-            stats_features = np.concatenate([
-                np.mean(raw_values, axis=0),
-                np.std(raw_values, axis=0),
-                np.percentile(raw_values, [25, 50, 75], axis=0).flatten()
-            ])
-            
-            features = np.concatenate([
-                raw_values,
-                noise_ratios,
-                pressure_changes,
-                pressure_center.reshape(-1, 1),
-                stats_features.reshape(1, -1).repeat(WINDOW_SIZE, axis=0)
-            ], axis=1)
-            
-            sequences.append(features)
-            
-        except Exception as e:
-            print(f"處理窗口 {i} 時發生錯誤: {e}")
-            continue
+    sequences = np.array(sequences)
+    print(f"生成序列形狀: {sequences.shape}")
+    print(f"時間戳數量: {len(timestamps)}")
     
-    return np.array(sequences), timestamps
+    return sequences, timestamps
 
 def load_latest_model():
     """載入最新的模型"""
@@ -96,6 +73,13 @@ def load_latest_model():
     model_path = os.path.join(log_dir, latest_model)
 
     print(f"模型路徑: {model_path}")
+<<<<<<< HEAD
+=======
+    model = load_model(model_path)
+    print(f"模型輸入形狀: {model.input_shape}")  # 添加形狀檢查
+    print(f"模型輸出形狀: {model.output_shape}")  # 添加形狀檢查
+    return model
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     print(f"正在載入模型: {latest_model}")
     return load_model(model_path)
 
@@ -162,6 +146,7 @@ def visualize_predictions(results):
     # 顯示圖表
     plt.show()
 
+<<<<<<< HEAD
 def save_prediction_metrics(data_file, metrics, predictions_log='_data/predictions/prediction_metrics_log.csv'):
     """保存預測指標到記錄檔"""
     # 準備要記錄的數據
@@ -194,10 +179,174 @@ def save_prediction_metrics(data_file, metrics, predictions_log='_data/predictio
             writer.writerow(headers)
         
         # 寫入數據
+=======
+def save_prediction_metrics(data_file, metrics, threshold, predictions_log='_data/predictions/prediction_metrics_log.csv'):
+    """保存預測指標到記錄檔"""
+    file_name = os.path.basename(data_file)
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    headers = [
+        'Timestamp', 'File_Name', 'Threshold',
+        'Early_Detections', 'Immediate_Detections', 'Critical_Detections',
+        'Missed_Events', 'False_Alarms'
+    ]
+    
+    row_data = [
+        current_time,
+        file_name,
+        f"{threshold:.2f}",
+        metrics['early_detections'],
+        metrics['immediate_detections'],
+        metrics['critical_detections'],
+        metrics['missed_events'],
+        metrics['false_alarms']
+    ]
+    
+    file_exists = os.path.isfile(predictions_log)
+    os.makedirs(os.path.dirname(predictions_log), exist_ok=True)
+    
+    with open(predictions_log, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(headers)
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         writer.writerow(row_data)
     
     print(f"\n預測指標已記錄到: {predictions_log}")
 
+<<<<<<< HEAD
+=======
+def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=False):
+    """評估預測結果並尋找最佳閾值"""
+    # 建議添加
+    print(f"評估數據形狀: y_true: {y_true.shape}, y_pred: {y_pred.shape}")
+    
+    def evaluate_with_threshold(threshold):
+        predictions = (y_pred >= threshold).astype(int)
+        events_detected = []
+        
+        # 找出所有預測事件
+        i = 0
+        while i < len(predictions):
+            if predictions[i] == 1:
+                start_idx = i
+                while i < len(predictions) and predictions[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                events_detected.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'prediction_time': timestamps[start_idx]
+                })
+            else:
+                i += 1
+        
+        # 找出實際事件
+        actual_events = []
+        i = 0
+        while i < len(y_true):
+            if y_true[i] == 1:
+                start_idx = i
+                while i < len(y_true) and y_true[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                actual_events.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'event_time': timestamps[end_idx]
+                })
+            else:
+                i += 1
+        
+        # 評估結果
+        metrics = {
+            'early_detections': 0,     # 提前15秒預測到
+            'immediate_detections': 0,  # 提前5秒預測到
+            'critical_detections': 0,   # 提前2秒預測到
+            'missed_events': 0,        # 漏報
+            'false_alarms': 0          # 誤報
+        }
+        
+        # 評估每個實際事件
+        for actual_event in actual_events:
+            event_detected = False
+            best_prediction_time = None
+            
+            for pred_event in events_detected:
+                time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
+                
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    event_detected = True
+                    if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
+                        best_prediction_time = pred_event['prediction_time']
+            
+            if event_detected and best_prediction_time is not None:
+                time_diff = (actual_event['event_time'] - best_prediction_time).total_seconds()
+                
+                if time_diff >= WARNING_TIMES['EARLY']:
+                    metrics['early_detections'] += 1
+                elif time_diff >= WARNING_TIMES['IMMEDIATE']:
+                    metrics['immediate_detections'] += 1
+                elif time_diff >= WARNING_TIMES['CRITICAL']:
+                    metrics['critical_detections'] += 1
+            else:
+                metrics['missed_events'] += 1
+        
+        # 計算誤報
+        for pred_event in events_detected:
+            matched = False
+            for actual_event in actual_events:
+                time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    matched = True
+                    break
+            if not matched:
+                metrics['false_alarms'] += 1
+        
+        # 計算綜合指標
+        total_detections = metrics['early_detections'] + metrics['immediate_detections'] + metrics['critical_detections']
+        false_alarm_rate = metrics['false_alarms'] / (total_detections + 1e-6)  # 避免除以零
+        detection_rate = total_detections / (total_detections + metrics['missed_events'] + 1e-6)
+        
+        # 確保即使分數為0也返回有效的metrics
+        if total_detections == 0 and metrics['false_alarms'] == 0:
+            return metrics, 0.0
+        
+        # 計算F1-like分數
+        f1_score = 2 * (detection_rate * (1 - false_alarm_rate)) / (detection_rate + (1 - false_alarm_rate) + 1e-6)
+        return metrics, f1_score
+
+    if find_best_threshold:
+        # 測試不同的閾值
+        thresholds = np.arange(0.1, 0.9, 0.05)
+        best_threshold = 0.5
+        best_score = -1
+        best_metrics = None
+        
+        print("\n尋找最佳閾值...")
+        for threshold in thresholds:
+            metrics, score = evaluate_with_threshold(threshold)
+            print(f"閾值: {threshold:.2f}, 分數: {score:.4f}")
+            print(f"早期檢測: {metrics['early_detections']}, 誤報: {metrics['false_alarms']}")
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+                best_metrics = metrics
+        
+        # 確保即使所有分數都是0，也返回有效的metrics
+        if best_metrics is None:
+            best_metrics, _ = evaluate_with_threshold(0.5)
+        
+        print(f"\n最佳閾值: {best_threshold:.2f}, 最佳分數: {best_score:.4f}")
+        return best_metrics, best_threshold
+    else:
+        metrics, _ = evaluate_with_threshold(0.5)
+        return metrics, 0.5
+
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 def predict_bed_status(data_file):
     """預測床上狀態並評估準確度"""
     try:
@@ -220,28 +369,50 @@ def predict_bed_status(data_file):
         
         # 載入模型並進行預測
         model = load_latest_model()
-        predictions = model.predict(sequences)
-        predictions = (predictions > 0.5).astype(int)
+        print(f"序列形狀: {sequences.shape}")  # 添加形狀檢查
+        raw_predictions = model.predict(sequences)
+        print(f"預測結果形狀: {raw_predictions.shape}")  # 添加形狀檢查
         
-        # 創建結果DataFrame
+        # 根據訓練結果調整預設閾值
+        DEFAULT_THRESHOLD = 0.5  # 因為訓練結果顯示 0.5 是較好的閾值
+        
+        # 使用預設閾值進行初始預測
+        initial_predictions = (raw_predictions > DEFAULT_THRESHOLD).astype(int)
         results = pd.DataFrame({
             'Timestamp': timestamps,
-            'Predicted_Status': predictions.flatten(),
+            'Predicted_Status': initial_predictions.flatten(),
             'Actual_Status': [original_status[timestamp] for timestamp in timestamps]
         })
         results.set_index('Timestamp', inplace=True)
         
-        # 計算評估指標
-        metrics = calculate_metrics(
-            results['Actual_Status'], 
-            results['Predicted_Status']
+        # 尋找最佳閾值
+        metrics, best_threshold = evaluate_prediction_results(
+            results['Actual_Status'].values, 
+            results['Predicted_Status'].values,
+            results.index
         )
         
+<<<<<<< HEAD
         # 保存預測結果
+=======
+        # 使用最佳閾值更新預測結果
+        results['Predicted_Status'] = (raw_predictions > best_threshold).astype(int).flatten()
+        
+        # 輸出新的評估結果
+        print(f"\n使用最佳閾值 {best_threshold:.2f} 的預測評估結果:")
+        print(f"提前15秒預測次數: {metrics['early_detections']}")
+        print(f"提前5秒預測次數: {metrics['immediate_detections']}")
+        print(f"提前2秒預測次數: {metrics['critical_detections']}")
+        print(f"漏報次數: {metrics['missed_events']}")
+        print(f"誤報次數: {metrics['false_alarms']}")
+        
+        # 保存預測結果時包含閾值信息
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         predictions_dir = os.path.join(os.path.dirname(data_file), 'predictions')
         os.makedirs(predictions_dir, exist_ok=True)
         output_file = os.path.join(
             predictions_dir,
+<<<<<<< HEAD
             f"{os.path.splitext(os.path.basename(data_file))[0]}_predictions.csv"
         )
         results.to_csv(output_file)
@@ -259,12 +430,46 @@ def predict_bed_status(data_file):
         print(f"\n預測完成，結果已保存至: {output_file}")
         
         return results, metrics
+=======
+            f"{os.path.splitext(os.path.basename(data_file))[0]}_predictions_threshold_{best_threshold:.2f}.csv"
+        )
+        results.to_csv(output_file)
+        
+        # 加回視覺化預測結果的函數調用
+        visualize_predictions(results)
+        
+        # 更新保存預測指標的函數調用
+        save_prediction_metrics(data_file, metrics, best_threshold)
+        
+        print(f"\n預測完成，結果已保存至: {output_file}")
+        
+        # 添加更多評估指標
+        print("\n詳細評估指標:")
+        print("基本指標:")
+        basic_metrics = calculate_metrics(results['Actual_Status'].values, results['Predicted_Status'].values)
+        for metric_name, value in basic_metrics.items():
+            print(f"{metric_name}: {value:.4f}")
+        
+        print("\n時間相關指標:")
+        print(f"提前15秒預測次數: {metrics['early_detections']}")
+        print(f"提前5秒預測次數: {metrics['immediate_detections']}")
+        print(f"提前2秒預測次數: {metrics['critical_detections']}")
+        print(f"漏報次數: {metrics['missed_events']}")
+        print(f"誤報次數: {metrics['false_alarms']}")
+        
+        return results, metrics, best_threshold
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
         
     except Exception as e:
         print(f"預測過程中發生錯誤: {str(e)}")
-        return None, None
+        return None, None, None
 
 if __name__ == "__main__":
     # 示例使用
+<<<<<<< HEAD
     data_file = "./_data/SPS2021PA000317_20241229_04_20241230_04_data.csv"
     results, metrics = predict_bed_status(data_file)
+=======
+    data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
+    results, metrics, best_threshold = predict_bed_status(data_file)
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2

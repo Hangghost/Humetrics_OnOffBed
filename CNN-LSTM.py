@@ -2,13 +2,14 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization
+from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization, Multiply, Bidirectional, Add, Concatenate
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping
 from tensorflow.keras.layers import Input
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import Normalizer
 import matplotlib.pyplot as plt
 import os
+import tensorflow as tf
 
 # 設定隨機種子
 np.random.seed(1337)
@@ -18,88 +19,376 @@ WINDOW_SIZE = 15  # 15秒的窗口
 OVERLAP = 0.8    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
-def create_sequences(df):
-    """創建時間序列窗口"""
+# 預警時間設定
+WARNING_TIMES = {
+    'EARLY': 15,    # 15秒預警
+    'IMMEDIATE': 5, # 5秒預警
+    'CRITICAL': 2   # 2秒預警
+}
+
+# 自定義的評估回調
+class EventEvaluationCallback(tf.keras.callbacks.Callback):
+    def __init__(self, validation_data, timestamps):
+        super().__init__()
+        self.validation_data = validation_data
+        self.timestamps = timestamps
+        self.best_metrics = None
+        
+    def on_epoch_end(self, epoch, logs=None):
+        x_val, y_val = self.validation_data
+        y_pred = self.model.predict(x_val)
+        metrics, threshold = evaluate_predictions(y_val, y_pred, self.timestamps)
+        
+        # 確保metrics不為None
+        if metrics is not None:
+            print(f"\nEpoch {epoch + 1} - Evaluation Metrics (threshold={threshold:.2f}):")
+            print(f"Early Detections: {metrics['early_detections']}")
+            print(f"Immediate Detections: {metrics['immediate_detections']}")
+            print(f"Critical Detections: {metrics['critical_detections']}")
+            print(f"Missed Events: {metrics['missed_events']}")
+            print(f"False Alarms: {metrics['false_alarms']}")
+        else:
+            print(f"\nEpoch {epoch + 1} - No valid metrics available")
+
+def get_cleaned_data_path(raw_data_path):
+    """根據原始數據路徑生成清理後數據的路徑"""
+    # 獲取原始檔案名（不含路徑）
+    raw_filename = os.path.basename(raw_data_path)
+    # 在檔名前加上 'cleaned_' 前綴
+    cleaned_filename = f"cleaned_{raw_filename}"
+    # 組合完整路徑
+    return os.path.join("./_data/training", cleaned_filename)
+
+def save_processed_sequences(sequences, labels, cleaned_data_path):
+    """保存處理後的序列資料"""
+    # # 先存一份CSV
+    # df = pd.DataFrame(sequences)
+    # df.to_csv(cleaned_data_path, index=False)
+
+    # 將 .csv 副檔名改為 .npz
+    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    np.savez(sequences_path, sequences=sequences, labels=labels)
+    print(f"序列資料已保存至: {sequences_path}")
+
+def detect_bed_events(df):
+    """檢測離床和上床事件"""
+    events = []
+    status_changes = df['OnBed_Status'].diff()
+    
+    # 找出所有狀態變化的時間點
+    for idx in range(1, len(df)):
+        if status_changes.iloc[idx] == -1:  # 1->0 離床
+            events.append({
+                'time': idx,
+                'type': 'leaving',
+                'original_status': 1
+            })
+        elif status_changes.iloc[idx] == 1:  # 0->1 上床
+            events.append({
+                'time': idx,
+                'type': 'entering',
+                'original_status': 0
+            })
+    
+    return events
+
+def create_event_labels(df, events):
+    """為每個時間點創建標籤"""
+    labels = np.zeros(len(df))
+    
+    for event in events:
+        event_time = event['time']
+        
+        # 為每個預警時間點設置標籤
+        for warning_time in WARNING_TIMES.values():
+            start_idx = max(0, event_time - warning_time)
+            end_idx = event_time
+            labels[start_idx:end_idx] = 1
+            
+    return labels
+
+def create_sequences(df, cleaned_data_path):
+    """修改後的序列創建函數"""
     sequences = []
     labels = []
     
-    # 先檢查數據
-    print(f"原始數據長度: {len(df)}")
+    # 增強特徵工程
+    df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
+    df['pressure_std'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].std(axis=1)
+    df['pressure_change'] = df['pressure_sum'].diff()
+    df['pressure_rolling_mean'] = df['pressure_sum'].rolling(window=5).mean()  # 新增
+    df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()   # 新增
+    df['pressure_acceleration'] = df['pressure_change'].diff()                # 新增
     
-    # 確保所有需要的列都存在
-    required_columns = (
-        [f'Channel_{i}_Raw' for i in range(1, 7)] +
-        [f'Channel_{i}_Noise' for i in range(1, 7)] +
-        ['OnBed_Status']
-    )
+    # 填充NaN值
+    df = df.fillna(method='ffill').fillna(method='bfill')
+    
+    # 檢測事件
+    events = detect_bed_events(df)
+    # 創建標籤
+    event_labels = create_event_labels(df, events)
+    
+    # 只保留需要的列
+    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
     
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
     
-    # 確保數據類型為 float64
-    for col in required_columns[:-1]:  # 除了 OnBed_Status
-        df[col] = df[col].astype('float64')
+    df_features = df[required_columns].copy()
     
-    # 檢查數值是否有效
-    df = df.replace([np.inf, -np.inf], np.nan).dropna()
-    print(f"清理後數據長度: {len(df)}")
+    # 存一份CSV
+    df_features.to_csv(cleaned_data_path, index=False)
     
-    # 計算特徵
+    # 分別收集正負樣本
+    positive_sequences = []
+    positive_labels = []
+    negative_sequences = []
+    negative_labels = []
+    
     for i in range(0, len(df) - WINDOW_SIZE + 1, STEP_SIZE):
-        window = df.iloc[i:(i + WINDOW_SIZE)]
+        window = df_features.iloc[i:(i + WINDOW_SIZE)]
+        label = event_labels[i + WINDOW_SIZE - 1]
         
-        try:
-            # 確保數據類型為 float64
-            raw_values = window[[f'Channel_{i}_Raw' for i in range(1, 7)]].values.astype('float64')
-            noise_values = window[[f'Channel_{i}_Noise' for i in range(1, 7)]].values.astype('float64')
-            
-            # 使用 np.divide 進行安全的除法運算
-            noise_ratios = np.divide(
-                noise_values, 
-                raw_values, 
-                out=np.zeros_like(noise_values, dtype='float64'), 
-                where=raw_values!=0
-            )
-            
-            pressure_changes = np.diff(raw_values, axis=0)
-            pressure_changes = np.vstack([pressure_changes, pressure_changes[-1]])
-            
-            pressure_center = np.average(raw_values, axis=1, weights=range(1, 7))
-            
-            stats_features = np.concatenate([
-                np.mean(raw_values, axis=0),
-                np.std(raw_values, axis=0),
-                np.percentile(raw_values, [25, 50, 75], axis=0).flatten()
-            ])
-            
-            features = np.concatenate([
-                raw_values,
-                noise_ratios,
-                pressure_changes,
-                pressure_center.reshape(-1, 1),
-                stats_features.reshape(1, -1).repeat(WINDOW_SIZE, axis=0)
-            ], axis=1)
-            
-            sequences.append(features)
-            labels.append(window['OnBed_Status'].iloc[-1])
-            
-        except Exception as e:
-            print(f"處理窗口 {i} 時發生錯誤: {e}")
-            continue
+        if label == 1:
+            positive_sequences.append(window.values.astype('float64'))
+            positive_labels.append(label)
+        else:
+            negative_sequences.append(window.values.astype('float64'))
+            negative_labels.append(label)
     
-    print(f"生成序列數量: {len(sequences)}")
+    # 對負樣本進行下採樣
+    neg_sample_size = len(positive_sequences) * 3  # 保持1:3的比例
+    if len(negative_sequences) > neg_sample_size:
+        indices = np.random.choice(len(negative_sequences), neg_sample_size, replace=False)
+        negative_sequences = [negative_sequences[i] for i in indices]
+        negative_labels = [negative_labels[i] for i in indices]
     
-    if len(sequences) == 0:
-        raise ValueError("沒有生成任何有效的序列")
+    # 合併正負樣本
+    sequences = positive_sequences + negative_sequences
+    labels = positive_labels + negative_labels
     
-    return np.array(sequences), np.array(labels)
+    # 打亂順序
+    combined = list(zip(sequences, labels))
+    np.random.shuffle(combined)
+    sequences, labels = zip(*combined)
+    
+    # 保存處理後的數據
+    save_processed_sequences(sequences, labels, cleaned_data_path)
+    
+    return sequences, labels
 
-# 載入數據
+def load_and_process_data(raw_data_path):
+    """載入並處理數據，如果有清理過的數據則直接讀取"""
+    # 獲取對應的清理後數據路徑
+    cleaned_data_path = get_cleaned_data_path(raw_data_path)
+    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    
+    # 檢查是否存在已處理的序列資料
+    if os.path.exists(sequences_path):
+        try:
+            # 直接載入處理好的序列資料
+            data = np.load(sequences_path)
+            sequences = data['sequences']
+            labels = data['labels']
+            print(f"發現已處理的序列資料，直接讀取: {sequences_path}")
+            return sequences, labels
+        except Exception as e:
+            print(f"讀取序列資料時發生錯誤: {e}")
+            print("將重新處理原始數據...")
+    
+    # 如果沒有處理好的序列資料，則從頭處理
+    try:
+        dataset = pd.read_csv(raw_data_path)
+        print(f"數據集形狀: {dataset.shape}")
+        print(f"數據集列: {dataset.columns.tolist()}")
+        return create_sequences(dataset, cleaned_data_path)
+    except Exception as e:
+        print(f"數據處理錯誤: {e}")
+        raise
+
+def evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=False):
+    """評估預測結果並尋找最佳閾值"""
+    def evaluate_with_threshold(threshold):
+        predictions = (y_pred >= threshold).astype(int)
+        events_detected = []
+        
+        # 找出所有預測事件
+        i = 0
+        while i < len(predictions):
+            if predictions[i] == 1:
+                # 找出連續預測的起始和結束
+                start_idx = i
+                while i < len(predictions) and predictions[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                # 記錄預測事件
+                events_detected.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'prediction_time': timestamps[start_idx]  # 使用最早的預測時間
+                })
+            else:
+                i += 1
+        
+        # 找出實際事件
+        actual_events = []
+        i = 0
+        while i < len(y_true):
+            if y_true[i] == 1:
+                start_idx = i
+                while i < len(y_true) and y_true[i] == 1:
+                    i += 1
+                end_idx = i - 1
+                
+                actual_events.append({
+                    'start_time': timestamps[start_idx],
+                    'end_time': timestamps[end_idx],
+                    'event_time': timestamps[end_idx]  # 實際事件發生時間
+                })
+            else:
+                i += 1
+        
+        # 評估結果
+        metrics = {
+            'early_detections': 0,     # 提前15秒預測到
+            'immediate_detections': 0,  # 提前5秒預測到
+            'critical_detections': 0,   # 提前2秒預測到
+            'missed_events': 0,        # 漏報
+            'false_alarms': 0          # 誤報
+        }
+        
+        # 配對預測事件和實際事件
+        for actual_event in actual_events:
+            event_detected = False
+            best_prediction_time = None
+            
+            for pred_event in events_detected:
+                time_diff = actual_event['event_time'] - pred_event['prediction_time']
+                
+                # 只考慮提前預測的情況
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    event_detected = True
+                    if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
+                        best_prediction_time = pred_event['prediction_time']
+            
+            if event_detected and best_prediction_time is not None:
+                time_diff = actual_event['event_time'] - best_prediction_time
+                
+                # 根據預測提前時間分類
+                if time_diff >= WARNING_TIMES['EARLY']:
+                    metrics['early_detections'] += 1
+                elif time_diff >= WARNING_TIMES['IMMEDIATE']:
+                    metrics['immediate_detections'] += 1
+                elif time_diff >= WARNING_TIMES['CRITICAL']:
+                    metrics['critical_detections'] += 1
+            else:
+                metrics['missed_events'] += 1
+        
+        # 計算誤報數（未匹配到實際事件的預測）
+        for pred_event in events_detected:
+            matched = False
+            for actual_event in actual_events:
+                time_diff = actual_event['event_time'] - pred_event['prediction_time']
+                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                    matched = True
+                    break
+            if not matched:
+                metrics['false_alarms'] += 1
+        
+        # 計算綜合指標
+        total_detections = metrics['early_detections'] + metrics['immediate_detections'] + metrics['critical_detections']
+        false_alarm_rate = metrics['false_alarms'] / (total_detections + 1e-6)  # 避免除以零
+        detection_rate = total_detections / (total_detections + metrics['missed_events'] + 1e-6)
+        
+        # 確保即使分數為0也返回有效的metrics
+        if total_detections == 0 and metrics['false_alarms'] == 0:
+            # 如果完全沒有檢測到任何事件，返回原始metrics和0分數
+            return metrics, 0.0
+        
+        # 計算F1-like分數
+        f1_score = 2 * (detection_rate * (1 - false_alarm_rate)) / (detection_rate + (1 - false_alarm_rate) + 1e-6)
+        return metrics, f1_score
+
+    if find_best_threshold:
+        # 測試不同的閾值
+        thresholds = np.arange(0.1, 0.9, 0.05)
+        best_threshold = 0.5
+        best_score = -1  # 改為-1作為初始值
+        best_metrics = None
+        
+        print("\n尋找最佳閾值...")
+        for threshold in thresholds:
+            metrics, score = evaluate_with_threshold(threshold)
+            print(f"閾值: {threshold:.2f}, 分數: {score:.4f}")
+            print(f"早期檢測: {metrics['early_detections']}, 誤報: {metrics['false_alarms']}")
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+                best_metrics = metrics
+        
+        # 確保即使所有分數都是0，也返回有效的metrics
+        if best_metrics is None:
+            best_metrics, _ = evaluate_with_threshold(0.5)  # 使用預設閾值
+        
+        print(f"\n最佳閾值: {best_threshold:.2f}, 最佳分數: {best_score:.4f}")
+        return best_metrics, best_threshold
+    else:
+        metrics, _ = evaluate_with_threshold(0.5)
+        return metrics, 0.5
+
+def build_model(input_shape):
+    input_layer = Input(shape=input_shape)
+    
+    # 增加殘差連接
+    conv1 = Conv1D(128, kernel_size=5, padding='same', activation='relu')(input_layer)
+    conv1 = BatchNormalization()(conv1)
+    conv2 = Conv1D(128, kernel_size=3, padding='same', activation='relu')(conv1)
+    conv2 = BatchNormalization()(conv2)
+    # 添加殘差連接
+    conv2 = Add()([conv1, conv2])
+    
+    x = MaxPooling1D(pool_size=2)(conv2)
+    x = Dropout(0.3)(x)
+    
+    # 增強注意力機制
+    attention1 = Dense(128, activation='tanh')(x)
+    attention2 = Dense(128, activation='relu')(x)
+    attention = Concatenate()([attention1, attention2])
+    attention = Dense(1, activation='sigmoid')(attention)
+    x = Multiply()([x, attention])
+    
+    # 使用更大的LSTM單元
+    x = Bidirectional(LSTM(512, return_sequences=True))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    
+    x = Bidirectional(LSTM(256))(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    
+    # 添加額外的密集層
+    x = Dense(128, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.3)(x)
+    
+    output_layer = Dense(1, activation='sigmoid')(x)
+    
+    return Model(inputs=input_layer, outputs=output_layer)
+
+# 修改原本的數據載入部分
 try:
+<<<<<<< HEAD
     dataset = pd.read_csv("./_data/SPS2021PA000015_20241227_04_20241228_04_data.csv")
     print(f"數據集形狀: {dataset.shape}")
     print(f"數據集列: {dataset.columns.tolist()}")
     X, y = create_sequences(dataset)
+=======
+    sequences, labels = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
+    X = np.array(sequences)  # 將序列轉換為numpy數組
+    y = np.array(labels)     # 將標籤轉換為numpy數組
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
@@ -107,7 +396,7 @@ except Exception as e:
     raise
 
 # 分割訓練和測試集
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
 
 # 創建日誌目錄
 log_dir = '_logs/bed_monitor'
@@ -120,6 +409,7 @@ final_model_path = os.path.join(log_dir, 'final_model.keras')
 training_history_path = os.path.join(log_dir, 'training_history.png')
 
 # 建立模型
+<<<<<<< HEAD
 input_layer = Input(shape=(WINDOW_SIZE, X_train.shape[2]))
 x = Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(input_layer)
 x = BatchNormalization()(x)
@@ -145,20 +435,43 @@ x = Dropout(0.3)(x)
 output_layer = Dense(1, activation='sigmoid')(x)
 
 model = Model(inputs=input_layer, outputs=output_layer)
+=======
+model = build_model((WINDOW_SIZE, X_train.shape[2]))
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
 
 # 編譯模型
 model.compile(
-    optimizer='adam',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
     loss='binary_crossentropy',
-    metrics=['accuracy']
+    metrics=['accuracy', 'recall', 'precision']
 )
+
+# 增加類別權重處理不平衡問題
+class_weights = {
+    0: 1.0,
+    1: 3.0  # 增加正樣本權重
+}
+
+# 生成完整的時間戳序列
+timestamps = np.arange(len(X))  # 使用完整數據集的長度
+
+# 分割訓練集和測試集的時間戳
+train_timestamps = timestamps[:len(X_train)]
+test_timestamps = timestamps[len(X_train):]
 
 # 設置回調
 callbacks = [
     EarlyStopping(
+<<<<<<< HEAD
         monitor='val_accuracy',
         patience=15,
         restore_best_weights=True
+=======
+        monitor='val_recall',
+        patience=20,
+        restore_best_weights=True,
+        mode='max'
+>>>>>>> f93ae05aee297d00757d273e257780a84c8375f2
     ),
     ModelCheckpoint(
         filepath=model_checkpoint_path,
@@ -166,7 +479,11 @@ callbacks = [
         save_best_only=True,
         mode='max'
     ),
-    CSVLogger(training_log_path)
+    CSVLogger(training_log_path),
+    EventEvaluationCallback(
+        validation_data=(X_test, y_test),
+        timestamps=test_timestamps  # 使用測試集的時間戳
+    )
 ]
 
 # 訓練模型
@@ -175,13 +492,29 @@ history = model.fit(
     epochs=10,
     batch_size=32,
     validation_split=0.2,
+    class_weight=class_weights,
     callbacks=callbacks,
     verbose=1
 )
 
 # 評估模型
-test_loss, test_accuracy = model.evaluate(X_test, y_test)
-print(f"\nTest accuracy: {test_accuracy:.4f}")
+test_metrics = model.evaluate(X_test, y_test)
+print("\nTest Metrics:")
+print(f"Loss: {test_metrics[0]:.4f}")
+print(f"Accuracy: {test_metrics[1]:.4f}")
+print(f"Recall: {test_metrics[2]:.4f}")
+print(f"Precision: {test_metrics[3]:.4f}")
+
+# 在測試集上進行預測和評估
+y_pred = model.predict(X_test)
+test_metrics, best_threshold = evaluate_predictions(y_test, y_pred, test_timestamps)
+
+print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
+print(f"Early Detections (15s): {test_metrics['early_detections']}")
+print(f"Immediate Detections (5s): {test_metrics['immediate_detections']}")
+print(f"Critical Detections (2s): {test_metrics['critical_detections']}")
+print(f"Missed Events: {test_metrics['missed_events']}")
+print(f"False Alarms: {test_metrics['false_alarms']}")
 
 # 保存最終模型
 model.save(final_model_path)
@@ -210,3 +543,6 @@ plt.legend()
 plt.tight_layout()
 plt.savefig(training_history_path)
 plt.close()
+
+
+
