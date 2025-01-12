@@ -969,6 +969,136 @@ def OpenCMBDialog():
     if cmb_name:
         OpenCmbFile()
 
+#----------------------------------------------------------------------- 
+def load_json_data(json_path):
+    """讀取 JSON 檔案並轉換成與 CSV 相同的格式"""
+    with open(json_path, 'r') as f:
+        json_content = json.load(f)
+    
+    # 取得資料陣列
+    data = json_content['data']
+    
+    # 初始化各通道的資料列表
+    channels_data = [[] for _ in range(6)]
+    timestamps = []
+    
+    # 轉換資料
+    for item in data:
+        # 轉換時間戳記
+        timestamp = datetime.strptime(item['created_at'], '%Y-%m-%d %H:%M:%S')
+        timestamps.append(timestamp)
+        
+        # 收集各通道資料
+        channels_data[0].append(item['ch0'])  # Channel 1
+        channels_data[1].append(item['ch1'])  # Channel 2
+        channels_data[2].append(item['ch2'])  # Channel 3
+        channels_data[3].append(item['ch3'])  # Channel 4
+        channels_data[4].append(item['ch4'])  # Channel 5
+        channels_data[5].append(item['ch5'])  # Channel 6
+    
+    return timestamps, channels_data
+
+def OpenJsonFile():
+    global d10, n10, x10, t1sec, startday, idx1sec, dist, dist_air, rising_dist, rising_dist_air, onbed
+    
+    json_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        None, 
+        "選擇 JSON 檔案", 
+        DATA_DIR,
+        "JSON files (*.json)"
+    )
+    
+    if not json_path:
+        return
+    
+    try:
+        # 讀取 JSON 資料
+        timestamps, channels_data = load_json_data(json_path)
+        
+        # 初始化資料陣列
+        d10 = []  # 中值
+        n10 = []  # 雜訊
+        x10 = []  # 最大值
+        
+        # 初始化位移計算相關變數
+        dist = np.zeros(len(timestamps))
+        dist_air = np.zeros(len(timestamps))
+        
+        # 處理每個通道的資料
+        for ch, ch_data in enumerate(channels_data):
+            ch_data = np.array(ch_data)
+            med10 = ch_data  # 原始值作為中值
+            
+            # 計算雜訊值（可以根據需求調整計算方法）
+            noise = np.abs(np.diff(med10, prepend=med10[0])) 
+            noise = np.maximum.accumulate(noise)
+            
+            d10.append(med10)
+            n10.append(noise)
+            x10.append(med10)  # 最大值暫時使用原始值
+            
+            # 計算位移值（與原始程式相同的計算邏輯）
+            a = [1, -1023/1024]
+            b = [1/1024, 0]
+            pos_iirmean = lfilter(b, a, med10)
+            med10_pd = pd.Series(med10)
+            mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
+            mean_30sec = np.int32(mean_30sec)
+            
+            diff = (mean_30sec - pos_iirmean) / 256
+            if ch == 1:  # 現在 ch 已經定義了
+                diff = diff / 3
+            dist = dist + np.square(diff)
+            dist[dist > 8000000] = 8000000
+            
+            # 計算空氣床墊的位移值
+            mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
+            mean_60sec = np.int32(mean_60sec)
+            
+            a = np.zeros([780,])
+            a[0] = 1
+            b = np.zeros([780,])
+            for s in range(10):
+                b[s*60 + 180] = -0.1
+            b[60] = 1
+            diff = lfilter(b, a, mean_60sec)
+            if ch == 1:
+                diff = diff / 3
+            dist_air = dist_air + np.square(diff / 256)
+        
+        # 計算翻身指標
+        rising_dist = calculate_rising_dist(dist)
+        rising_dist_air = calculate_rising_dist(dist_air)
+        
+        # 設定時間相關變數
+        startday = timestamps[0].replace(hour=0, minute=0, second=0, microsecond=0)
+        t1sec = np.array([(t - startday).total_seconds() for t in timestamps])
+        idx1sec = np.arange(len(t1sec))
+        
+        # 計算在床狀態
+        EvalParameters()
+        
+        # 更新圖表
+        update_raw_plot()
+        update_bit_plot()
+        
+        status_bar.showMessage(f"已載入 JSON 檔案: {os.path.basename(json_path)}")
+        
+    except Exception as e:
+        status_bar.showMessage(f"載入 JSON 檔案時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+
+def calculate_rising_dist(dist):
+    """計算翻身指標的輔助函數"""
+    dist_series = pd.Series(dist)
+    shift = 60
+    rising_dist = dist_series.shift(-shift) - dist_series
+    rising_dist = np.int32(rising_dist.fillna(0))
+    rising_dist[rising_dist < 0] = 0
+    rising_dist = rising_dist // 127
+    rising_dist[rising_dist > 1000] = 1000
+    return rising_dist
+
 #-----------------------------------------------------------------------   
 class CalendarDialog(QDialog):
     def __init__(self, parent=None):
@@ -1548,6 +1678,11 @@ check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
 
 # 在 row_layout 中加入這個新的 checkbox
 row_layout.addWidget(check_get_para)
+
+# 在主視窗的初始化程式碼中新增：
+json_button = QtWidgets.QPushButton("開啟 JSON")
+json_button.clicked.connect(OpenJsonFile)
+row_layout.addWidget(json_button)  # 使用已存在的 row_layout 而不是 toolbar
 
 mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
