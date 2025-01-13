@@ -370,11 +370,63 @@ def plot_combined_data(sensor_data):
             # 取每10個點的時間
             timestamps = timestamps[::10]
             
-            # 檢測事件
-            events = detect_bed_events(processed_data, params)
-            if events is None:
+            # 第一次偵測可以儲存為全局變數
+            initial_events = detect_bed_events(processed_data, params)
+            if initial_events is None:
                 messagebox.showerror("Error", "事件檢測失敗")
                 return
+            
+            def update_plot():
+                try:
+                    new_params = get_parameters_from_table(parameter_table)
+                    if new_params:
+                        # 只有當參數改變時才重新偵測
+                        if params != new_params:
+                            new_events = detect_bed_events(processed_data, new_params)
+                        else:
+                            new_events = initial_events
+                            
+                        if new_events:
+                            # 清除現有圖表
+                            ax2.clear()
+                            
+                            # 獲取移動指標數據
+                            movement_data = calculate_movement_indicators(processed_data, new_params)
+                            if not movement_data:
+                                return
+                            
+                            # 繪製各通道在床狀態
+                            for ch in range(6):
+                                if show_vars['channels'][ch].get():  # 使用 show_vars 中的通道變數
+                                    ax2.plot(timestamps, 
+                                            movement_data['onload'][ch],
+                                            label=f'Ch{ch+1}',
+                                            alpha=0.5)
+                            
+                            # 繪製整體在床狀態
+                            if show_vars['bed_status'].get():
+                                ax2.plot(timestamps, new_events['bed_status'], 
+                                        label='Bed Status', color='blue', linewidth=2)
+                            
+                            # 繪製翻身標記
+                            if show_vars['flip'].get() and 'flip_points' in new_events:
+                                flip_times = [timestamps[idx] for idx in new_events['flip_points']]
+                                ax2.plot(flip_times, [-0.1] * len(flip_times), 'v',
+                                        label='Flip', color='red', markersize=10)
+                            
+                            # 設置圖表格式
+                            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
+                            ax2.set_ylabel('Events')
+                            ax2.set_ylim(-0.2, 1.2)
+                            ax2.legend()
+                            ax2.grid(True)
+                            fig.autofmt_xdate()
+                            canvas.draw()
+                            
+                except Exception as e:
+                    print(f"更新圖表時發生錯誤: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
             
             # 創建新視窗來顯示圖表
             plot_window = tk.Toplevel(root)
@@ -496,87 +548,48 @@ def plot_combined_data(sensor_data):
             toolbar = NavigationToolbar2Tk(canvas, plot_window)
             toolbar.update()
             
-            # 打包畫布
+            # 創建一個框架來容納控制元件
+            control_frame = ttk.Frame(plot_window)
+            control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+            # 在控制框架中放置更新按鈕
+            update_button = ttk.Button(control_frame, text="更新參數", command=update_plot)
+            update_button.pack(side=tk.RIGHT, padx=5)  # 改為靠右對齊
+
+            # 確保控制框架在圖表下方
             canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-            
-            def update_plot():
-                """更新圖表顯示"""
-                try:
-                    # 重新獲取參數並更新圖表
-                    new_params = get_parameters_from_table(parameter_table)
-                    if new_params:
-                        new_events = detect_bed_events(processed_data, new_params)
-                        if new_events:
-                            # 清除現有圖表
-                            ax2.clear()
-                            
-                            # 獲取移動指標數據
-                            movement_data = calculate_movement_indicators(processed_data, new_params)
-                            if not movement_data:
-                                return
-                            
-                            # 繪製各通道在床狀態
-                            for ch in range(6):
-                                if show_vars['channels'][ch].get():  # 使用 show_vars 中的通道變數
-                                    ax2.plot(timestamps, 
-                                            movement_data['onload'][ch],
-                                            label=f'Ch{ch+1}',
-                                            alpha=0.5)
-                            
-                            # 繪製整體在床狀態
-                            if show_vars['bed_status'].get():
-                                ax2.plot(timestamps, new_events['bed_status'], 
-                                        label='Bed Status', color='blue', linewidth=2)
-                            
-                            # 繪製翻身標記
-                            if show_vars['flip'].get() and 'flip_points' in new_events:
-                                flip_times = [timestamps[idx] for idx in new_events['flip_points']]
-                                ax2.plot(flip_times, [-0.1] * len(flip_times), 'v',
-                                        label='Flip', color='red', markersize=10)
-                            
-                            # 設置圖表格式
-                            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
-                            ax2.set_ylabel('Events')
-                            ax2.set_ylim(-0.2, 1.2)
-                            ax2.legend()
-                            ax2.grid(True)
-                            fig.autofmt_xdate()
-                            canvas.draw()
-                            
-                except Exception as e:
-                    print(f"更新圖表時發生錯誤: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
+            toolbar.pack(side=tk.TOP, fill=tk.X)
+            control_frame.pack(side=tk.TOP, fill=tk.X)
             
             # 初始繪製事件
             update_plot()
             
-            # 修改點擊事件處理
-            def on_click(event):
-                if event.inaxes:
-                    # 獲取點擊位置的時間
-                    clicked_time = mdates.num2date(event.xdata)
-                    # 找到最接近的時間點索引
-                    time_diffs = [abs((t - clicked_time).total_seconds()) for t in timestamps]
-                    index = time_diffs.index(min(time_diffs))
+            # # 修改點擊事件處理
+            # def on_click(event):
+            #     if event.inaxes:
+            #         # 獲取點擊位置的時間
+            #         clicked_time = mdates.num2date(event.xdata)
+            #         # 找到最接近的時間點索引
+            #         time_diffs = [abs((t - clicked_time).total_seconds()) for t in timestamps]
+            #         index = time_diffs.index(min(time_diffs))
                     
-                    if 0 <= index < len(processed_data['d10'][0]):
-                        values = [processed_data['d10'][ch][index] for ch in range(6)]
-                        status = "在床" if events['bed_status'][index] else "離床"
-                        movement = "有移動" if events['movement'][index] else "無移動"
-                        flip = "翻身" if events['flip'][index] else "無翻身"
+            #         if 0 <= index < len(processed_data['d10'][0]):
+            #             values = [processed_data['d10'][ch][index] for ch in range(6)]
+            #             status = "在床" if initial_events['bed_status'][index] else "離床"
+            #             movement = "有移動" if initial_events['movement'][index] else "無移動"
+            #             flip = "翻身" if initial_events['flip'][index] else "無翻身"
                         
-                        info = f"時間: {timestamps[index].strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        for ch, val in enumerate(values):
-                            info += f"CH{ch}: {val}\n"
-                        info += f"狀態: {status}\n"
-                        info += f"移動: {movement}\n"
-                        info += f"翻身: {flip}"
+            #             info = f"時間: {timestamps[index].strftime('%Y-%m-%d %H:%M:%S')}\n"
+            #             for ch, val in enumerate(values):
+            #                 info += f"CH{ch}: {val}\n"
+            #             info += f"狀態: {status}\n"
+            #             info += f"移動: {movement}\n"
+            #             info += f"翻身: {flip}"
                         
-                        messagebox.showinfo("數據點資訊", info)
+            #             messagebox.showinfo("數據點資訊", info)
             
-            # 綁定點擊事件
-            canvas.mpl_connect('button_press_event', on_click)
+            # # 綁定點擊事件
+            # canvas.mpl_connect('button_press_event', on_click)
             
             # 添加更新按鈕
             update_button = ttk.Button(plot_window, text="更新參數", command=update_plot)
@@ -949,19 +962,19 @@ if __name__ == "__main__":
     # 输入框和标签
     ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456
     serial_id_entry = ttk.Entry(root)
-    serial_id_entry.insert(0, 'SPS2021PA000456')
+    serial_id_entry.insert(0, 'SPS2021PA000454')
     serial_id_entry.grid(row=0, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
-    start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    # start_time_entry.insert(0, '2025-01-08 00:00:00')
+    # start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
+    start_time_entry.insert(0, '2025-01-08 12:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
-    end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    # end_time_entry.insert(0, '2025-01-09 00:00:00')
+    # end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
+    end_time_entry.insert(0, '2025-01-09 12:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环
