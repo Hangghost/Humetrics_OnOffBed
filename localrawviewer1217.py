@@ -955,11 +955,13 @@ if __name__ == "__main__":
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
     start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
+    # start_time_entry.insert(0, '2025-01-08 00:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
     end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
+    # end_time_entry.insert(0, '2025-01-09 00:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环
