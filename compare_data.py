@@ -44,6 +44,9 @@ def compare_data(csv_path, json_path):
     # 載入兩個資料來源
     csv_df = load_csv_data(csv_path)
     json_df = load_json_data(json_path)
+
+    print(f"CSV 長度: {len(csv_df)}")
+    print(f"JSON 長度: {len(json_df)}")
     
     # 只比較 Raw 數值
     raw_columns = [col for col in csv_df.columns if 'Raw' in col]

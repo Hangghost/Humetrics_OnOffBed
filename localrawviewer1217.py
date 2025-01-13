@@ -358,6 +358,10 @@ def plot_combined_data(sensor_data):
             if processed_data is None:
                 messagebox.showerror("Error", "數據處理失敗")
                 return
+
+            # # 將數據存成dataframe後CSV
+            # processed_df = pd.DataFrame(processed_data)
+            # processed_df.to_csv('processed_data.csv', index=False)
             
             # 生成時間軸
             timestamps = []
@@ -842,6 +846,7 @@ def detect_bed_events(processed_data, params):
         dist_air = 0   # 氣墊床
         
         for ch in range(6):
+            # refer to onoff_bed_0803-H.py line 498
             med10 = processed_data['d10'][ch]
             med10_pd = pd.Series(med10)
             
