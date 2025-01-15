@@ -371,9 +371,6 @@ def plot_combined_data(sensor_data):
                 time_at = timestamp_dt + timedelta(hours=8)
                 timestamps.append(time_at)
             
-            # 取每10個點的時間
-            timestamps = timestamps[::10]
-            
             # 第一次偵測可以儲存為全局變數
             initial_events = detect_bed_events(processed_data, params)
             if initial_events is None:
@@ -653,10 +650,8 @@ def process_sensor_data(sensor_data, params):
         # 初始化結果字典
         results = {
             'n10': [],  # 高通濾波後的噪聲值
-            'd10': [],  # 10點移動平均
-            'x10': [],  # 10點最大值
-            'base_final': [], # 基準值
-            'zdata_final': [] # 零點校正後數據
+            'd10': [],  # 移動平均
+            'x10': [],  # 最大值
         }
 
         # 處理每個通道
@@ -674,20 +669,15 @@ def process_sensor_data(sensor_data, params):
                   74, 60, 48, 39, 32, 28, 26]
             n = np.convolve(np.abs(hp / 16), lpf, mode='full')
             n = n[10:-37] / 4096
-            n = n[::10]
             results['n10'].append(np.int32(n))
 
             # 計算移動平均
             data_pd = pd.Series(data)
             med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean()
-            med10 = np.array(med10)
-            med10 = med10[::10]
             results['d10'].append(np.int32(med10))
 
             # 計算移動最大值
             max10 = data_pd.rolling(window=10, min_periods=1, center=True).max()
-            max10 = np.array(max10)
-            max10 = max10[::10]
             results['x10'].append(np.int32(max10))
 
         return results
