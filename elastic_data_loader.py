@@ -5,39 +5,38 @@ import pytz
 import logging
 
 class ElasticDataLoader:
-    def __init__(self, hosts, username, password, verify_certs=False):
+    def __init__(self, hosts, api_key=None, verify_certs=False):
         """
         初始化 Elasticsearch 連線
         """
-        # 建立 Elasticsearch 客戶端，移除 SSL 相關設定
-        self.es = Elasticsearch(
-            hosts=hosts,
-            basic_auth=(username, password)
-        )
+        # 基本連線配置
+        es_config = {
+            "hosts": hosts,
+            "request_timeout": 30,  # 使用 request_timeout 替代 timeout
+            "retry_on_timeout": True,
+            "max_retries": 3,
+            "ssl_show_warn": False  # 關閉 SSL 警告
+        }
+        
+        # 如果提供了 API key，使用 API key 認證
+        if api_key:
+            es_config["api_key"] = api_key
+        
+        # 如果使用 HTTPS
+        if hosts.startswith("https"):
+            es_config["verify_certs"] = verify_certs
+            if verify_certs:
+                es_config["ca_certs"] = "/path/to/ca.crt"  # 請確保路徑正確
+        
+        self.es = Elasticsearch(**es_config)
         
         # 設定日誌
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    def fetch_data(self, index_name, start_time, end_time, device_id=None):
+    def fetch_data(self, start_time, end_time, device_id=None):
         """
         從 Elasticsearch 讀取指定時間範圍的資料
-        
-        Parameters:
-        -----------
-        index_name : str
-            索引名稱
-        start_time : str or datetime
-            開始時間 (格式: "YYYY-MM-DD HH:MM:SS")
-        end_time : str or datetime
-            結束時間 (格式: "YYYY-MM-DD HH:MM:SS")
-        device_id : str, optional
-            設備 ID
-            
-        Returns:
-        --------
-        pd.DataFrame
-            包含所有通道原始數據的 DataFrame
         """
         try:
             # 確保時間格式正確
@@ -72,9 +71,9 @@ class ElasticDataLoader:
             
             # 執行查詢
             response = self.es.search(
-                index=index_name,
+                index="sensor_data",
                 query=query,
-                size=10000,  # 可以根據需求調整
+                size=10000,
                 sort=[{"created_at": "asc"}]
             )
             
@@ -112,35 +111,49 @@ class ElasticDataLoader:
             self.logger.error(f"讀取資料時發生錯誤: {str(e)}")
             raise
 
+    def get_all_test_data(self):
+        """
+        測試 Elasticsearch 連線狀態
+        """
+        try:
+            # 測試連線是否成功
+            if self.es.ping():
+                self.logger.info("成功連線到 Elasticsearch！")
+                
+                # 獲取叢集資訊
+                cluster_info = self.es.info()
+                self.logger.info(f"叢集名稱: {cluster_info['cluster_name']}")
+                self.logger.info(f"叢集版本: {cluster_info['version']['number']}")
+                
+                # 獲取索引資訊
+                indices = self.es.indices.get(index="sensor_data")
+                self.logger.info(f"sensor_data 索引存在: {bool(indices)}")
+                
+                return True
+            else:
+                self.logger.error("無法連線到 Elasticsearch")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"連線測試時發生錯誤: {str(e)}")
+            return False
+
 def main():
     # Elasticsearch 連線設定
     es_config = {
-        'hosts': 'http://192.168.1.68:5601',  # 使用 http 協議
-        'username': 'humetrics',
-        'password': 'HM66050660'
+        'hosts': 'https://192.168.1.68:9200',  # 使用 HTTPS
+        'api_key': 'cTItWGFKUUI2MWZPZUVTcFdWOUw6dkg5Nm80WDRTWHFjeWREWTJQLXpZQQ==',
+        'verify_certs': False,  # 因為使用 -k 參數，所以這裡設為 False
     }
     
     # 建立 loader
     loader = ElasticDataLoader(**es_config)
-    
+
     try:
-        # 先列出所有可用的索引
-        indices = loader.es.indices.get_alias().keys()
-        print(f"可用的索引列表：{list(indices)}")
-        
-        # 再讀取資料
-        df = loader.fetch_data(
-            index_name='sensor_data-000001',
-            start_time='2025-01-01T00:00:00+08:00',
-            end_time='2025-01-01T23:59:59+08:00',
-            device_id='SPS2021PA000345'
-        )
-        
-        # 將資料存成 JSON 檔案
-        output_file = '_data/elastic_data.json'
-        df.reset_index().to_json(output_file, orient='records', date_format='iso')
-        print(f"資料已儲存至 {output_file}")
-        
+        # 測試連線
+        connection_success = loader.get_all_test_data()
+        if not connection_success:
+            print("連線測試失敗")
     except Exception as e:
         print(f"執行時發生錯誤: {str(e)}")
 
