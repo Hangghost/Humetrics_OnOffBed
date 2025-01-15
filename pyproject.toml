@@ -20,6 +20,8 @@ h5py = "^3.12.1"
 matplotlib = "^3.10.0"
 seaborn = "^0.13.2"
 pymysql = "^1.1.1"
+elasticsearch = "^8.17.0"
+urllib3 = "^2.3.0"
 
 
 [build-system]
