@@ -652,6 +652,8 @@ def process_sensor_data(sensor_data, params):
             'n10': [],  # 高通濾波後的噪聲值
             'd10': [],  # 移動平均
             'x10': [],  # 最大值
+            'base_final': [], 
+            'zdata_final': [] 
         }
 
         # 處理每個通道

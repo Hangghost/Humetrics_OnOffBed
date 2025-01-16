@@ -3,6 +3,8 @@ from datetime import datetime
 import pandas as pd
 import pytz
 import logging
+import os
+from dotenv import load_dotenv
 
 class ElasticDataLoader:
     def __init__(self, hosts, api_key=None, verify_certs=False):
@@ -34,75 +36,66 @@ class ElasticDataLoader:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    def fetch_data(self, start_time, end_time, device_id=None):
+    def fetch_data(self, device_id):
         """
-        從 Elasticsearch 讀取指定時間範圍的資料
+        從 Elasticsearch 讀取指定設備的所有資料
         """
         try:
-            # 確保時間格式正確
-            if isinstance(start_time, str):
-                start_time = datetime.fromisoformat(start_time).strftime('%Y-%m-%dT%H:%M:%S+08:00')
-            if isinstance(end_time, str):
-                end_time = datetime.fromisoformat(end_time).strftime('%Y-%m-%dT%H:%M:%S+08:00')
-
-            # 建立查詢條件
+            # 建立查詢條件，只根據 device_id 查詢
             query = {
                 "bool": {
                     "must": [
                         {
-                            "range": {
-                                "created_at": {
-                                    "gte": start_time,
-                                    "lte": end_time
-                                }
+                            "term": {
+                                "serial_id": device_id
                             }
                         }
                     ]
                 }
             }
             
-            # 如果有指定設備 ID，加入查詢條件
-            if device_id:
-                query["bool"]["must"].append({
-                    "term": {
-                        "serial_id": device_id
-                    }
-                })
-            
             # 執行查詢
             response = self.es.search(
                 index="sensor_data",
                 query=query,
-                size=10000,
-                sort=[{"created_at": "asc"}]
+                size=10000,  # 設定較大的數量
+                sort=[{"created_at": "asc"}]  # 按時間排序
             )
             
-            # 解析查詢結果
+            # 除錯：印出查詢到的資料數量
+            total_hits = response['hits']['total']['value']
+            self.logger.info(f"找到 {total_hits} 筆資料")
+            
+            # 除錯：印出第一筆回應資料
+            if response['hits']['hits']:
+                self.logger.info(f"第一筆資料結構: {response['hits']['hits'][0]['_source']}")
+            
             records = []
             for hit in response['hits']['hits']:
                 source = hit['_source']
-                
-                # 轉換時間戳記
-                timestamp = datetime.fromisoformat(source['created_at'])
-                
-                # 建立記錄
-                record = {
-                    'Timestamp': timestamp,
-                    'Serial_ID': source['serial_id'],
-                    'Channel_1_Raw': source['ch0'],
-                    'Channel_2_Raw': source['ch1'],
-                    'Channel_3_Raw': source['ch2'],
-                    'Channel_4_Raw': source['ch3'],
-                    'Channel_5_Raw': source['ch4'],
-                    'Channel_6_Raw': source['ch5'],
-                    'Angle': source['angle'],
-                    'Raw_Timestamp': source['timestamp']
-                }
-                records.append(record)
+                records.append({
+                    'created_at': source.get('created_at'),
+                    'serial_id': source.get('serial_id'),
+                    'Channel_1_Raw': source.get('ch0'),
+                    'Channel_2_Raw': source.get('ch1'),
+                    'Channel_3_Raw': source.get('ch2'),
+                    'Channel_4_Raw': source.get('ch3'),
+                    'Channel_5_Raw': source.get('ch4'),
+                    'Channel_6_Raw': source.get('ch5'),
+                    'Angle': source.get('angle'),
+                    'timestamp': source.get('timestamp')
+                })
             
-            # 轉換成 DataFrame
+            # 除錯：印出 DataFrame 的欄位
             df = pd.DataFrame(records)
-            df.set_index('Timestamp', inplace=True)
+            self.logger.info(f"DataFrame 欄位: {df.columns.tolist()}")
+            
+            # 確保 created_at 欄位存在且有值
+            if 'created_at' in df.columns and not df['created_at'].isna().all():
+                df.set_index('created_at', inplace=True)
+            else:
+                self.logger.error("找不到有效的 created_at 欄位")
+                return pd.DataFrame()  # 返回空的 DataFrame
             
             self.logger.info(f"成功讀取 {len(records)} 筆資料")
             return df
@@ -139,23 +132,59 @@ class ElasticDataLoader:
             return False
 
 def main():
-    # Elasticsearch 連線設定
+    # 載入環境變數
+    load_dotenv()
+    
+    # 從環境變數讀取設定
     es_config = {
-        'hosts': 'https://192.168.1.68:9200',  # 使用 HTTPS
-        'api_key': 'cTItWGFKUUI2MWZPZUVTcFdWOUw6dkg5Nm80WDRTWHFjeWREWTJQLXpZQQ==',
-        'verify_certs': False,  # 因為使用 -k 參數，所以這裡設為 False
+        'hosts': os.getenv('ELASTICSEARCH_HOST', 'https://192.168.1.68:9200'),
+        'api_key': os.getenv('ELASTICSEARCH_API_KEY'),
+        'verify_certs': False,
     }
+    
+    # 檢查必要的環境變數是否存在
+    if not es_config['api_key']:
+        print("錯誤：未設定 ELASTICSEARCH_API_KEY 環境變數")
+        return
     
     # 建立 loader
     loader = ElasticDataLoader(**es_config)
 
     try:
-        # 測試連線
+        # 先測試連線
         connection_success = loader.get_all_test_data()
         if not connection_success:
             print("連線測試失敗")
+            return
+
+        # # 設定要查詢的設備 ID
+        # serial_id = "SPS2021PA000345"  # 替換為您要查詢的設備 ID
+
+        # # 查詢資料
+        # df = loader.fetch_data(serial_id)
+
+        # # 顯示資料
+        # if not df.empty:
+        #     print(f"\n查詢到 {len(df)} 筆資料")
+        #     print("\n資料預覽：")
+        #     print(df.head())
+            
+        #     # 顯示感測器數據的基本統計資訊
+        #     print("\n感測器數據統計資訊：")
+        #     sensor_columns = ['Channel_1_Raw', 'Channel_2_Raw', 'Channel_3_Raw', 
+        #                     'Channel_4_Raw', 'Channel_5_Raw', 'Channel_6_Raw', 'Angle']
+        #     print(df[sensor_columns].describe())
+            
+        #     # 顯示時間範圍
+        #     print("\n資料時間範圍：")
+        #     print(f"開始時間：{df.index.min()}")
+        #     print(f"結束時間：{df.index.max()}")
+            
+        # else:
+        #     print(f"未找到 {serial_id} 的資料")
+
     except Exception as e:
         print(f"執行時發生錯誤: {str(e)}")
 
 if __name__ == "__main__":
-    main() 
+    main()
