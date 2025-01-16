@@ -83,7 +83,7 @@ class ElasticDataLoader:
                 body=query
             )
 
-            print("查詢結果：", response)
+            # print("查詢結果：", response)
 
             # 檢查是否有資料
             if response['hits']['total']['value'] == 0:
@@ -235,11 +235,16 @@ def main():
     try:
         # 利用時間區間查詢資料
         data = loader.fetch_data(args.device_id, args.start_time, args.end_time)
-        print(data)
+        # print(data)
 
-        # 轉換 timestamp 欄位為日期時間格式
+        # 修改 timestamp 的解析方式，加入時區處理
         if not data.empty and 'timestamp' in data.columns:
+            # 先解析成 datetime
             data['timestamp'] = pd.to_datetime(data['timestamp'], format='%Y%m%d%H%M%S')
+            # 設定為 UTC 時間
+            data['timestamp'] = data['timestamp'].dt.tz_localize('UTC')
+            # 轉換為亞洲/台北時區
+            data['timestamp'] = data['timestamp'].dt.tz_convert('Asia/Taipei')
 
         # 依照 'timestamp' 欄位排序
         if not data.empty:
