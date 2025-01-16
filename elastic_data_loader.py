@@ -1,10 +1,11 @@
 from elasticsearch import Elasticsearch
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 import logging
 import os
 from dotenv import load_dotenv
+import argparse
 
 class ElasticDataLoader:
     def __init__(self, hosts, api_key=None, verify_certs=False):
@@ -130,39 +131,90 @@ class ElasticDataLoader:
         except Exception as e:
             self.logger.error(f"連線測試時發生錯誤: {str(e)}")
             return False
+        
+
+    def get_serial_id(self):
+        """
+        獲取所有設備的 serial_id
+        """
+        response = self.es.search(index="sensor_data", size=10000)
+        return [hit['_source']['serial_id'] for hit in response['hits']['hits']]
 
 def main():
-    # 載入環境變數
-    load_dotenv()
+    # 建立參數解析器
+    parser = argparse.ArgumentParser(description='Elasticsearch 資料讀取工具')
+    
+    # 添加命令列參數
+    parser.add_argument('--device_id', type=str, help='設備 ID')
+    parser.add_argument('--start_time', type=str, help='開始時間 (YYYY-MM-DD HH:MM:SS)')
+    parser.add_argument('--end_time', type=str, help='結束時間 (YYYY-MM-DD HH:MM:SS)')
+    
+    # 解析參數
+    args = parser.parse_args()
+    
+    # 設定預設時間範圍（如果沒有指定）
+    if not args.start_time:
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=7)  # 預設查詢最近7天
+        args.start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+        args.end_time = end_time.strftime('%Y-%m-%d %H:%M:%S')
     
     # 從環境變數讀取設定
+    load_dotenv()
+    
+    # Elasticsearch 連線設定
     es_config = {
-        'hosts': os.getenv('ELASTICSEARCH_HOST', 'https://192.168.1.68:9200'),
-        'api_key': os.getenv('ELASTICSEARCH_API_KEY'),
+        'hosts': os.getenv('ELASTICSEARCH_HOST', 'http://192.168.1.68:9200'),
+        'api_key':os.getenv('ELASTICSEARCH_API_KEY'),
         'verify_certs': False,
     }
     
-    # 檢查必要的環境變數是否存在
+    # 檢查必要的參數
     if not es_config['api_key']:
-        print("錯誤：未設定 ELASTICSEARCH_API_KEY 環境變數")
+        print("錯誤：未提供 API Key")
         return
     
     # 建立 loader
     loader = ElasticDataLoader(**es_config)
-
+    
     try:
-        # 先測試連線
-        connection_success = loader.get_all_test_data()
-        if not connection_success:
-            print("連線測試失敗")
-            return
+        # # 先測試連線
+        # connection_success = loader.get_all_test_data()
+        # if not connection_success:
+        #     print("連線測試失敗")
+        #     return
+        
+        # ============================================
+        # 查詢資料
+        data = loader.fetch_data(args.device_id)
 
-        # # 設定要查詢的設備 ID
-        # serial_id = "SPS2021PA000345"  # 替換為您要查詢的設備 ID
+        # 依照 'timestamp' 欄位排序
+        data = data.sort_values(by='timestamp')
 
+        # 存成CSV
+        data.to_csv(f'{args.device_id}.csv', index=True)
+        print(f"資料已成功存成CSV檔案: {args.device_id}.csv")
+
+        # ============================================
+        # # 獲取所有設備的 serial_id
+        # serial_ids = loader.get_serial_id()
+
+        # # 去除重複的 serial_id 並排序   
+        # serial_ids = sorted(list(set(serial_ids)))
+        
+        # print(f"所有設備的 serial_id: {serial_ids}")
+        # # 將 serial_id 存成CSV
+        # pd.DataFrame(serial_ids, columns=['serial_id']).to_csv('serial_ids.csv', index=False)
+        # print(f"serial_id 已成功存成CSV檔案: serial_ids.csv")
+
+        # ============================================
         # # 查詢資料
-        # df = loader.fetch_data(serial_id)
-
+        # df = loader.fetch_data(
+        #     start_time=args.start_time,
+        #     end_time=args.end_time,
+        #     device_id=args.device_id
+        # )
+        
         # # 顯示資料
         # if not df.empty:
         #     print(f"\n查詢到 {len(df)} 筆資料")
@@ -181,8 +233,9 @@ def main():
         #     print(f"結束時間：{df.index.max()}")
             
         # else:
-        #     print(f"未找到 {serial_id} 的資料")
+        #     print("未找到符合條件的資料")
 
+        # ============================================
     except Exception as e:
         print(f"執行時發生錯誤: {str(e)}")
 
