@@ -37,32 +37,59 @@ class ElasticDataLoader:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    def fetch_data(self, device_id):
+    def fetch_data(self, device_id, start_time=None, end_time=None):
         """
-        從 Elasticsearch 讀取指定設備的所有資料
+        從 Elasticsearch 讀取指定設備的資料
         """
         try:
-            # 建立查詢條件，只根據 device_id 查詢
+            # 轉換日期格式為 ISO 格式
+            if start_time:
+                start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+                start_iso = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+            if end_time:
+                end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+                end_iso = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+            print(f"查詢時間範圍：{start_iso} 到 {end_iso}")  # 除錯用
+
+            # 建立查詢條件
             query = {
-                "bool": {
-                    "must": [
-                        {
-                            "term": {
-                                "serial_id": device_id
+                "size": 10000,
+                "sort": [{"created_at": "asc"}],
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "term": {
+                                    "serial_id": device_id
+                                }
+                            },
+                            {
+                                "range": {
+                                    "created_at": {
+                                        "gte": start_iso,
+                                        "lte": end_iso
+                                    }
+                                }
                             }
-                        }
-                    ]
+                        ]
+                    }
                 }
             }
-            
+
             # 執行查詢
             response = self.es.search(
-                index="sensor_data",
-                query=query,
-                size=10000,  # 設定較大的數量
-                sort=[{"created_at": "asc"}]  # 按時間排序
+                index="sensor_data-*",  # 使用通配符匹配所有 sensor_data 索引
+                body=query
             )
-            
+
+            print("查詢結果：", response)
+
+            # 檢查是否有資料
+            if response['hits']['total']['value'] == 0:
+                self.logger.warning(f"未找到符合條件的資料：device_id={device_id}, start_time={start_time}, end_time={end_time}")
+                return pd.DataFrame()
+
             # 除錯：印出查詢到的資料數量
             total_hits = response['hits']['total']['value']
             self.logger.info(f"找到 {total_hits} 筆資料")
@@ -140,6 +167,34 @@ class ElasticDataLoader:
         response = self.es.search(index="sensor_data", size=10000)
         return [hit['_source']['serial_id'] for hit in response['hits']['hits']]
 
+    def get_device_data_count(self, device_id):
+        """
+        查詢特定設備的資料總筆數
+        """
+        try:
+            # 建立查詢條件
+            query = {
+                "query": {
+                    "term": {
+                        "serial_id": device_id
+                    }
+                }
+            }
+
+            # 執行查詢
+            response = self.es.count(
+                index="sensor_data-*",
+                body=query
+            )
+
+            count = response['count']
+            print(f"設備 {device_id} 總共有 {count} 筆資料")
+            return count
+
+        except Exception as e:
+            self.logger.error(f"查詢資料總數時發生錯誤: {str(e)}")
+            raise
+
 def main():
     # 建立參數解析器
     parser = argparse.ArgumentParser(description='Elasticsearch 資料讀取工具')
@@ -178,6 +233,30 @@ def main():
     loader = ElasticDataLoader(**es_config)
     
     try:
+        # 利用時間區間查詢資料
+        data = loader.fetch_data(args.device_id, args.start_time, args.end_time)
+        print(data)
+
+        # 轉換 timestamp 欄位為日期時間格式
+        if not data.empty and 'timestamp' in data.columns:
+            data['timestamp'] = pd.to_datetime(data['timestamp'], format='%Y%m%d%H%M%S')
+
+        # 依照 'timestamp' 欄位排序
+        if not data.empty:
+            data = data.sort_values(by='timestamp')
+            
+            # 存成CSV，使用 created_at 作為索引
+            data.to_csv(f'{args.device_id}.csv', index=True)
+            print(f"資料已成功存成CSV檔案: {args.device_id}.csv")
+            
+            # 顯示資料時間範圍
+            print(f"資料時間範圍：")
+            print(f"開始時間：{data['timestamp'].min()}")
+            print(f"結束時間：{data['timestamp'].max()}")
+        else:
+            print("未找到符合條件的資料")
+
+        # ============================================
         # # 先測試連線
         # connection_success = loader.get_all_test_data()
         # if not connection_success:
@@ -185,15 +264,22 @@ def main():
         #     return
         
         # ============================================
-        # 查詢資料
-        data = loader.fetch_data(args.device_id)
 
-        # 依照 'timestamp' 欄位排序
-        data = data.sort_values(by='timestamp')
+        # # 查詢特定設備的資料總共有幾筆
+        # if args.device_id:
+        #     total_count = loader.get_device_data_count(args.device_id)
+        #     print(f"\n設備 {args.device_id} 的資料總數：{total_count} 筆")
 
-        # 存成CSV
-        data.to_csv(f'{args.device_id}.csv', index=True)
-        print(f"資料已成功存成CSV檔案: {args.device_id}.csv")
+        # ============================================
+        # # 利用時間區間查詢資料
+        # data = loader.fetch_data(args.device_id, args.start_time, args.end_time)
+
+        # # 依照 'timestamp' 欄位排序
+        # data = data.sort_values(by='timestamp')
+
+        # # 存成CSV
+        # data.to_csv(f'{args.device_id}.csv', index=True)
+        # print(f"資料已成功存成CSV檔案: {args.device_id}.csv")
 
         # ============================================
         # # 獲取所有設備的 serial_id
