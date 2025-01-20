@@ -15,6 +15,12 @@ import numpy as np
 import traceback
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter, AutoLocator
+from elasticsearch import Elasticsearch
+import logging
+from dotenv import load_dotenv
+
+# 載入環境變數
+load_dotenv()
 
 # 確保 log_file 目錄存在
 LOG_DIR = "./_log_file"
@@ -25,7 +31,10 @@ DATA_DIR = "./_data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# sensor_data 数据库连接信息
+# 在檔案開頭添加資料來源設定
+DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
+
+# MySQL 資料庫連接信息
 db_sensor_config = {
     "host": "61.220.29.122",
     "port": 23060,
@@ -33,6 +42,26 @@ db_sensor_config = {
     "password": "jF@0McVu1KcP",
     "database": "humetrics"
 }
+
+# Elasticsearch 連接信息
+es_sensor_config = {
+    "hosts": os.getenv('ELASTICSEARCH_HOST', 'http://192.168.1.68:9200'),
+    "api_key": os.getenv('ELASTICSEARCH_API_KEY'),
+    "verify_certs": False,
+    "request_timeout": 30,
+    "retry_on_timeout": True,
+    "max_retries": 3,
+    "ssl_show_warn": False
+}
+
+# 檢查必要的設定
+if not es_sensor_config["api_key"]:
+    logging.error("錯誤：未提供 ELASTICSEARCH_API_KEY 環境變數")
+    # 可以選擇在這裡拋出異常或處理錯誤
+    
+if not es_sensor_config["hosts"]:
+    logging.error("錯誤：未提供 ELASTICSEARCH_HOST 環境變數")
+    # 可以選擇在這裡拋出異常或處理錯誤
 
 query_done = threading.Event()  # 查询完成状态标记
 
@@ -298,8 +327,21 @@ def fetch_sensor_data(serial_id, start_time, end_time):
         if local_file:
             return load_sensor_data(local_file)
             
-        # 如果沒有本地檔案，從資料庫獲取
-        
+        # 根據資料來源選擇不同的查詢方式
+        if DATA_SOURCE == "mysql":
+            return fetch_from_mysql(serial_id, start_time, end_time)
+        elif DATA_SOURCE == "elastic":
+            return fetch_from_elastic(serial_id, start_time, end_time)
+        else:
+            raise ValueError(f"不支援的資料來源: {DATA_SOURCE}")
+            
+    except Exception as e:
+        messagebox.showerror("Error", f"獲取感測器數據時發生錯誤: {str(e)}")
+        return None
+
+def fetch_from_mysql(serial_id, start_time, end_time):
+    """從 MySQL 獲取數據"""
+    try:
         query = """
             SELECT serial_id, ch0, ch1, ch2, ch3, ch4, ch5, timestamp, created_at 
             FROM sensor_data 
@@ -329,12 +371,118 @@ def fetch_sensor_data(serial_id, start_time, end_time):
         else:
             return None
             
-    except Exception as e:
-        messagebox.showerror("Error", f"Sensor Data Fetch Error: {e}")
-        return None
     finally:
         if 'connection' in locals():
             connection.close()
+
+def fetch_from_elastic(serial_id, start_time, end_time):
+    """從 Elasticsearch 獲取數據"""
+    try:
+        # 設定 Elasticsearch 連線
+        es_config = {
+            "hosts": es_sensor_config["hosts"],
+            "request_timeout": 30,
+            "retry_on_timeout": True,
+            "max_retries": 3,
+            "ssl_show_warn": False
+        }
+        
+        # 如果有 API key，加入設定
+        if es_sensor_config.get("api_key"):
+            es_config["api_key"] = es_sensor_config["api_key"]
+            
+        # 如果使用 HTTPS
+        if es_sensor_config["hosts"].startswith("https"):
+            es_config["verify_certs"] = es_sensor_config["verify_certs"]
+            
+        es = Elasticsearch(**es_config)
+
+        # 轉換日期格式為 ISO 格式
+        start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+        end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+        start_iso = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+        end_iso = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+        # 建立查詢條件
+        query = {
+            "sort": [{"created_at": "asc"}],
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"serial_id": serial_id}},
+                        {
+                            "range": {
+                                "created_at": {
+                                    "gte": start_iso,
+                                    "lte": end_iso
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        # 初始化 scroll
+        page = es.search(
+            index="sensor_data-*",
+            body=query,
+            scroll='5m',
+            size=10000
+        )
+        
+        scroll_id = page['_scroll_id']
+        hits = page['hits']['hits']
+        
+        # 用於儲存所有記錄
+        all_records = []
+        
+        # 當還有資料時，持續獲取
+        while len(hits) > 0:
+            # 處理當前批次的資料
+            for hit in hits:
+                source = hit['_source']
+                record = {
+                    'serial_id': source.get('serial_id'),
+                    'ch0': source.get('ch0'),
+                    'ch1': source.get('ch1'),
+                    'ch2': source.get('ch2'),
+                    'ch3': source.get('ch3'),
+                    'ch4': source.get('ch4'),
+                    'ch5': source.get('ch5'),
+                    'timestamp': source.get('timestamp'),
+                    'created_at': source.get('created_at')
+                }
+                all_records.append(record)
+            
+            # 獲取下一批資料
+            page = es.scroll(
+                scroll_id=scroll_id,
+                scroll='5m'
+            )
+            hits = page['hits']['hits']
+
+        # 清理 scroll
+        es.clear_scroll(scroll_id=scroll_id)
+        
+        if all_records:
+            # 自動存檔
+            save_sensor_data(all_records)
+            
+            # 處理時間戳
+            for record in all_records:
+                timestamp_str = str(record['timestamp'])
+                timestamp_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                time_at = timestamp_dt + timedelta(hours=8)
+                record['time_at'] = time_at.strftime("%Y-%m-%d %H:%M:%S")
+
+            return all_records
+        else:
+            return None
+            
+    except Exception as e:
+        logging.error(f"從 Elasticsearch 獲取資料時發生錯誤: {str(e)}")
+        raise
 
 # 函数：绘制合并图表
 def plot_combined_data(sensor_data):
@@ -370,6 +518,9 @@ def plot_combined_data(sensor_data):
                 timestamp_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
                 time_at = timestamp_dt + timedelta(hours=8)
                 timestamps.append(time_at)
+
+            # 取每10個點的時間
+            timestamps = timestamps[::10]
             
             # 第一次偵測可以儲存為全局變數
             initial_events = detect_bed_events(processed_data, params)
@@ -671,15 +822,20 @@ def process_sensor_data(sensor_data, params):
                   74, 60, 48, 39, 32, 28, 26]
             n = np.convolve(np.abs(hp / 16), lpf, mode='full')
             n = n[10:-37] / 4096
+            n = n[::10]
             results['n10'].append(np.int32(n))
 
             # 計算移動平均
             data_pd = pd.Series(data)
             med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean()
+            med10 = np.array(med10)
+            med10 = med10[::10]
             results['d10'].append(np.int32(med10))
 
             # 計算移動最大值
             max10 = data_pd.rolling(window=10, min_periods=1, center=True).max()
+            max10 = np.array(max10)
+            max10 = max10[::10]
             results['x10'].append(np.int32(max10))
 
         return results
