@@ -39,7 +39,7 @@ class ElasticDataLoader:
 
     def fetch_data(self, device_id, start_time=None, end_time=None):
         """
-        從 Elasticsearch 讀取指定設備的資料
+        從 Elasticsearch 讀取指定設備的資料，使用 Scroll API 處理大量資料
         """
         try:
             # 轉換日期格式為 ISO 格式
@@ -52,9 +52,8 @@ class ElasticDataLoader:
 
             print(f"查詢時間範圍：{start_iso} 到 {end_iso}")  # 除錯用
 
-            # 建立查詢條件
+            # 修改查詢條件，移除 size 參數
             query = {
-                "size": 10000,
                 "sort": [{"created_at": "asc"}],
                 "query": {
                     "bool": {
@@ -77,45 +76,58 @@ class ElasticDataLoader:
                 }
             }
 
-            # 執行查詢
-            response = self.es.search(
-                index="sensor_data-*",  # 使用通配符匹配所有 sensor_data 索引
-                body=query
+            # 初始化 scroll
+            page = self.es.search(
+                index="sensor_data-*",
+                body=query,
+                scroll='5m',    # 設定 scroll 時間為 5 分鐘
+                size=10000       # 每次獲取 1000 筆資料
             )
-
-            # print("查詢結果：", response)
-
-            # 檢查是否有資料
-            if response['hits']['total']['value'] == 0:
-                self.logger.warning(f"未找到符合條件的資料：device_id={device_id}, start_time={start_time}, end_time={end_time}")
-                return pd.DataFrame()
-
-            # 除錯：印出查詢到的資料數量
-            total_hits = response['hits']['total']['value']
-            self.logger.info(f"找到 {total_hits} 筆資料")
             
-            # 除錯：印出第一筆回應資料
-            if response['hits']['hits']:
-                self.logger.info(f"第一筆資料結構: {response['hits']['hits'][0]['_source']}")
+            scroll_id = page['_scroll_id']
+            hits = page['hits']['hits']
             
-            records = []
-            for hit in response['hits']['hits']:
-                source = hit['_source']
-                records.append({
-                    'created_at': source.get('created_at'),
-                    'serial_id': source.get('serial_id'),
-                    'Channel_1_Raw': source.get('ch0'),
-                    'Channel_2_Raw': source.get('ch1'),
-                    'Channel_3_Raw': source.get('ch2'),
-                    'Channel_4_Raw': source.get('ch3'),
-                    'Channel_5_Raw': source.get('ch4'),
-                    'Channel_6_Raw': source.get('ch5'),
-                    'Angle': source.get('angle'),
-                    'timestamp': source.get('timestamp')
-                })
+            # 用於儲存所有記錄
+            all_records = []
+            
+            # 當還有資料時，持續獲取
+            while len(hits) > 0:
+                # 處理當前批次的資料
+                records = []
+                for hit in hits:
+                    source = hit['_source']
+                    records.append({
+                        'created_at': source.get('created_at'),
+                        'serial_id': source.get('serial_id'),
+                        'Channel_1_Raw': source.get('ch0'),
+                        'Channel_2_Raw': source.get('ch1'),
+                        'Channel_3_Raw': source.get('ch2'),
+                        'Channel_4_Raw': source.get('ch3'),
+                        'Channel_5_Raw': source.get('ch4'),
+                        'Channel_6_Raw': source.get('ch5'),
+                        'Angle': source.get('angle'),
+                        'timestamp': source.get('timestamp')
+                    })
+                
+                all_records.extend(records)
+                
+                # 顯示進度
+                self.logger.info(f"已獲取 {len(all_records)} 筆資料")
+                
+                # 獲取下一批資料
+                page = self.es.scroll(
+                    scroll_id=scroll_id,
+                    scroll='5m'
+                )
+                hits = page['hits']['hits']
+
+            # 清理 scroll
+            self.es.clear_scroll(scroll_id=scroll_id)
+            
+            # 轉換為 DataFrame
+            df = pd.DataFrame(all_records)
             
             # 除錯：印出 DataFrame 的欄位
-            df = pd.DataFrame(records)
             self.logger.info(f"DataFrame 欄位: {df.columns.tolist()}")
             
             # 確保 created_at 欄位存在且有值
@@ -125,7 +137,7 @@ class ElasticDataLoader:
                 self.logger.error("找不到有效的 created_at 欄位")
                 return pd.DataFrame()  # 返回空的 DataFrame
             
-            self.logger.info(f"成功讀取 {len(records)} 筆資料")
+            self.logger.info(f"成功讀取總共 {len(all_records)} 筆資料")
             return df
             
         except Exception as e:
@@ -235,29 +247,24 @@ def main():
     try:
         # 利用時間區間查詢資料
         data = loader.fetch_data(args.device_id, args.start_time, args.end_time)
-        # print(data)
 
-        # 修改 timestamp 的解析方式，加入時區處理
-        if not data.empty and 'timestamp' in data.columns:
-            # 先解析成 datetime
-            data['timestamp'] = pd.to_datetime(data['timestamp'], format='%Y%m%d%H%M%S')
-            # 設定為 UTC 時間
-            data['timestamp'] = data['timestamp'].dt.tz_localize('UTC')
-            # 轉換為亞洲/台北時區
-            data['timestamp'] = data['timestamp'].dt.tz_convert('Asia/Taipei')
-
-        # 依照 'timestamp' 欄位排序
+        # 依照原始 timestamp 欄位排序並存成 CSV
         if not data.empty:
             data = data.sort_values(by='timestamp')
-            
-            # 存成CSV，使用 created_at 作為索引
             data.to_csv(f'{args.device_id}.csv', index=True)
             print(f"資料已成功存成CSV檔案: {args.device_id}.csv")
             
+            # 只在顯示時轉換時間格式
+            display_data = data.copy()
+            if 'timestamp' in display_data.columns:
+                display_data['timestamp'] = pd.to_datetime(display_data['timestamp'], format='%Y%m%d%H%M%S')
+                display_data['timestamp'] = display_data['timestamp'].dt.tz_localize('UTC')
+                display_data['timestamp'] = display_data['timestamp'].dt.tz_convert('Asia/Taipei')
+            
             # 顯示資料時間範圍
             print(f"資料時間範圍：")
-            print(f"開始時間：{data['timestamp'].min()}")
-            print(f"結束時間：{data['timestamp'].max()}")
+            print(f"開始時間：{display_data['timestamp'].min().strftime('%Y-%m-%d %H:%M:%S %z')}")
+            print(f"結束時間：{display_data['timestamp'].max().strftime('%Y-%m-%d %H:%M:%S %z')}")
         else:
             print("未找到符合條件的資料")
 
