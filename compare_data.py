@@ -21,20 +21,24 @@ def load_json_data(json_path):
     # 轉換成 DataFrame
     records = []
     for item in data:
-        # 轉換時間戳記 (從字串轉換為datetime)
-        timestamp = datetime.strptime(item['created_at'], '%Y-%m-%d %H:%M:%S')
-        timestamp = pytz.timezone('Asia/Taipei').localize(timestamp)
-        
-        record = {
-            'Timestamp': timestamp,
-            'Channel_1_Raw': item['ch0'],  # 注意：通道編號從0開始
-            'Channel_2_Raw': item['ch1'],
-            'Channel_3_Raw': item['ch2'],
-            'Channel_4_Raw': item['ch3'],
-            'Channel_5_Raw': item['ch4'],
-            'Channel_6_Raw': item['ch5']
-        }
-        records.append(record)
+        try:
+            # 處理 ISO 8601 格式
+            timestamp = datetime.fromisoformat(item['created_at'])
+            # 如果需要轉換成特定格式
+            formatted_time = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            record = {
+                'Timestamp': formatted_time,
+                'Channel_1_Raw': item['ch0'],  # 注意：通道編號從0開始
+                'Channel_2_Raw': item['ch1'],
+                'Channel_3_Raw': item['ch2'],
+                'Channel_4_Raw': item['ch3'],
+                'Channel_5_Raw': item['ch4'],
+                'Channel_6_Raw': item['ch5']
+            }
+            records.append(record)
+        except Exception as e:
+            print(f"Error parsing timestamp: {item['created_at']}, Error: {str(e)}")
+            continue
     
     df = pd.DataFrame(records)
     df.set_index('Timestamp', inplace=True)
