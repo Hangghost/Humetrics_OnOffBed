@@ -32,7 +32,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
 
 # MySQL 資料庫連接信息
 db_sensor_config = {
@@ -342,6 +342,13 @@ def fetch_sensor_data(serial_id, start_time, end_time):
 def fetch_from_mysql(serial_id, start_time, end_time):
     """從 MySQL 獲取數據"""
     try:
+        # 檢查是否已安裝 cryptography
+        try:
+            import cryptography
+        except ImportError:
+            messagebox.showerror("Error", "請先安裝 cryptography 套件:\npip install cryptography")
+            return None
+            
         query = """
             SELECT serial_id, ch0, ch1, ch2, ch3, ch4, ch5, timestamp, created_at 
             FROM sensor_data 
