@@ -390,7 +390,7 @@ def build_model(input_shape):
 # 修改原本的數據載入部分
 try:
     # 使用總和值進行訓練
-    use_sum_only = False  # 設置為True來使用總和值
+    use_sum_only = True  # 設置為True來使用總和值
     sequences, labels = load_and_process_data(
         "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv",
         use_sum_only=use_sum_only
@@ -407,14 +407,14 @@ except Exception as e:
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
 
 # 創建日誌目錄
-log_dir = '_logs/bed_monitor'
+log_dir = '_logs/bed_monitor_lite'
 os.makedirs(log_dir, exist_ok=True)
 
 # 定義檔案路徑
 model_checkpoint_path = os.path.join(log_dir, 'model-{epoch:02d}-{val_accuracy:.4f}.keras')
-training_log_path = os.path.join(log_dir, 'training.csv')
-final_model_path = os.path.join(log_dir, 'final_model.keras')
-training_history_path = os.path.join(log_dir, 'training_history.png')
+training_log_path = os.path.join(log_dir, 'training_sum_only.csv')
+final_model_path = os.path.join(log_dir, 'final_model_sum_only.keras')
+training_history_path = os.path.join(log_dir, 'training_history_sum_only.png')
 
 # 建立模型
 model = build_model((WINDOW_SIZE, X_train.shape[2]))

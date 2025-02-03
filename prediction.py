@@ -60,7 +60,7 @@ def create_sequences_for_prediction(df, use_sum_only=False):
 
 def load_latest_model():
     """載入最新的模型"""
-    log_dir = '_logs/bed_monitor'
+    log_dir = '_logs/bed_monitor_lite'
     model_files = [f for f in os.listdir(log_dir) if f.endswith('.keras')]
     
     if not model_files:
@@ -78,8 +78,6 @@ def load_latest_model():
     print(f"模型輸入形狀: {model.input_shape}")  # 添加形狀檢查
     print(f"模型輸出形狀: {model.output_shape}")  # 添加形狀檢查
     return model
-    print(f"正在載入模型: {latest_model}")
-    return load_model(model_path)
 
 def calculate_metrics(y_true, y_pred):
     """計算各項評估指標"""
