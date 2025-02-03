@@ -22,25 +22,29 @@ WARNING_TIMES = {
     'CRITICAL': 2   # 2秒預警
 }
 
-def create_sequences_for_prediction(df):
-    """為預測創建時間序列窗口"""
+def create_sequences_for_prediction(df, use_sum_only=False):
+    """為預測創建時間序列窗口，增加use_sum_only參數"""
     print(f"原始數據形狀: {df.shape}")
     print(f"特徵列: {df.columns.tolist()}")
     
     sequences = []
     timestamps = []
     
-    # 只使用原始通道數據（與訓練時一致）
-    raw_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+    if use_sum_only:
+        # 計算總和並創建新的DataFrame
+        df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
+        df_features = pd.DataFrame({'pressure_sum': df['pressure_sum']})
+    else:
+        # 使用原始通道數據
+        raw_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+        if not all(col in df.columns for col in raw_columns):
+            raise ValueError(f"缺少必要的列: {[col for col in raw_columns if col not in df.columns]}")
+        df_features = df[raw_columns].copy()
     
-    # 確保所有必要的列都存在
-    if not all(col in df.columns for col in raw_columns):
-        raise ValueError(f"缺少必要的列: {[col for col in raw_columns if col not in df.columns]}")
-    
-    # 標準化原始通道數據
+    # 標準化數據
     scaler = StandardScaler()
-    normalized_data = scaler.fit_transform(df[raw_columns])
-    df_normalized = pd.DataFrame(normalized_data, columns=raw_columns, index=df.index)
+    normalized_data = scaler.fit_transform(df_features)
+    df_normalized = pd.DataFrame(normalized_data, columns=df_features.columns, index=df.index)
     
     # 創建序列
     for i in range(0, len(df_normalized) - WINDOW_SIZE + 1, STEP_SIZE):
@@ -303,8 +307,8 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         metrics, _ = evaluate_with_threshold(0.5)
         return metrics, 0.5
 
-def predict_bed_status(data_file):
-    """預測床上狀態並評估準確度"""
+def predict_bed_status(data_file, use_sum_only=False):
+    """預測床上狀態並評估準確度，增加use_sum_only參數"""
     try:
         # 讀取數據
         df = pd.read_csv(data_file)
@@ -317,17 +321,17 @@ def predict_bed_status(data_file):
         # 刪除 OnBed_Status 列進行預測
         df.drop(columns=['OnBed_Status'], inplace=True)
         
-        # 創建序列
-        sequences, timestamps = create_sequences_for_prediction(df)
+        # 創建序列，傳入use_sum_only參數
+        sequences, timestamps = create_sequences_for_prediction(df, use_sum_only=use_sum_only)
         
         if len(sequences) == 0:
             raise ValueError("沒有生成任何有效的序列")
         
         # 載入模型並進行預測
         model = load_latest_model()
-        print(f"序列形狀: {sequences.shape}")  # 添加形狀檢查
+        print(f"序列形狀: {sequences.shape}")
         raw_predictions = model.predict(sequences)
-        print(f"預測結果形狀: {raw_predictions.shape}")  # 添加形狀檢查
+        print(f"預測結果形狀: {raw_predictions.shape}")
         
         # 根據訓練結果調整預設閾值
         DEFAULT_THRESHOLD = 0.5  # 因為訓練結果顯示 0.5 是較好的閾值
@@ -399,4 +403,6 @@ def predict_bed_status(data_file):
 if __name__ == "__main__":
     # 示例使用
     data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
-    results, metrics, best_threshold = predict_bed_status(data_file)
+    # 設置是否使用總和值
+    use_sum_only = True  # 可以根據需要設置為 True 或 False
+    results, metrics, best_threshold = predict_bed_status(data_file, use_sum_only=use_sum_only)

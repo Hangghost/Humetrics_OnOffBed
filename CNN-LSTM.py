@@ -107,8 +107,8 @@ def create_event_labels(df, events):
             
     return labels
 
-def create_sequences(df, cleaned_data_path):
-    """修改後的序列創建函數"""
+def create_sequences(df, cleaned_data_path, use_sum_only=False):
+    """修改後的序列創建函數，增加use_sum_only參數"""
     sequences = []
     labels = []
     
@@ -116,9 +116,9 @@ def create_sequences(df, cleaned_data_path):
     df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
     df['pressure_std'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].std(axis=1)
     df['pressure_change'] = df['pressure_sum'].diff()
-    df['pressure_rolling_mean'] = df['pressure_sum'].rolling(window=5).mean()  # 新增
-    df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()   # 新增
-    df['pressure_acceleration'] = df['pressure_change'].diff()                # 新增
+    df['pressure_rolling_mean'] = df['pressure_sum'].rolling(window=5).mean()
+    df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()
+    df['pressure_acceleration'] = df['pressure_change'].diff()
     
     # 填充NaN值
     df = df.fillna(method='ffill').fillna(method='bfill')
@@ -128,13 +128,14 @@ def create_sequences(df, cleaned_data_path):
     # 創建標籤
     event_labels = create_event_labels(df, events)
     
-    # 只保留需要的列
-    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
-    
-    if not all(col in df.columns for col in required_columns):
-        raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
-    
-    df_features = df[required_columns].copy()
+    # 根據use_sum_only參數選擇使用的特徵
+    if use_sum_only:
+        df_features = pd.DataFrame({'pressure_sum': df['pressure_sum']})
+    else:
+        required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+        if not all(col in df.columns for col in required_columns):
+            raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
+        df_features = df[required_columns].copy()
     
     # 存一份CSV
     df_features.to_csv(cleaned_data_path, index=False)
@@ -177,16 +178,19 @@ def create_sequences(df, cleaned_data_path):
     
     return sequences, labels
 
-def load_and_process_data(raw_data_path):
-    """載入並處理數據，如果有清理過的數據則直接讀取"""
+def load_and_process_data(raw_data_path, use_sum_only=False):
+    """載入並處理數據，增加use_sum_only參數"""
     # 獲取對應的清理後數據路徑
     cleaned_data_path = get_cleaned_data_path(raw_data_path)
-    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    # 根據use_sum_only參數修改檔案名
+    if use_sum_only:
+        sequences_path = cleaned_data_path.replace('.csv', '_sum_only.npz')
+    else:
+        sequences_path = cleaned_data_path.replace('.csv', '.npz')
     
     # 檢查是否存在已處理的序列資料
     if os.path.exists(sequences_path):
         try:
-            # 直接載入處理好的序列資料
             data = np.load(sequences_path)
             sequences = data['sequences']
             labels = data['labels']
@@ -196,12 +200,11 @@ def load_and_process_data(raw_data_path):
             print(f"讀取序列資料時發生錯誤: {e}")
             print("將重新處理原始數據...")
     
-    # 如果沒有處理好的序列資料，則從頭處理
     try:
         dataset = pd.read_csv(raw_data_path)
         print(f"數據集形狀: {dataset.shape}")
         print(f"數據集列: {dataset.columns.tolist()}")
-        return create_sequences(dataset, cleaned_data_path)
+        return create_sequences(dataset, cleaned_data_path, use_sum_only)
     except Exception as e:
         print(f"數據處理錯誤: {e}")
         raise
@@ -312,7 +315,7 @@ def evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=False):
 
     if find_best_threshold:
         # 測試不同的閾值
-        thresholds = np.arange(0.1, 0.9, 0.05)
+        thresholds = np.arange(0.3, 0.7, 0.02)  # 更細的步長
         best_threshold = 0.5
         best_score = -1  # 改為-1作為初始值
         best_metrics = None
@@ -341,47 +344,59 @@ def evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=False):
 def build_model(input_shape):
     input_layer = Input(shape=input_shape)
     
-    # 增加殘差連接
-    conv1 = Conv1D(128, kernel_size=5, padding='same', activation='relu')(input_layer)
+    # 確保所有要相加的層具有相同的通道數
+    conv1 = Conv1D(64, kernel_size=5, padding='same', activation='relu')(input_layer)  # 改為64
     conv1 = BatchNormalization()(conv1)
-    conv2 = Conv1D(128, kernel_size=3, padding='same', activation='relu')(conv1)
+    conv2 = Conv1D(64, kernel_size=3, padding='same', activation='relu')(conv1)  # 保持64
     conv2 = BatchNormalization()(conv2)
-    # 添加殘差連接
-    conv2 = Add()([conv1, conv2])
+    conv2 = Add()([conv1, conv2])  # 現在兩者都是64通道
     
-    x = MaxPooling1D(pool_size=2)(conv2)
-    x = Dropout(0.3)(x)
+    # 第二個殘差塊
+    conv3 = Conv1D(64, kernel_size=3, padding='same', activation='relu')(conv2)  # 保持64
+    conv3 = BatchNormalization()(conv3)
+    conv3 = Add()([conv2, conv3])  # 現在都是64通道
     
-    # 增強注意力機制
-    attention1 = Dense(128, activation='tanh')(x)
-    attention2 = Dense(128, activation='relu')(x)
-    attention = Concatenate()([attention1, attention2])
-    attention = Dense(1, activation='sigmoid')(attention)
-    x = Multiply()([x, attention])
+    x = MaxPooling1D(pool_size=2)(conv3)
+    x = Dropout(0.25)(x)
     
-    # 使用更大的LSTM單元
-    x = Bidirectional(LSTM(512, return_sequences=True))(x)
+    # LSTM層保持不變
+    x = Bidirectional(LSTM(320, return_sequences=True))(x)
     x = BatchNormalization()(x)
-    x = Dropout(0.4)(x)
+    x = Dropout(0.25)(x)
     
-    x = Bidirectional(LSTM(256))(x)
+    x = Bidirectional(LSTM(160))(x)
     x = BatchNormalization()(x)
-    x = Dropout(0.4)(x)
+    x = Dropout(0.25)(x)
     
-    # 添加額外的密集層
-    x = Dense(128, activation='relu')(x)
-    x = BatchNormalization()(x)
-    x = Dropout(0.3)(x)
+    # 確保密集層的維度匹配
+    dense1 = Dense(64, activation='relu')(x)  # 改為64
+    dense1 = BatchNormalization()(dense1)
+    dense2 = Dense(64, activation='relu')(dense1)  # 保持64
+    dense2 = BatchNormalization()(dense2)
+    dense2 = Add()([dense1, dense2])  # 現在都是64維
     
-    output_layer = Dense(1, activation='sigmoid')(x)
+    output_layer = Dense(1, activation='sigmoid')(dense2)
     
-    return Model(inputs=input_layer, outputs=output_layer)
+    model = Model(inputs=input_layer, outputs=output_layer)
+    
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.00025),
+        loss='binary_crossentropy',
+        metrics=['accuracy', 'recall', 'precision']
+    )
+    
+    return model
 
 # 修改原本的數據載入部分
 try:
-    sequences, labels = load_and_process_data("./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv")
-    X = np.array(sequences)  # 將序列轉換為numpy數組
-    y = np.array(labels)     # 將標籤轉換為numpy數組
+    # 使用總和值進行訓練
+    use_sum_only = False  # 設置為True來使用總和值
+    sequences, labels = load_and_process_data(
+        "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv",
+        use_sum_only=use_sum_only
+    )
+    X = np.array(sequences)
+    y = np.array(labels)
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
 except Exception as e:
@@ -411,12 +426,6 @@ model.compile(
     metrics=['accuracy', 'recall', 'precision']
 )
 
-# 增加類別權重處理不平衡問題
-class_weights = {
-    0: 1.0,
-    1: 3.0  # 增加正樣本權重
-}
-
 # 生成完整的時間戳序列
 timestamps = np.arange(len(X))  # 使用完整數據集的長度
 
@@ -427,10 +436,10 @@ test_timestamps = timestamps[len(X_train):]
 # 設置回調
 callbacks = [
     EarlyStopping(
-        monitor='val_recall',
-        patience=20,
+        monitor='val_loss',  # 改為監控val_loss
+        patience=25,         # 增加耐心值
         restore_best_weights=True,
-        mode='max'
+        mode='min'
     ),
     ModelCheckpoint(
         filepath=model_checkpoint_path,
@@ -445,13 +454,13 @@ callbacks = [
     )
 ]
 
-# 訓練模型
+# 調整batch size和epochs
 history = model.fit(
     X_train, y_train,
-    epochs=10,
-    batch_size=32,
+    epochs=50,          # 增加epochs
+    batch_size=48,      # 調整batch size
     validation_split=0.2,
-    class_weight=class_weights,
+    class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
     callbacks=callbacks,
     verbose=1
 )
