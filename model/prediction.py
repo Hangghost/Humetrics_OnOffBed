@@ -15,14 +15,15 @@ WINDOW_SIZE = 15  # 15秒的窗口
 OVERLAP = 0.8    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
-# 添加新的常數定義在文件開頭
-WARNING_TIMES = {
-    'EARLY': 15,    # 15秒預警
-    'IMMEDIATE': 5, # 5秒預警
-    'CRITICAL': 2   # 2秒預警
-}
+# 修改預警時間設定
+WARNING_TIME = 10  # 設定單一預警時間（秒）
 
-def create_sequences_for_prediction(df, use_sum_only=False):
+LOG_DIR = "./_logs/bed_monitor_test_sum"
+
+FIND_BEST_THRESHOLD = False
+SUM_ONLY = True
+
+def create_sequences_for_prediction(df, use_sum_only=SUM_ONLY):
     """為預測創建時間序列窗口，增加use_sum_only參數"""
     print(f"原始數據形狀: {df.shape}")
     print(f"特徵列: {df.columns.tolist()}")
@@ -60,7 +61,7 @@ def create_sequences_for_prediction(df, use_sum_only=False):
 
 def load_latest_model():
     """載入最新的模型"""
-    log_dir = '_logs/bed_monitor_lite'
+    log_dir = LOG_DIR
     model_files = [f for f in os.listdir(log_dir) if f.endswith('.keras')]
     
     if not model_files:
@@ -149,17 +150,14 @@ def save_prediction_metrics(data_file, metrics, threshold, predictions_log='_dat
     
     headers = [
         'Timestamp', 'File_Name', 'Threshold',
-        'Early_Detections', 'Immediate_Detections', 'Critical_Detections',
-        'Missed_Events', 'False_Alarms'
+        'Detections', 'Missed_Events', 'False_Alarms'
     ]
     
     row_data = [
         current_time,
         file_name,
         f"{threshold:.2f}",
-        metrics['early_detections'],
-        metrics['immediate_detections'],
-        metrics['critical_detections'],
+        metrics['detections'],
         metrics['missed_events'],
         metrics['false_alarms']
     ]
@@ -177,7 +175,6 @@ def save_prediction_metrics(data_file, metrics, threshold, predictions_log='_dat
 
 def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=False):
     """評估預測結果並尋找最佳閾值"""
-    # 建議添加
     print(f"評估數據形狀: y_true: {y_true.shape}, y_pred: {y_pred.shape}")
     
     def evaluate_with_threshold(threshold):
@@ -188,15 +185,16 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         i = 0
         while i < len(predictions):
             if predictions[i] == 1:
-                start_idx = i
+                # 記錄整個預警時間段
+                pred_start = timestamps[i]
                 while i < len(predictions) and predictions[i] == 1:
                     i += 1
-                end_idx = i - 1
+                pred_end = timestamps[min(i, len(timestamps)-1)]
                 
                 events_detected.append({
-                    'start_time': timestamps[start_idx],
-                    'end_time': timestamps[end_idx],
-                    'prediction_time': timestamps[start_idx]
+                    'start_time': pred_start,
+                    'end_time': pred_end,
+                    'prediction_time': pred_end  # 使用結束時間作為預測時間
                 })
             else:
                 i += 1
@@ -221,35 +219,26 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         
         # 評估結果
         metrics = {
-            'early_detections': 0,     # 提前15秒預測到
-            'immediate_detections': 0,  # 提前5秒預測到
-            'critical_detections': 0,   # 提前2秒預測到
-            'missed_events': 0,        # 漏報
-            'false_alarms': 0          # 誤報
+            'detections': 0,     # 成功預測
+            'missed_events': 0,  # 漏報
+            'false_alarms': 0    # 誤報
         }
         
         # 評估每個實際事件
         for actual_event in actual_events:
             event_detected = False
-            best_prediction_time = None
-            
             for pred_event in events_detected:
-                time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
+                # 檢查預測時間段是否覆蓋了實際事件的預警時間段
+                pred_period = (pred_event['start_time'], pred_event['end_time'])
+                actual_warning_start = actual_event['event_time'] - timedelta(seconds=WARNING_TIME)
                 
-                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                if (pred_period[0] <= actual_event['event_time'] and 
+                    pred_period[1] >= actual_warning_start):
                     event_detected = True
-                    if best_prediction_time is None or pred_event['prediction_time'] < best_prediction_time:
-                        best_prediction_time = pred_event['prediction_time']
+                    break
             
-            if event_detected and best_prediction_time is not None:
-                time_diff = (actual_event['event_time'] - best_prediction_time).total_seconds()
-                
-                if time_diff >= WARNING_TIMES['EARLY']:
-                    metrics['early_detections'] += 1
-                elif time_diff >= WARNING_TIMES['IMMEDIATE']:
-                    metrics['immediate_detections'] += 1
-                elif time_diff >= WARNING_TIMES['CRITICAL']:
-                    metrics['critical_detections'] += 1
+            if event_detected:
+                metrics['detections'] += 1
             else:
                 metrics['missed_events'] += 1
         
@@ -258,14 +247,14 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
             matched = False
             for actual_event in actual_events:
                 time_diff = (actual_event['event_time'] - pred_event['prediction_time']).total_seconds()
-                if 0 < time_diff <= WARNING_TIMES['EARLY']:
+                if 0 < time_diff <= WARNING_TIME:
                     matched = True
                     break
             if not matched:
                 metrics['false_alarms'] += 1
         
         # 計算綜合指標
-        total_detections = metrics['early_detections'] + metrics['immediate_detections'] + metrics['critical_detections']
+        total_detections = metrics['detections']
         false_alarm_rate = metrics['false_alarms'] / (total_detections + 1e-6)  # 避免除以零
         detection_rate = total_detections / (total_detections + metrics['missed_events'] + 1e-6)
         
@@ -288,7 +277,7 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         for threshold in thresholds:
             metrics, score = evaluate_with_threshold(threshold)
             print(f"閾值: {threshold:.2f}, 分數: {score:.4f}")
-            print(f"早期檢測: {metrics['early_detections']}, 誤報: {metrics['false_alarms']}")
+            print(f"檢測: {metrics['detections']}, 誤報: {metrics['false_alarms']}")
             
             if score > best_score:
                 best_score = score
@@ -305,8 +294,8 @@ def evaluate_prediction_results(y_true, y_pred, timestamps, find_best_threshold=
         metrics, _ = evaluate_with_threshold(0.5)
         return metrics, 0.5
 
-def predict_bed_status(data_file, use_sum_only=False):
-    """預測床上狀態並評估準確度，增加use_sum_only參數"""
+def predict_bed_status(data_file, use_sum_only=SUM_ONLY):
+    """預測床上狀態並評估準確度"""
     try:
         # 讀取數據
         df = pd.read_csv(data_file)
@@ -320,7 +309,7 @@ def predict_bed_status(data_file, use_sum_only=False):
         df.drop(columns=['OnBed_Status'], inplace=True)
         
         # 創建序列，傳入use_sum_only參數
-        sequences, timestamps = create_sequences_for_prediction(df, use_sum_only=use_sum_only)
+        sequences, timestamps = create_sequences_for_prediction(df, use_sum_only=SUM_ONLY)
         
         if len(sequences) == 0:
             raise ValueError("沒有生成任何有效的序列")
@@ -355,9 +344,7 @@ def predict_bed_status(data_file, use_sum_only=False):
         
         # 輸出新的評估結果
         print(f"\n使用最佳閾值 {best_threshold:.2f} 的預測評估結果:")
-        print(f"提前15秒預測次數: {metrics['early_detections']}")
-        print(f"提前5秒預測次數: {metrics['immediate_detections']}")
-        print(f"提前2秒預測次數: {metrics['critical_detections']}")
+        print(f"成功預測次數: {metrics['detections']}")
         print(f"漏報次數: {metrics['missed_events']}")
         print(f"誤報次數: {metrics['false_alarms']}")
         
@@ -386,9 +373,7 @@ def predict_bed_status(data_file, use_sum_only=False):
             print(f"{metric_name}: {value:.4f}")
         
         print("\n時間相關指標:")
-        print(f"提前15秒預測次數: {metrics['early_detections']}")
-        print(f"提前5秒預測次數: {metrics['immediate_detections']}")
-        print(f"提前2秒預測次數: {metrics['critical_detections']}")
+        print(f"成功預測次數: {metrics['detections']}")
         print(f"漏報次數: {metrics['missed_events']}")
         print(f"誤報次數: {metrics['false_alarms']}")
         
@@ -402,5 +387,5 @@ if __name__ == "__main__":
     # 示例使用
     data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
     # 設置是否使用總和值
-    use_sum_only = True  # 可以根據需要設置為 True 或 False
+    use_sum_only = SUM_ONLY
     results, metrics, best_threshold = predict_bed_status(data_file, use_sum_only=use_sum_only)
