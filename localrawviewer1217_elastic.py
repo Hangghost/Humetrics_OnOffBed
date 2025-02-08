@@ -32,7 +32,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
 
 # MySQL 資料庫連接信息
 db_sensor_config = {
