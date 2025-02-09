@@ -32,7 +32,8 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
+
 
 # MySQL 資料庫連接信息
 db_sensor_config = {
@@ -405,11 +406,14 @@ def fetch_from_elastic(serial_id, start_time, end_time):
 
         # 建立查詢條件
         query = {
-            "sort": [{"created_at": "asc"}],
             "query": {
                 "bool": {
-                    "must": [
-                        {"term": {"serial_id": serial_id}},
+                    "filter": [
+                        {
+                            "term": {
+                                "serial_id.keyword": serial_id
+                            }
+                        },
                         {
                             "range": {
                                 "created_at": {
@@ -420,15 +424,24 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                         }
                     ]
                 }
-            }
+            },
+            "sort": [
+                {
+                    "created_at": {
+                        "order": "asc"
+                    }
+                }
+            ]
         }
 
         # 初始化 scroll
         page = es.search(
             index="sensor_data-*",
-            body=query,
-            scroll='5m',
-            size=10000
+            body={
+                **query,
+                "size": 10000
+            },
+            scroll='5m'
         )
         
         scroll_id = page['_scroll_id']

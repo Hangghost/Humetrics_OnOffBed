@@ -54,13 +54,12 @@ class ElasticDataLoader:
 
             # 修改查詢條件，移除 size 參數
             query = {
-                "sort": [{"created_at": "asc"}],
                 "query": {
                     "bool": {
                         "must": [
                             {
                                 "term": {
-                                    "serial_id": device_id
+                                    "serial_id.keyword": device_id
                                 }
                             },
                             {
@@ -73,15 +72,18 @@ class ElasticDataLoader:
                             }
                         ]
                     }
-                }
+                },
+                "sort": [{"created_at": "asc"}]
             }
 
             # 初始化 scroll
             page = self.es.search(
                 index="sensor_data-*",
-                body=query,
-                scroll='5m',    # 設定 scroll 時間為 5 分鐘
-                size=10000       # 每次獲取 1000 筆資料
+                body={
+                    **query,
+                    "size": 10000
+                },
+                scroll='5m'
             )
             
             scroll_id = page['_scroll_id']
@@ -268,12 +270,12 @@ def main():
         else:
             print("未找到符合條件的資料")
 
-        # ============================================
-        # # 先測試連線
-        # connection_success = loader.get_all_test_data()
-        # if not connection_success:
-        #     print("連線測試失敗")
-        #     return
+        #============================================
+        # 先測試連線
+        connection_success = loader.get_all_test_data()
+        if not connection_success:
+            print("連線測試失敗")
+            return
         
         # ============================================
 
@@ -339,3 +341,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # # 基本查詢範例
+    # python elastic_data_loader.py --device_id "SENSOR001" --start_time "2024-03-20 00:00:00" --end_time "2024-03-21 00:00:00"
+
+    # # 只查詢最近24小時的資料
+    # python elastic_data_loader.py --device_id "SENSOR001"
+
+    # # 指定特定時間範圍的資料
+    # python elastic_data_loader.py --device_id "SENSOR001" --start_time "2024-03-01 08:00:00" --end_time "2024-03-01 18:00:00"
