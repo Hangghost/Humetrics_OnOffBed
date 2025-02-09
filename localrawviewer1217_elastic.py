@@ -35,7 +35,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
 
 # 在檔案開頭添加 MQTT 設定
 MQTT_CONFIG = {
@@ -485,14 +485,17 @@ def fetch_sensor_data(serial_id, start_time, end_time):
     """
     try:
         # 先檢查本地檔案
+        print(f"檢查本地檔案: {serial_id}, {start_time}, {end_time}")
         local_file = check_local_data(serial_id, start_time, end_time)
         if local_file:
             return load_sensor_data(local_file)
             
         # 根據資料來源選擇不同的查詢方式
         if DATA_SOURCE == "mysql":
+            print(f"從 MySQL 獲取數據: {serial_id}, {start_time}, {end_time}")
             return fetch_from_mysql(serial_id, start_time, end_time)
         elif DATA_SOURCE == "elastic":
+            print(f"從 Elasticsearch 獲取數據: {serial_id}, {start_time}, {end_time}")
             return fetch_from_elastic(serial_id, start_time, end_time)
         else:
             raise ValueError(f"不支援的資料來源: {DATA_SOURCE}")
@@ -569,7 +572,7 @@ def fetch_from_elastic(serial_id, start_time, end_time):
         query = {
             "query": {
                 "bool": {
-                    "filter": [
+                    "must": [  # 改用 must 而不是 filter
                         {
                             "term": {
                                 "serial_id.keyword": serial_id
@@ -586,15 +589,11 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                     ]
                 }
             },
-            "sort": [
-                {
-                    "created_at": {
-                        "order": "asc"
-                    }
-                }
-            ]
+            "sort": [{"created_at": "asc"}]
         }
 
+        print(f"開始查詢: {query}")
+        
         # 初始化 scroll
         page = es.search(
             index="sensor_data-*",
@@ -610,9 +609,11 @@ def fetch_from_elastic(serial_id, start_time, end_time):
         
         # 用於儲存所有記錄
         all_records = []
+        batch_count = 1
         
+        print(f"處理第{batch_count}批資料中...")
         # 當還有資料時，持續獲取
-        while len(hits) > 0:
+        while hits:
             # 處理當前批次的資料
             for hit in hits:
                 source = hit['_source']
@@ -630,14 +631,24 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                 all_records.append(record)
             
             # 獲取下一批資料
-            page = es.scroll(
-                scroll_id=scroll_id,
-                scroll='5m'
-            )
-            hits = page['hits']['hits']
+            batch_count += 1
+            print(f"已處理 {len(all_records)} 筆資料，開始處理第{batch_count}批...")
+            
+            try:
+                page = es.scroll(
+                    scroll_id=scroll_id,
+                    scroll='5m'
+                )
+                hits = page['hits']['hits']
+            except Exception as scroll_error:
+                print(f"獲取下一批資料時發生錯誤: {str(scroll_error)}")
+                break
 
         # 清理 scroll
-        es.clear_scroll(scroll_id=scroll_id)
+        try:
+            es.clear_scroll(scroll_id=scroll_id)
+        except Exception as clear_error:
+            print(f"清理 scroll 時發生錯誤: {str(clear_error)}")
         
         if all_records:
             # 自動存檔
@@ -652,6 +663,7 @@ def fetch_from_elastic(serial_id, start_time, end_time):
 
             return all_records
         else:
+            print("未找到符合條件的資料")
             return None
             
     except Exception as e:
