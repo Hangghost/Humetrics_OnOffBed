@@ -343,10 +343,10 @@ if __name__ == "__main__":
     main()
 
     # # 基本查詢範例
-    # python elastic_data_loader.py --device_id "SENSOR001" --start_time "2024-03-20 00:00:00" --end_time "2024-03-21 00:00:00"
+    # python elastic_data_loader.py --device_id "SPS2021PA000336" --start_time "2025-02-01 00:00:00" --end_time "2025-02-05 00:00:00"
 
     # # 只查詢最近24小時的資料
-    # python elastic_data_loader.py --device_id "SENSOR001"
+    # python elastic_data_loader.py --device_id "SPS2021PA000336"
 
     # # 指定特定時間範圍的資料
-    # python elastic_data_loader.py --device_id "SENSOR001" --start_time "2024-03-01 08:00:00" --end_time "2024-03-01 18:00:00"
+    # python elastic_data_loader.py --device_id "SPS2021PA000336" --start_time "2025-02-01 08:00:00" --end_time "2025-02-02 18:00:00"
