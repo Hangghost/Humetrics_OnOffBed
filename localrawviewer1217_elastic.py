@@ -18,6 +18,9 @@ from matplotlib.ticker import FuncFormatter, AutoLocator
 from elasticsearch import Elasticsearch
 import logging
 from dotenv import load_dotenv
+import paho.mqtt.client as mqtt
+import ssl
+import time
 
 # 載入環境變數
 load_dotenv()
@@ -34,6 +37,37 @@ if not os.path.exists(DATA_DIR):
 # 在檔案開頭添加資料來源設定
 DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
 
+# 在檔案開頭添加 MQTT 設定
+MQTT_CONFIG = {
+    'normal': {
+        'server': "mqtt.humetrics.ai",
+        'port': 8883,
+        'username': "device",
+        'password': "!dF-9DXbpVKHDRgBryRJJBEdqCihwN",
+        'cert_path': './cert/humetric_mqtt_certificate.pem'
+    },
+    'test': {
+        'server': "rdtest.mqtt.humetrics.ai",
+        'port': 1883,
+        'username': "device",
+        'password': "BMY4dqh2pcw!rxa4hdy"
+    }
+}
+
+# 添加預設參數常數
+DEFAULT_PARAMETERS = {
+    "41": "30000",  # Total Sum
+    "42": "40000", "43": "40000", "44": "40000",  # min_preload
+    "45": "40000", "46": "40000", "47": "40000",
+    "48": "60000", "49": "60000", "50": "60000",  # threshold_1
+    "51": "60000", "52": "60000", "53": "60000",
+    "54": "80",    # Noise 2
+    "55": "80",    # Noise 1
+    "56": "400",   # Set Flip
+    "57": "0",     # Air mattress
+    "58": "90000", "59": "90000", "60": "90000",  # threshold_2
+    "61": "90000", "62": "90000", "63": "90000"
+}
 
 # MySQL 資料庫連接信息
 db_sensor_config = {
@@ -101,14 +135,6 @@ def init_parameter_table(root):
               
     channel_row_headers = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
     
-    # 預設的通道參數值
-    default_channel_values = [
-        [40000, 40000, 40000, 40000, 40000, 40000],  # min_preload
-        [60000, 60000, 60000, 60000, 60000, 60000],  # threshold_1
-        [90000, 90000, 90000, 90000, 90000, 90000],  # threshold_2
-        [0, 0, 0, 0, 0, 0]               # offset level
-    ]
-    
     # 創建通道參數表格
     entries = []
     # 添加列標題
@@ -126,40 +152,51 @@ def init_parameter_table(root):
         row_entries = []
         for j in range(6):  # 6個通道
             entry = ttk.Entry(table_frame, width=8)
-            entry.insert(0, str(default_channel_values[i][j]))  # 設置預設值
             entry.grid(row=i+1, column=j+1, padx=2, pady=2)
             row_entries.append(entry)
         entries.append(row_entries)
+    
+    # 創建一個框架來容納表格和按鈕
+    control_frame = ttk.Frame(root)
+    control_frame.grid(row=4, column=7, columnspan=3, padx=5, pady=5, sticky="nw")
     
     # 添加獨立參數
     single_params = ['Total Sum', 'Noise 1', 'Noise 2', 'Set Flip']
     single_entries = []
     
-    # 獨立參數的預設值
-    default_single_values = [30000, 80, 80, 200]  # Total Sum, Noise 1, Set Flip
-    
     # 創建獨立參數的標籤和輸入框
-    single_frame = ttk.Frame(root)
     for i, param in enumerate(single_params):
         # 標籤
-        label = ttk.Label(single_frame, text=param, anchor="e")
+        label = ttk.Label(control_frame, text=param, anchor="e")
         label.grid(row=i, column=0, padx=5, pady=2)
         
         # 輸入框
-        entry = ttk.Entry(single_frame, width=8)
-        entry.insert(0, str(default_single_values[i]))  # 設置預設值
+        entry = ttk.Entry(control_frame, width=8)
         entry.grid(row=i, column=1, padx=5, pady=2)
         single_entries.append(entry)
     
-    # 將表格和獨立參數框架添加到主窗口
+    # 添加 MQTT 模式選擇
+    mode_frame = ttk.Frame(control_frame)
+    mode_frame.grid(row=len(single_params), column=0, columnspan=2, pady=5)
+    
+    mqtt_mode = tk.StringVar(value="normal")
+    ttk.Radiobutton(mode_frame, text="Normal", variable=mqtt_mode, value="normal").pack(side=tk.LEFT, padx=5)
+    ttk.Radiobutton(mode_frame, text="Test", variable=mqtt_mode, value="test").pack(side=tk.LEFT, padx=5)
+    
+    # 添加 MQTT Get Para 按鈕
+    mqtt_button = ttk.Button(control_frame, text="MQTT Get Para", command=lambda: mqtt_get_parameters(mqtt_mode.get()))
+    mqtt_button.grid(row=len(single_params)+1, column=0, columnspan=2, pady=5)
+    
+    # 將表格和控制框架添加到主窗口
     table_frame.grid(row=4, column=0, columnspan=7, padx=5, pady=5)
-    single_frame.grid(row=4, column=7, columnspan=3, padx=5, pady=5, sticky="nw")
+    control_frame.grid(row=4, column=7, columnspan=3, padx=5, pady=5, sticky="nw")
     
     return {
         'frame': table_frame,
         'entries': entries,
-        'single_frame': single_frame,
-        'single_entries': single_entries
+        'single_frame': control_frame,
+        'single_entries': single_entries,
+        'mqtt_mode': mqtt_mode  # 添加 mqtt_mode 到返回的字典中
     }
 
 def get_parameters_from_table(parameter_table):
@@ -189,6 +226,130 @@ def get_parameters_from_table(parameter_table):
         return None
         
     return params
+
+def mqtt_get_parameters(mqtt_mode):
+    """從 MQTT 讀取參數並更新參數表"""
+    try:
+        # 獲取設備序號
+        serial_id = serial_id_entry.get()
+        if not serial_id:
+            messagebox.showerror("Error", "請輸入設備序號")
+            return
+
+        # 獲取 MQTT 配置
+        config = MQTT_CONFIG[mqtt_mode]
+        
+        # 初始化變數
+        reg_table = {}
+        timeout = 20
+        start_time = time.time()
+
+        # 定義訊息接收回調
+        def on_message(client, userdata, message):
+            nonlocal timeout
+            try:
+                reg = json.loads(message.payload)
+                if "taskID" in reg:
+                    del reg["taskID"]
+                reg_table.update(reg)
+                
+                # 根據收到的參數調整超時時間
+                if reg and int(list(reg.keys())[0]) >= 63:
+                    timeout = 30
+                else:
+                    timeout = 120
+                    
+            except Exception as e:
+                logging.error(f"處理 MQTT 訊息時發生錯誤: {str(e)}")
+
+        # 建立 MQTT 客戶端
+        client = mqtt.Client()
+        client.on_message = on_message
+        client.username_pw_set(config['username'], config['password'])
+
+        # 根據模式設定連接
+        if mqtt_mode == 'normal':
+            client.tls_set(config['cert_path'], None, None, cert_reqs=ssl.CERT_NONE)
+            client.connect(config['server'], config['port'], 60)
+        else:
+            client.connect(config['server'], config['port'], 60)
+
+        # 訂閱主題
+        topic_get_regs = f"algoParam/{serial_id}/get"
+        client.subscribe(topic_get_regs)
+
+        # 發布獲取參數請求
+        topic_reg_mode = f"systemManage/{serial_id}"
+        payload = {"command": "08", "parameter": "", "taskID": 0}
+        client.publish(topic_reg_mode, json.dumps(payload))
+
+        # 等待接收參數
+        while True:
+            client.loop()
+            current_time = time.time()
+            if current_time - start_time > timeout:
+                logging.warning(f"MQTT {timeout} 秒超時！")
+                break
+            if "999" in reg_table:
+                break
+
+        client.disconnect()
+
+        # 如果成功獲取參數，更新參數表
+        if reg_table:
+            update_parameter_table(reg_table)
+            messagebox.showinfo("Success", f"成功從 MQTT 獲取參數")
+        else:
+            # 如果獲取失敗，使用預設參數
+
+            update_parameter_table(DEFAULT_PARAMETERS)
+
+            messagebox.showwarning("Warning", "無法從 MQTT 獲取參數，使用預設值")
+
+    except Exception as e:
+        logging.error(f"MQTT 參數獲取失敗: {str(e)}")
+        messagebox.showerror("Error", f"MQTT 參數獲取失敗: {str(e)}")
+        # 使用預設參數
+        update_parameter_table(DEFAULT_PARAMETERS)
+
+def update_parameter_table(reg_table):
+    """更新參數表的值"""
+    try:
+        # 更新通道參數
+        for ch in range(6):
+            # min_preload
+            parameter_table['entries'][0][ch].delete(0, tk.END)
+            parameter_table['entries'][0][ch].insert(0, str(reg_table[str(ch + 42)]))
+            
+            # threshold_1
+            parameter_table['entries'][1][ch].delete(0, tk.END)
+            parameter_table['entries'][1][ch].insert(0, str(reg_table[str(ch + 48)]))
+            
+            # threshold_2
+            parameter_table['entries'][2][ch].delete(0, tk.END)
+            parameter_table['entries'][2][ch].insert(0, str(reg_table[str(ch + 58)]))
+
+        # 更新獨立參數
+        # Total Sum
+        parameter_table['single_entries'][0].delete(0, tk.END)
+        parameter_table['single_entries'][0].insert(0, str(reg_table['41']))
+        
+        # Noise 1
+        parameter_table['single_entries'][1].delete(0, tk.END)
+        parameter_table['single_entries'][1].insert(0, str(reg_table['55']))
+        
+        # Noise 2
+        parameter_table['single_entries'][2].delete(0, tk.END)
+        parameter_table['single_entries'][2].insert(0, str(reg_table['54']))
+        
+        # Set Flip
+        parameter_table['single_entries'][3].delete(0, tk.END)
+        parameter_table['single_entries'][3].insert(0, str(reg_table['56']))
+
+    except Exception as e:
+        logging.error(f"更新參數表時發生錯誤: {str(e)}")
+        messagebox.showerror("Error", f"更新參數表時發生錯誤: {str(e)}")
+
 
 def save_sensor_data(sensor_data, filename=None):
     """
