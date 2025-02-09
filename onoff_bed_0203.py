@@ -165,7 +165,7 @@ def MQTT_get_reg(mqtt_server, username, password, sn):
 
     client.username_pw_set(username, password)
     if radio_Normal.isChecked():
-        client.tls_set('./humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
+        client.tls_set('./cert/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
         client.connect(mqtt_server, 8883, 60)
     else:
         client.connect(mqtt_server, 1883, 60)
@@ -881,7 +881,7 @@ def MQTT_set_reg(mqtt_server, username, password, sn, payload):
     client = mqtt.Client()
     client.username_pw_set(username, password)
     if radio_Normal.isChecked():
-        client.tls_set('./humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
+        client.tls_set('./cert/humetric_mqtt_certificate.pem', None, None, cert_reqs=ssl.CERT_NONE)
         client.connect(mqtt_server, 8883, 60)
     else:
         client.connect(mqtt_server, 1883, 60)
