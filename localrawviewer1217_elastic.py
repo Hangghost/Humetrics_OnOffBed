@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 import ssl
 import time
+import csv
 
 # 載入環境變數
 load_dotenv()
@@ -152,6 +153,7 @@ def init_parameter_table(root):
         row_entries = []
         for j in range(6):  # 6個通道
             entry = ttk.Entry(table_frame, width=8)
+            entry.insert(0, "0")  # 設定預設值為 0
             entry.grid(row=i+1, column=j+1, padx=2, pady=2)
             row_entries.append(entry)
         entries.append(row_entries)
@@ -172,6 +174,7 @@ def init_parameter_table(root):
         
         # 輸入框
         entry = ttk.Entry(control_frame, width=8)
+        entry.insert(0, "0")  # 設定預設值為 0
         entry.grid(row=i, column=1, padx=5, pady=2)
         single_entries.append(entry)
     
@@ -297,8 +300,49 @@ def mqtt_get_parameters(mqtt_mode):
 
         # 如果成功獲取參數，更新參數表
         if reg_table:
+
+            # 定義參數說明
+            param_descriptions = {
+                '41': 'Total Sum',
+                '42': 'Channel 1 min_preload',
+                '43': 'Channel 2 min_preload',
+                '44': 'Channel 3 min_preload',
+                '45': 'Channel 4 min_preload',
+                '46': 'Channel 5 min_preload',
+                '47': 'Channel 6 min_preload',
+                '48': 'Channel 1 threshold_1',
+                '49': 'Channel 2 threshold_1',
+                '50': 'Channel 3 threshold_1',
+                '51': 'Channel 4 threshold_1',
+                '52': 'Channel 5 threshold_1',
+                '53': 'Channel 6 threshold_1',
+                '54': 'Noise 2',
+                '55': 'Noise 1',
+                '56': 'Set Flip',
+                '57': 'Air mattress',
+                '58': 'Channel 1 threshold_2',
+                '59': 'Channel 2 threshold_2',
+                '60': 'Channel 3 threshold_2',
+                '61': 'Channel 4 threshold_2',
+                '62': 'Channel 5 threshold_2',
+                '63': 'Channel 6 threshold_2'
+            }
+
+            # 將reg_table 存成 CSV，只保存重要參數
+            csv_file = f"mqtt_parameters_{serial_id}.csv"
+            with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                # 寫入標題
+                writer.writerow(['Parameter ID', 'Description', 'Value'])
+                
+                # 寫入資料
+                for param_id, description in param_descriptions.items():
+                    if param_id in reg_table and reg_table[param_id] != -1:
+                        writer.writerow([param_id, description, reg_table[param_id]])
+
+            messagebox.showinfo("Success", f"成功從 MQTT 獲取參數並儲存至 {csv_file}")
+
             update_parameter_table(reg_table)
-            messagebox.showinfo("Success", f"成功從 MQTT 獲取參數")
         else:
             # 如果獲取失敗，使用預設參數
 
