@@ -414,7 +414,7 @@ def save_sensor_data(sensor_data, filename=None):
             end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
 
 
-            filename = f"{serial_id}_{start_time}_{end_time}.json"
+            filename = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.json"
         
         # 確保 DATA_DIR 存在
         if not os.path.exists(DATA_DIR):
@@ -448,7 +448,7 @@ def save_sensor_data(sensor_data, filename=None):
             json.dump(save_data, f, indent=2, default=str)
 
         # 另外將 save_data 存成 CSV
-        csv_file = f"{serial_id}_{start_time}_{end_time}.csv"
+        csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
         with open(csv_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(save_data.keys())
