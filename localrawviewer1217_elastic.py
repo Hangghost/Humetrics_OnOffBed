@@ -36,7 +36,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
 
 # 在檔案開頭添加 MQTT 設定
 MQTT_CONFIG = {
@@ -446,7 +446,15 @@ def save_sensor_data(sensor_data, filename=None):
         # 寫入 JSON 檔案
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(save_data, f, indent=2, default=str)
+
+        # 另外將 save_data 存成 CSV
+        csv_file = f"{serial_id}_{start_time}_{end_time}.csv"
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(save_data.keys())
+            writer.writerows(zip(*save_data.values()))
             
+
         return filepath
         
     except Exception as e:
