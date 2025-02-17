@@ -22,6 +22,7 @@ import paho.mqtt.client as mqtt
 import ssl
 import time
 import csv
+import sys
 
 # 載入環境變數
 load_dotenv()
@@ -31,7 +32,7 @@ LOG_DIR = "./_log_file"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-DATA_DIR = "./_data"
+DATA_DIR = "./_data/local_viewer"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
@@ -329,7 +330,7 @@ def mqtt_get_parameters(mqtt_mode):
             }
 
             # 將reg_table 存成 CSV，只保存重要參數
-            csv_file = f"mqtt_parameters_{serial_id}.csv"
+            csv_file = f"./_data/local_viewer/mqtt_parameters_{serial_id}.csv"
             with open(csv_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 # 寫入標題
@@ -414,7 +415,7 @@ def save_sensor_data(sensor_data, filename=None):
             end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
 
 
-            filename = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.json"
+            filename = f"{serial_id}_{start_time}_{end_time}.json"
         
         # 確保 DATA_DIR 存在
         if not os.path.exists(DATA_DIR):
@@ -447,13 +448,25 @@ def save_sensor_data(sensor_data, filename=None):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(save_data, f, indent=2, default=str)
 
-        # 另外將 save_data 存成 CSV
+        # 修改 CSV 存檔部分
         csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
         with open(csv_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(save_data.keys())
-            writer.writerows(zip(*save_data.values()))
+            # 寫入標題列
+            writer.writerow(['timestamp', 'ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'created_at'])
             
+            # 寫入數據列
+            for record in sensor_data:
+                writer.writerow([
+                    record['timestamp'],
+                    record['ch0'],
+                    record['ch1'],
+                    record['ch2'],
+                    record['ch3'],
+                    record['ch4'],
+                    record['ch5'],
+                    record['created_at']
+                ])
 
         return filepath
         
@@ -595,6 +608,21 @@ def fetch_from_mysql(serial_id, start_time, end_time):
 def fetch_from_elastic(serial_id, start_time, end_time):
     """從 Elasticsearch 獲取數據"""
     try:
+        # 檢查時間範圍
+        start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+        end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+        
+        # 檢查是否為未來時間
+        current_time = datetime.now()
+        if start_dt > current_time or end_dt > current_time:
+            messagebox.showwarning("Warning", "查詢時間不能是未來時間！請修改查詢時間範圍。")
+            return None
+            
+        # 檢查時間範圍是否超過24小時
+        if (end_dt - start_dt).days > 1:
+            messagebox.showwarning("Warning", "查詢時間範圍不能超過24小時！")
+            return None
+
         # 設定 Elasticsearch 連線
         es_config = {
             "hosts": es_sensor_config["hosts"],
@@ -604,103 +632,121 @@ def fetch_from_elastic(serial_id, start_time, end_time):
             "ssl_show_warn": False
         }
         
-        # 如果有 API key，加入設定
         if es_sensor_config.get("api_key"):
             es_config["api_key"] = es_sensor_config["api_key"]
             
-        # 如果使用 HTTPS
         if es_sensor_config["hosts"].startswith("https"):
             es_config["verify_certs"] = es_sensor_config["verify_certs"]
             
         es = Elasticsearch(**es_config)
 
-        # 轉換日期格式為 ISO 格式
-        start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
-        end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+        # 先檢查索引是否存在
+        indices = es.indices.get_alias(index="sensor_data-*").keys()
+        if not indices:
+            messagebox.showerror("Error", "找不到有效的資料索引！")
+            return None
+
+        # 檢查設備是否存在
+        device_query = {
+            "query": {
+                "match": {
+                    "serial_id": serial_id
+                }
+            },
+            "size": 1
+        }
+        
+        device_check = es.search(
+            index="sensor_data-*",
+            body=device_query
+        )
+        
+        if device_check['hits']['total']['value'] == 0:
+            messagebox.showwarning("Warning", f"找不到設備 {serial_id} 的資料！")
+            return None
+        
+        print(f"找到 {device_check['hits']['total']} 筆資料")
+
+        # 轉換為 ISO 格式
         start_iso = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
         end_iso = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+        print(f"查詢時間範圍：{start_iso} 到 {end_iso}")
 
         # 建立查詢條件
         query = {
             "query": {
                 "bool": {
-                    "must": [  # 改用 must 而不是 filter
-                        {
-                            "term": {
-                                "serial_id.keyword": serial_id
-                            }
-                        },
-                        {
-                            "range": {
-                                "created_at": {
-                                    "gte": start_iso,
-                                    "lte": end_iso
-                                }
-                            }
-                        }
+                    "must": [
+                        {"match": {"serial_id": serial_id}},
+                        {"range": {"created_at": {
+                            "gte": start_iso,
+                            "lte": end_iso
+                        }}}
                     ]
                 }
             },
-            "sort": [{"created_at": "asc"}]
+            "sort": [{"created_at": "asc"}],
+            "size": 100
         }
 
-        print(f"開始查詢: {query}")
+        # print(f"開始查詢: {query}")
         
-        # 初始化 scroll
+        # 使用 scroll API 獲取資料
         page = es.search(
-            index="sensor_data-*",
-            body={
-                **query,
-                "size": 10000
-            },
+            index="sensor_data",  # 修改為與 elastic_data_loader.py 一致的索引名稱
+            body=query,
             scroll='5m'
         )
         
         scroll_id = page['_scroll_id']
         hits = page['hits']['hits']
-        
+
+        print(f"獲取到 {len(hits)} 筆資料")
+     
         # 用於儲存所有記錄
         all_records = []
-        batch_count = 1
+        limit = 300  # 設定資料筆數限制
         
-        print(f"處理第{batch_count}批資料中...")
-        # 當還有資料時，持續獲取
-        while hits:
+        # 當還有資料時，持續獲取，但不超過限制
+        while len(hits) > 0 and len(all_records) < limit:
             # 處理當前批次的資料
+            records = []
             for hit in hits:
+                if len(all_records) >= limit:
+                    break
                 source = hit['_source']
-                record = {
+                records.append({
+                    'created_at': source.get('created_at'),
                     'serial_id': source.get('serial_id'),
-                    'ch0': source.get('ch0'),
-                    'ch1': source.get('ch1'),
-                    'ch2': source.get('ch2'),
-                    'ch3': source.get('ch3'),
-                    'ch4': source.get('ch4'),
-                    'ch5': source.get('ch5'),
-                    'timestamp': source.get('timestamp'),
-                    'created_at': source.get('created_at')
-                }
-                all_records.append(record)
+                    'ch0': source.get('ch0', source.get('Channel_1_Raw')),  # 嘗試兩種可能的鍵名
+                    'ch1': source.get('ch1', source.get('Channel_2_Raw')),
+                    'ch2': source.get('ch2', source.get('Channel_3_Raw')),
+                    'ch3': source.get('ch3', source.get('Channel_4_Raw')),
+                    'ch4': source.get('ch4', source.get('Channel_5_Raw')),
+                    'ch5': source.get('ch5', source.get('Channel_6_Raw')),
+                    'Angle': source.get('angle'),
+                    'timestamp': source.get('timestamp')
+                })
             
-            # 獲取下一批資料
-            batch_count += 1
-            print(f"已處理 {len(all_records)} 筆資料，開始處理第{batch_count}批...")
+            all_records.extend(records)
             
-            try:
-                page = es.scroll(
-                    scroll_id=scroll_id,
-                    scroll='5m'
-                )
-                hits = page['hits']['hits']
-            except Exception as scroll_error:
-                print(f"獲取下一批資料時發生錯誤: {str(scroll_error)}")
+            # 顯示進度
+            print(f"已獲取 {len(all_records)}/{limit} 筆資料")
+            
+            # 如果已達到限制，跳出迴圈
+            if len(all_records) >= limit:
                 break
+                
+            # 獲取下一批資料
+            page = es.scroll(
+                scroll_id=scroll_id,
+                scroll='5m'
+            )
+            hits = page['hits']['hits']
 
         # 清理 scroll
-        try:
-            es.clear_scroll(scroll_id=scroll_id)
-        except Exception as clear_error:
-            print(f"清理 scroll 時發生錯誤: {str(clear_error)}")
+        es.clear_scroll(scroll_id=scroll_id)
         
         if all_records:
             # 自動存檔
@@ -713,14 +759,17 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                 time_at = timestamp_dt + timedelta(hours=8)
                 record['time_at'] = time_at.strftime("%Y-%m-%d %H:%M:%S")
 
+            print(f"成功獲取 {len(all_records)} 筆資料")
             return all_records
         else:
             print("未找到符合條件的資料")
             return None
             
     except Exception as e:
-        logging.error(f"從 Elasticsearch 獲取資料時發生錯誤: {str(e)}")
-        raise
+        error_msg = f"從 Elasticsearch 獲取資料時發生錯誤: {str(e)}"
+        logging.error(error_msg)
+        messagebox.showerror("Error", error_msg)
+        return None
 
 # 函数：绘制合并图表
 def plot_combined_data(sensor_data):
@@ -1020,6 +1069,10 @@ def query_and_plot():
             return
 
         sensor_data = fetch_sensor_data(serial_id, start_time, end_time)
+
+        print(f"sensor_data: {len(sensor_data)}")
+        sys.exit(0)
+
         if sensor_data:
             plot_combined_data(sensor_data)
         query_done.set()
@@ -1345,27 +1398,22 @@ if __name__ == "__main__":
     default_start_time = datetime.combine(current_date, datetime.min.time()) - timedelta(hours=12)
     default_end_time = datetime.combine(current_date, datetime.min.time()) + timedelta(hours=12)
  
-    # 指定為2024-12-16
-    # current_date = datetime(2024, 12, 18)
-    # default_start_time = datetime.combine(current_date, datetime.min.time()) - timedelta(hours=12)
-    # default_end_time = datetime.combine(current_date, datetime.min.time()) + timedelta(hours=12)
-
     # 输入框和标签
     ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456
     serial_id_entry = ttk.Entry(root)
-    serial_id_entry.insert(0, 'SPS2021PA000454')
+    serial_id_entry.insert(0, 'SPS2024PA000355')
     serial_id_entry.grid(row=0, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
     # start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    start_time_entry.insert(0, '2025-01-08 12:00:00')
+    start_time_entry.insert(0, '2025-02-12 12:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
     # end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    end_time_entry.insert(0, '2025-01-09 12:00:00')
+    end_time_entry.insert(0, '2025-02-13 12:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环

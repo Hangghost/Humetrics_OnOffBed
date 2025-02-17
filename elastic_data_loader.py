@@ -74,7 +74,6 @@ class ElasticDataLoader:
             # 添加查詢結果的除錯資訊
             self.logger.info(f"執行查詢: {query}")
             
-            # 修正 search API 的調用方式
             page = self.es.search(
                 index="sensor_data",
                 body=query,
@@ -330,7 +329,7 @@ def main():
     parser.add_argument('--device_id', type=str, help='設備 ID')
     parser.add_argument('--start_time', type=str, help='開始時間 (YYYY-MM-DD HH:MM:SS)')
     parser.add_argument('--end_time', type=str, help='結束時間 (YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--limit', type=int, help='限制最大讀取筆數，預設4000筆')
+    parser.add_argument('--limit', type=int, default=4000, help='限制最大讀取筆數，預設4000筆')
     parser.add_argument('--check_latest', action='store_true', help='檢查設備最新資料時間')
     parser.add_argument('--check_total_count', action='store_true', help='檢查設備資料總數')
     
@@ -455,6 +454,7 @@ if __name__ == "__main__":
 
     # # 基本查詢範例
     # python elastic_data_loader.py --device_id "SPS2021PA000336" --start_time "2025-02-01 00:00:00" --end_time "2025-02-05 00:00:00"
+    # python elastic_data_loader.py --device_id "SPS2024PA000355" --start_time "2025-02-09 12:00:00" --end_time "2025-02-10 12:00:00"
 
     # # 只查詢最近24小時的資料
     # python elastic_data_loader.py --device_id "SPS2021PA000336"
