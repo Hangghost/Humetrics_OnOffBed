@@ -55,7 +55,7 @@ class ElasticDataLoader:
             print(f"查詢時間範圍：{start_iso} 到 {end_iso}")
 
             # 修正查詢語法
-            query = {
+            query_sensor_data = {
                 "query": {
                     "bool": {
                         "must": [
@@ -68,15 +68,30 @@ class ElasticDataLoader:
                     }
                 },
                 "sort": [{"created_at": "asc"}],
-                "size": 10
+                "size": 1000
+            }
+
+            query_notify_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": device_id}},
+                            {"range": {"created_at": {
+                                "gte": start_iso,
+                                "lte": end_iso
+                            }}}
+                        ]
+                    }
+                },
+                "size": 1000
             }
 
             # 添加查詢結果的除錯資訊
-            self.logger.info(f"執行查詢: {query}")
+            self.logger.info(f"執行查詢: {query_sensor_data}")
             
             page = self.es.search(
                 index="sensor_data",
-                body=query,
+                body=query_sensor_data,
                 scroll='5m'
             )
             
@@ -96,7 +111,6 @@ class ElasticDataLoader:
                     source = hit['_source']
                     records.append({
                         'created_at': source.get('created_at'),
-                        'serial_id': source.get('serial_id'),
                         'Channel_1_Raw': source.get('ch0'),
                         'Channel_2_Raw': source.get('ch1'),
                         'Channel_3_Raw': source.get('ch2'),
@@ -126,11 +140,36 @@ class ElasticDataLoader:
             # 清理 scroll
             self.es.clear_scroll(scroll_id=scroll_id)
             
+            # 查詢 notify 資料
+            self.logger.info(f"執行 notify 查詢: {query_notify_data}")
+            
+            notify_page = self.es.search(
+                index="notify-*",
+                body=query_notify_data
+            )
+            
+            notify_hits = notify_page['hits']['hits']
+            notify_dict = {}  # 使用字典來存儲 notify 資料，以 timestamp 為鍵
+            
+            for hit in notify_hits:
+                source = hit['_source']
+                timestamp = source.get('timestamp')
+                if timestamp:
+                    notify_dict[timestamp] = source.get('statusType')
+            
+            self.logger.info(f"獲取到 {len(notify_dict)} 筆 notify 資料")
+            
             # 轉換為 DataFrame
             df = pd.DataFrame(all_records)
             
             # 除錯：印出 DataFrame 的欄位
             self.logger.info(f"DataFrame 欄位: {df.columns.tolist()}")
+            
+            # 將 notify 的 statusType 併入 sensor data 的 DataFrame
+            if 'timestamp' in df.columns:
+                # 創建新的 statusType 欄位
+                df['statusType'] = df['timestamp'].map(notify_dict)
+                self.logger.info(f"已將 {sum(df['statusType'].notna())} 筆 notify 資料併入 sensor data")
             
             # 確保 created_at 欄位存在且有值
             if 'created_at' in df.columns and not df['created_at'].isna().all():
@@ -164,16 +203,19 @@ class ElasticDataLoader:
                 }
                 
                 response = self.es.search(
-                    index="sensor_data-*",
+                    index="sensor_data-*", 
+                    # index="notify-*",
                     body=query
                 )
+
+                print(f"所有資料: {response}")
                 
                 if response['hits']['hits']:
                     sample_doc = response['hits']['hits'][0]['_source']
+                    print("\n索引名稱：", response['hits']['hits'][0]['_index'])
                     print("\n範例資料結構：")
                     for field, value in sample_doc.items():
                         print(f"{field}: {value}")
-                    print("\n索引名稱：", response['hits']['hits'][0]['_index'])
                 else:
                     print("找不到範例資料")
                 
@@ -453,17 +495,14 @@ if __name__ == "__main__":
     main()
 
     # # 基本查詢範例
+    # python elastic_data_loader.py --device_id "SPS2024PA000355" --start_time "2025-02-25 12:00:00" --end_time "2025-02-26 12:00:00" --limit 100
     # python elastic_data_loader.py --device_id "SPS2021PA000336" --start_time "2025-02-01 00:00:00" --end_time "2025-02-05 00:00:00"
-    # python elastic_data_loader.py --device_id "SPS2024PA000355" --start_time "2025-02-09 12:00:00" --end_time "2025-02-10 12:00:00"
 
     # # 只查詢最近24小時的資料
     # python elastic_data_loader.py --device_id "SPS2021PA000336"
 
-    # # 指定特定時間範圍的資料
-    # python elastic_data_loader.py --device_id "SPS2021PA000336" --start_time "2025-02-01 08:00:00" --end_time "2025-02-02 18:00:00"
-
     # 先檢查資料時間範圍
-    # python elastic_data_loader.py --check_timerange
+    # python elastic_data_loader.py --device_id "SPS2024PA000355" --check_latest
 
     # 再用正確的時間範圍查詢
     # python elastic_data_loader.py --device_id "2024HB000052" --start_time "2024-02-03 12:00:00" --end_time "2024-02-08 12:00:00"

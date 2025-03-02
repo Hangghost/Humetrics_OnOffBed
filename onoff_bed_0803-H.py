@@ -71,7 +71,7 @@ LOG_DIR = "./_log_file"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-DATA_DIR = "./_data"
+DATA_DIR = "./_data/pyqt_viewer"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
@@ -686,7 +686,8 @@ def OpenCmbFile():
         
         # 準備數據
         data_dict = {
-            'Timestamp': [startday + timedelta(seconds=t) for t in t1sec],
+            'DateTime': [startday + timedelta(seconds=t) for t in t1sec],
+            'Timestamp': t1sec
         }
         
         # 添加各通道的數據
