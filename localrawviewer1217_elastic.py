@@ -37,7 +37,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 # 在檔案開頭添加資料來源設定
-DATA_SOURCE = "mysql"  # 可選值: "mysql" 或 "elastic"
+DATA_SOURCE = "elastic"  # 可選值: "mysql" 或 "elastic"
 
 # 在檔案開頭添加 MQTT 設定
 MQTT_CONFIG = {
@@ -433,16 +433,22 @@ def save_sensor_data(sensor_data, filename=None):
         
         # 整理數據格式
         for i in range(len(sensor_data)):
-            save_data['data'].append({
-                'timestamp': sensor_data[i]['timestamp'],
+            record = {
+                'created_at': sensor_data[i]['created_at'],
                 'ch0': sensor_data[i]['ch0'],
                 'ch1': sensor_data[i]['ch1'],
                 'ch2': sensor_data[i]['ch2'],
                 'ch3': sensor_data[i]['ch3'],
                 'ch4': sensor_data[i]['ch4'],
-                'ch5': sensor_data[i]['ch5'],
-                'created_at': sensor_data[i]['created_at']
-            })
+                'ch5': sensor_data[i]['ch5'],                
+                'timestamp': sensor_data[i]['timestamp']
+            }
+            
+            # 如果有通知狀態，也加入到記錄中
+            if 'notify_status' in sensor_data[i]:
+                record['notify_status'] = sensor_data[i]['notify_status']
+                
+            save_data['data'].append(record)
         
         # 寫入 JSON 檔案
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -452,22 +458,36 @@ def save_sensor_data(sensor_data, filename=None):
         csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
         with open(csv_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
+            
+            # 檢查是否有通知狀態欄位
+            has_notify = any('notify_status' in record for record in sensor_data)
+            
             # 寫入標題列
-            writer.writerow(['timestamp', 'ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'created_at'])
+            headers = ['created_at', 'ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'timestamp']
+            if has_notify:
+                headers.append('notify_status')
+            writer.writerow(headers)
             
             # 寫入數據列
             for record in sensor_data:
-                writer.writerow([
-                    record['timestamp'],
+                row = [
+                    record['created_at'],
                     record['ch0'],
                     record['ch1'],
                     record['ch2'],
                     record['ch3'],
                     record['ch4'],
-                    record['ch5'],
-                    record['created_at']
-                ])
+                    record['ch5'],                    
+                    record['timestamp']
+                ]
+                
+                # 如果有通知狀態，也加入到CSV中
+                if has_notify:
+                    row.append(record.get('notify_status', ''))
+                    
+                writer.writerow(row)
 
+        print(f"成功儲存資料到 {filepath} 和 {csv_file}")
         return filepath
         
     except Exception as e:
@@ -681,7 +701,7 @@ def fetch_from_elastic(serial_id, start_time, end_time):
         print(f"查詢時間範圍：{start_iso} 到 {end_iso}")
 
         # 建立查詢條件
-        query = {
+        query_sensor_data = {
             "query": {
                 "bool": {
                     "must": [
@@ -694,15 +714,28 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                 }
             },
             "sort": [{"created_at": "asc"}],
-            "size": 100
+            "size": 500
         }
 
-        # print(f"開始查詢: {query}")
+        query_notify_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": serial_id}},
+                            {"range": {"created_at": {
+                                "gte": start_iso,
+                                "lte": end_iso
+                            }}}
+                        ]
+                    }
+                },
+                "size": 500
+            }
         
         # 使用 scroll API 獲取資料
         page = es.search(
             index="sensor_data",  # 修改為與 elastic_data_loader.py 一致的索引名稱
-            body=query,
+            body=query_sensor_data,
             scroll='5m'
         )
         
@@ -754,7 +787,71 @@ def fetch_from_elastic(serial_id, start_time, end_time):
 
         # 清理 scroll
         es.clear_scroll(scroll_id=scroll_id)
+
+        # 獲取通知資料
+        notify_page = es.search(
+            index="notify-*",
+            body=query_notify_data,
+            scroll='5m'
+        )
+
+        notify_hits = notify_page['hits']['hits']
+        notify_dict = {}
         
+        # 處理通知資料
+        notify_scroll_id = notify_page.get('_scroll_id')
+        notify_count = 0
+        notify_limit = 90000  # 設定通知資料筆數限制
+        
+        print(f"開始獲取通知資料...")
+        
+        # 當還有通知資料時，持續獲取
+        while notify_hits and notify_count < notify_limit:
+            # 處理當前批次的通知資料
+            for hit in notify_hits:
+                if notify_count >= notify_limit:
+                    break
+                    
+                source = hit['_source']
+                timestamp = source.get('timestamp')
+                if timestamp:
+                    notify_dict[timestamp] = source.get('statusType')
+                    notify_count += 1
+            
+            # 顯示進度
+            print(f"已獲取 {notify_count} 筆通知資料")
+            
+            # 如果已達到限制，跳出迴圈
+            if notify_count >= notify_limit:
+                break
+                
+            # 獲取下一批通知資料
+            if notify_scroll_id:
+                notify_page = es.scroll(
+                    scroll_id=notify_scroll_id,
+                    scroll='5m'
+                )
+                notify_hits = notify_page['hits']['hits']
+            else:
+                break
+        
+        # 清理通知資料的 scroll
+        if notify_scroll_id:
+            es.clear_scroll(scroll_id=notify_scroll_id)
+        
+        print(f"成功獲取 {notify_count} 筆通知資料")
+        
+        # 將通知資料整合到感測器資料中
+        if notify_dict and all_records:
+            matched_count = 0
+            for record in all_records:
+                timestamp = record.get('timestamp')
+                if timestamp in notify_dict:
+                    record['notify_status'] = notify_dict[timestamp]
+                    matched_count += 1
+            
+            print(f"成功將 {matched_count} 筆通知資料整合到感測器資料中")
+
         if all_records:
             # 自動存檔
             save_sensor_data(all_records)
@@ -804,7 +901,7 @@ def plot_combined_data(sensor_data):
             # 處理數據
             processed_data = process_sensor_data(sensor_data, params)
             print(f"processed_data的長度: {len(processed_data)}")
-            print(f"processed_data: {processed_data}")
+            # print(f"processed_data: {processed_data}")
             if processed_data is None:
                 messagebox.showerror("Error", "數據處理失敗")
                 return
@@ -835,15 +932,12 @@ def plot_combined_data(sensor_data):
                     new_params = get_parameters_from_table(parameter_table)
                     if new_params:
                         # 只有當參數改變時才重新偵測
-                        print(f'params: {params}')
-                        print(f'new_params: {new_params}')
                         if params != new_params:
                             new_events = detect_bed_events(processed_data, new_params)
                         else:
                             new_events = initial_events
                             
                         if new_events:
-                            print(f'new_events的長度: {len(new_events)}')
                             print(f'bed_status的長度: {len(new_events["bed_status"])}')
                             
                             # 讀取原始CSV檔案
@@ -855,7 +949,6 @@ def plot_combined_data(sensor_data):
                             if os.path.exists(csv_file):
                                 df = pd.read_csv(csv_file)
                                 data_length = len(df)
-                                print(f'df的長度: {data_length}')
                                 
                                 # 確保所有陣列長度與 df 相同
                                 # 添加演算法判斷結果
@@ -894,7 +987,6 @@ def plot_combined_data(sensor_data):
                                 timestamps = pd.to_datetime(df['timestamp'])  # 將時間欄位轉換為datetime格式
                                 
                                 # 對每個翻身時間點進行處理
-                                print("開始生成flip_times")
                                 flip_times = []
                                 for idx in new_events['flip_points']:
                                     # print(f"處理索引 {idx}")
@@ -1072,8 +1164,6 @@ def plot_combined_data(sensor_data):
             for ch in range(6):
                 # 確保數據長度一致
                 plot_length = min(len(timestamps), len(processed_data['d10'][ch]))
-                print(f"圖表一的plot_length: {plot_length}")
-                print(f"processed_data長度: {len(processed_data['d10'][ch])}")
                 ax1.plot(timestamps[:plot_length], 
                         processed_data['d10'][ch][:plot_length], 
                         label=f'CH{ch}', 
@@ -1493,7 +1583,7 @@ if __name__ == "__main__":
     # 输入框和标签
     ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456
     serial_id_entry = ttk.Entry(root)
-    serial_id_entry.insert(0, 'SPS2025PA000146')
+    serial_id_entry.insert(0, 'SPS2024PA000355')
     serial_id_entry.grid(row=0, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
