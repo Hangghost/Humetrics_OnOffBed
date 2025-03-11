@@ -421,7 +421,8 @@ def save_sensor_data(sensor_data, filename=None):
         if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR)
         
-        filepath = os.path.join(DATA_DIR, filename)
+        filepath_json = os.path.join(DATA_DIR, filename)
+        filepath_csv = os.path.join(DATA_DIR, filename.replace('.json', '.csv'))
         
         # 準備要存檔的數據
         save_data = {
@@ -451,12 +452,11 @@ def save_sensor_data(sensor_data, filename=None):
             save_data['data'].append(record)
         
         # 寫入 JSON 檔案
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath_json, 'w', encoding='utf-8') as f:
             json.dump(save_data, f, indent=2, default=str)
 
         # 修改 CSV 存檔部分
-        csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
-        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+        with open(filepath_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
             # 檢查是否有通知狀態欄位
@@ -487,8 +487,8 @@ def save_sensor_data(sensor_data, filename=None):
                     
                 writer.writerow(row)
 
-        print(f"成功儲存資料到 {filepath} 和 {csv_file}")
-        return filepath
+        print(f"成功儲存資料到 {filepath_json} 和 {filepath_csv}")
+        return filepath_json
         
     except Exception as e:
         messagebox.showerror("Error", f"儲存數據時發生錯誤: {str(e)}")
@@ -818,9 +818,6 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                     notify_dict[timestamp] = source.get('statusType')
                     notify_count += 1
             
-            # 顯示進度
-            print(f"已獲取 {notify_count} 筆通知資料")
-            
             # 如果已達到限制，跳出迴圈
             if notify_count >= notify_limit:
                 break
@@ -856,12 +853,12 @@ def fetch_from_elastic(serial_id, start_time, end_time):
             # 自動存檔
             save_sensor_data(all_records)
             
-            # 處理時間戳
-            for record in all_records:
-                timestamp_str = str(record['timestamp'])
-                timestamp_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
-                time_at = timestamp_dt + timedelta(hours=8)
-                record['time_at'] = time_at.strftime("%Y-%m-%d %H:%M:%S")
+            # # 處理時間戳??
+            # for record in all_records:
+            #     timestamp_str = str(record['timestamp'])
+            #     timestamp_dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+            #     time_at = timestamp_dt + timedelta(hours=8)
+            #     record['time_at'] = time_at.strftime("%Y-%m-%d %H:%M:%S")
 
             print(f"成功獲取 {len(all_records)} 筆資料")
             return all_records
@@ -897,8 +894,17 @@ def plot_combined_data(sensor_data):
             if params is None:
                 messagebox.showerror("Error", "無法獲取參數設置")
                 return
-                
-            # 處理數據
+            
+            # 使用 nonlocal 聲明 sensor_data 是外部變數
+            nonlocal sensor_data
+            
+            # 印出 sensor_data 的所有欄位
+            print(f"sensor_data 的所有欄位: {sensor_data[0].keys()}")
+            
+            # 處理數據git commit 
+            # 先按照 timestamp 欄位對 sensor_data 進行排序
+            sensor_data = sorted(sensor_data, key=lambda x: x['timestamp'])
+            
             processed_data = process_sensor_data(sensor_data, params)
             print(f"processed_data的長度: {len(processed_data)}")
             # print(f"processed_data: {processed_data}")
@@ -907,8 +913,8 @@ def plot_combined_data(sensor_data):
                 return
 
             # # 將數據存成dataframe後CSV
-            # processed_df = pd.DataFrame(processed_data)
-            # processed_df.to_csv('processed_data.csv', index=False)
+            processed_df = pd.DataFrame(processed_data)
+            processed_df.to_csv('processed_data.csv', index=False)
             
             # 生成時間軸 - 移除降採樣
             timestamps = [
@@ -934,12 +940,25 @@ def plot_combined_data(sensor_data):
                         # 只有當參數改變時才重新偵測
                         if params != new_params:
                             new_events = detect_bed_events(processed_data, new_params)
+                            print("參數改變，重新偵測")
                         else:
                             new_events = initial_events
+                            print("參數未改變，使用初始事件")
                             
                         if new_events:
-                            print(f'bed_status的長度: {len(new_events["bed_status"])}')
                             
+                            # 印出 new_events 各欄位的資料長度
+                            print(f'bed_status 長度: {len(new_events["bed_status"])}')
+                            print(f'movement 長度: {len(new_events["movement"])}')
+                            print(f'flip_points 長度: {len(new_events["flip_points"])}')
+                            print(f'rising_dist 長度: {len(new_events["rising_dist"])}')
+                            print(f'rising_dist_air 長度: {len(new_events["rising_dist_air"])}')
+                            print(f'onload 長度: {len(new_events["onload"])}')
+                            
+                            # 額外印出 onload 中每個陣列的長度
+                            for i, onload_arr in enumerate(new_events["onload"]):
+                                print(f'onload[{i}] 長度: {len(onload_arr)}')
+
                             # 讀取原始CSV檔案
                             serial_id = serial_id_entry.get()
                             start_time = start_time_entry.get()
@@ -1289,7 +1308,7 @@ def process_sensor_data(sensor_data, params):
                   306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90,
                   74, 60, 48, 39, 32, 28, 26]
             n = np.convolve(np.abs(hp / 16), lpf, mode='full')
-            n = n[10:-37] / 4096  # 修正：確保長度一致
+            n = n / 4096  # 修正：確保長度一致
             results['n10'].append(np.int32(n[:len(data)]))  # 確保長度與原始數據相同
 
             # 計算移動平均
@@ -1583,19 +1602,19 @@ if __name__ == "__main__":
     # 输入框和标签
     ttk.Label(root, text="Serial ID:").grid(row=0, column=0, padx=5, pady=5) # default: SPS2021PA000456
     serial_id_entry = ttk.Entry(root)
-    serial_id_entry.insert(0, 'SPS2024PA000355')
+    serial_id_entry.insert(0, 'SPS2025PA000146')
     serial_id_entry.grid(row=0, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
     # start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    start_time_entry.insert(0, '2025-02-25 12:00:00')
+    start_time_entry.insert(0, '2025-03-08 12:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
     # end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    end_time_entry.insert(0, '2025-02-26 12:00:00')
+    end_time_entry.insert(0, '2025-03-09 12:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环
