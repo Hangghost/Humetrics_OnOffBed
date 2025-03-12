@@ -105,6 +105,58 @@ query_done = threading.Event()  # 查询完成状态标记
 # 在文件開頭添加全局變數
 global startday, n10, d10, x10, data_resp, rising_dist, rising_dist_air, base_final, parameter_table
 
+# 添加檔案路徑相關的函數
+def get_data_file_paths(serial_id=None, start_time=None, end_time=None, filename=None):
+    """
+    獲取數據檔案的路徑
+    
+    Args:
+        serial_id: 設備序號
+        start_time: 開始時間
+        end_time: 結束時間
+        filename: 指定的檔名，如果為 None 則自動生成
+        
+    Returns:
+        tuple: (json檔案路徑, csv檔案路徑, 檔名)
+    """
+    # 確保 DATA_DIR 存在
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+    
+    # 如果沒有指定檔名，則自動生成
+    if filename is None and serial_id and start_time and end_time:
+        # 處理時間格式
+        if isinstance(start_time, str):
+            try:
+                start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                start_time = datetime.now()
+                
+        if isinstance(end_time, str):
+            try:
+                end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                end_time = datetime.now() + timedelta(hours=1)
+                
+        # 格式化時間為檔名
+        start_str = start_time.strftime("%Y%m%d%H%M%S")
+        end_str = end_time.strftime("%Y%m%d%H%M%S")
+        filename = f"{serial_id}_{start_str}_{end_str}.json"
+    elif filename is None:
+        # 如果沒有足夠資訊生成檔名，使用時間戳
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = f"data_{timestamp}.json"
+    
+    # 確保檔名有正確的副檔名
+    if not filename.endswith('.json'):
+        filename += '.json'
+    
+    # 生成完整路徑
+    filepath_json = os.path.join(DATA_DIR, filename)
+    filepath_csv = os.path.join(DATA_DIR, filename.replace('.json', '.csv'))
+    
+    return filepath_json, filepath_csv, filename
+
 # 在文件開頭添加必要的參數結構
 class BedParameters:
     def __init__(self):
@@ -135,7 +187,7 @@ def init_parameter_table(root):
     channel_headers = ['Channel 1', 'Channel 2', 'Channel 3', 'Channel 4',
                       'Channel 5', 'Channel 6']
               
-    channel_row_headers = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
+    channel_row_headers = ['min_preload', 'threshold_1', 'threshold_2', 'offset_level']
     
     # 創建通道參數表格
     entries = []
@@ -405,30 +457,21 @@ def save_sensor_data(sensor_data, filename=None):
         filename: 指定的檔名，如果為 None 則自動生成
     """
     try:
-        # 如果沒有指定檔名，則自動生成
-        if filename is None:
-            serial_id = serial_id_entry.get()
-            start_time = start_time_entry.get()
-            end_time = end_time_entry.get()
-            # 處理datetime格式
-            start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-            end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-
-
-            filename = f"{serial_id}_{start_time}_{end_time}.json"
+        # 獲取序號和時間範圍
+        serial_id = serial_id_entry.get()
+        start_time = start_time_entry.get()
+        end_time = end_time_entry.get()
         
-        # 確保 DATA_DIR 存在
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR)
-        
-        filepath_json = os.path.join(DATA_DIR, filename)
-        filepath_csv = os.path.join(DATA_DIR, filename.replace('.json', '.csv'))
+        # 獲取檔案路徑
+        filepath_json, filepath_csv, saved_filename = get_data_file_paths(
+            serial_id, start_time, end_time, filename
+        )
         
         # 準備要存檔的數據
         save_data = {
-            'serial_id': serial_id_entry.get(),
-            'start_time': start_time_entry.get(),
-            'end_time': end_time_entry.get(),
+            'serial_id': serial_id,
+            'start_time': start_time,
+            'end_time': end_time,
             'data': []
         }
         
@@ -494,14 +537,26 @@ def save_sensor_data(sensor_data, filename=None):
         messagebox.showerror("Error", f"儲存數據時發生錯誤: {str(e)}")
         return None
     
-def load_sensor_data(filepath):
+def load_sensor_data(filepath=None, serial_id=None, start_time=None, end_time=None):
     """
     讀取已存檔的感測器數據
     
     Args:
-        filepath: 數據檔案路徑
+        filepath: 數據檔案路徑，如果為 None 則根據其他參數自動生成
+        serial_id: 設備序號
+        start_time: 開始時間
+        end_time: 結束時間
     """
     try:
+        # 如果沒有指定檔案路徑，則根據其他參數自動生成
+        if filepath is None and serial_id and start_time and end_time:
+            filepath, _, _ = get_data_file_paths(serial_id, start_time, end_time)
+        
+        # 檢查檔案是否存在
+        if not os.path.exists(filepath):
+            messagebox.showerror("Error", f"找不到檔案: {filepath}")
+            return None
+            
         with open(filepath, 'r', encoding='utf-8') as f:
             saved_data = json.load(f)
             
@@ -537,11 +592,17 @@ def check_local_data(serial_id, start_time, end_time):
         str or None: 找到的檔案路徑，如果沒有則返回 None
     """
     try:
-        # 確保 DATA_DIR 存在
+        # 嘗試根據參數生成檔案路徑
+        filepath_json, _, _ = get_data_file_paths(serial_id, start_time, end_time)
+        
+        # 檢查檔案是否存在
+        if os.path.exists(filepath_json):
+            return filepath_json
+            
+        # 如果直接生成的路徑不存在，則搜尋所有 json 檔案
         if not os.path.exists(DATA_DIR):
             return None
             
-        # 搜尋所有 json 檔案
         for filename in os.listdir(DATA_DIR):
             if not filename.endswith('.json'):
                 continue
@@ -1585,6 +1646,249 @@ def setup_main_window():
     # 查詢按鈕
     query_button = ttk.Button(root, text="Search", command=query_and_plot)
     query_button.grid(row=5, column=0, columnspan=2, pady=10)  # 將按鈕移到參數表下方
+    
+    # 添加測試數據按鈕
+    test_data_button = ttk.Button(root, text="輸入測試數據", command=create_test_data_window)
+    test_data_button.grid(row=5, column=2, columnspan=2, pady=10)
+
+# 添加測試數據輸入功能
+def create_test_data_window():
+    """創建測試數據輸入視窗"""
+    test_window = tk.Toplevel(root)
+    test_window.title("測試數據輸入")
+    test_window.geometry("800x600")
+    
+    # 創建框架
+    input_frame = ttk.Frame(test_window)
+    input_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+    
+    # 創建通道數據輸入區域
+    channel_frame = ttk.LabelFrame(test_window, text="通道數據輸入")
+    channel_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    
+    # 創建文本輸入框和標籤
+    channel_entries = []
+    for i in range(6):
+        channel_label = ttk.Label(channel_frame, text=f"通道 {i+1} 數據:")
+        channel_label.grid(row=i, column=0, padx=5, pady=5, sticky=tk.W)
+        
+        channel_text = tk.Text(channel_frame, height=3, width=60)
+        channel_text.grid(row=i, column=1, padx=5, pady=5)
+        channel_text.insert(tk.END, "0, 0, 0, 0, 0")  # 預設值
+        
+        channel_entries.append(channel_text)
+    
+    # 創建說明標籤
+    instruction_label = ttk.Label(test_window, text="請輸入逗號分隔的數值，每個通道一行。例如：1000, 1200, 1300, 1100, 900")
+    instruction_label.pack(pady=5)
+    
+    # 創建時間間隔輸入
+    time_frame = ttk.Frame(test_window)
+    time_frame.pack(fill=tk.X, padx=10, pady=5)
+    
+    time_label = ttk.Label(time_frame, text="數據時間間隔(秒):")
+    time_label.pack(side=tk.LEFT, padx=5)
+    
+    time_entry = ttk.Entry(time_frame, width=10)
+    time_entry.pack(side=tk.LEFT, padx=5)
+    time_entry.insert(0, "1")  # 預設為1秒
+    
+    # 創建按鈕框架
+    button_frame = ttk.Frame(test_window)
+    button_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    # 添加範例數據按鈕
+    def load_example_data():
+        example_data = [
+            "40000, 41000, 42000, 43000, 44000, 45000, 46000, 47000, 48000, 49000",
+            "30000, 31000, 32000, 33000, 34000, 35000, 36000, 37000, 38000, 39000",
+            "20000, 21000, 22000, 23000, 24000, 25000, 26000, 27000, 28000, 29000",
+            "10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000",
+            "5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000",
+            "1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000"
+        ]
+        
+        for i, data in enumerate(example_data):
+            channel_entries[i].delete(1.0, tk.END)
+            channel_entries[i].insert(tk.END, data)
+    
+    example_button = ttk.Button(button_frame, text="載入範例數據", command=load_example_data)
+    example_button.pack(side=tk.LEFT, padx=5)
+    
+    # 添加從CSV載入按鈕
+    def load_from_csv():
+        from tkinter import filedialog
+        file_path = filedialog.askopenfilename(
+            title="選擇CSV檔案",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                df = pd.read_csv(file_path)
+                
+                # 檢查CSV是否包含必要的通道欄位
+                channel_cols = ["ch0", "ch1", "ch2", "ch3", "ch4", "ch5"]
+                missing_cols = [col for col in channel_cols if col not in df.columns]
+                
+                if missing_cols:
+                    messagebox.showwarning("警告", f"CSV檔案缺少以下通道欄位: {', '.join(missing_cols)}\n將使用可用的欄位並為缺少的欄位填入0")
+                
+                # 清空現有數據
+                for entry in channel_entries:
+                    entry.delete(1.0, tk.END)
+                
+                # 載入CSV數據到輸入框，確保只處理數值型資料
+                for i, channel in enumerate(channel_cols):
+                    # 確保只取數值型資料
+                    numeric_data = []
+                    
+                    if channel in df.columns:
+                        for value in df[channel]:
+                            try:
+                                # 嘗試轉換為數值
+                                numeric_value = float(value)
+                                numeric_data.append(str(int(numeric_value)))
+                            except (ValueError, TypeError):
+                                # 如果無法轉換，則跳過
+                                pass
+                    
+                    if numeric_data:
+                        data_str = ", ".join(numeric_data)
+                        channel_entries[i].insert(tk.END, data_str)
+                    else:
+                        # 如果沒有有效數據，填入0
+                        channel_entries[i].insert(tk.END, "0")
+                        if channel in df.columns:
+                            messagebox.showwarning("警告", f"通道 {channel} 沒有有效的數值資料，已填入0")
+                
+                messagebox.showinfo("成功", f"已從 {file_path} 載入數據")
+                
+                # 如果CSV中有timestamp欄位，可以自動設定時間間隔
+                if 'timestamp' in df.columns and len(df['timestamp']) >= 2:
+                    try:
+                        # 嘗試從前兩個時間戳計算間隔
+                        time1 = datetime.strptime(str(df['timestamp'].iloc[0]), "%Y%m%d%H%M%S")
+                        time2 = datetime.strptime(str(df['timestamp'].iloc[1]), "%Y%m%d%H%M%S")
+                        interval = (time2 - time1).total_seconds()
+                        
+                        if interval > 0:
+                            time_entry.delete(0, tk.END)
+                            time_entry.insert(0, str(interval))
+                            messagebox.showinfo("提示", f"已從時間戳自動設定時間間隔為 {interval} 秒")
+                    except Exception as e:
+                        print(f"無法從時間戳計算間隔: {str(e)}")
+                
+            except Exception as e:
+                messagebox.showerror("錯誤", f"載入CSV檔案時發生錯誤: {str(e)}")
+                traceback.print_exc()
+    
+    csv_button = ttk.Button(button_frame, text="從CSV載入", command=load_from_csv)
+    csv_button.pack(side=tk.LEFT, padx=5)
+    
+    # 添加處理按鈕
+    def process_test_data():
+        try:
+            # 獲取所有通道數據
+            channel_data = []
+            for i, entry in enumerate(channel_entries):
+                text = entry.get(1.0, tk.END).strip()
+                if not text:
+                    messagebox.showerror(f"錯誤, {i+1}通道的數據為空")
+                    return
+                
+                try:
+                    # 嘗試將文字轉換為整數列表
+                    values = []
+                    for x in text.split(","):
+                        x = x.strip()
+                        if x:  # 確保不是空字串
+                            try:
+                                values.append(int(float(x)))  # 先轉為浮點數再轉為整數，更靈活處理
+                            except ValueError:
+                                messagebox.showerror("錯誤", f"無法將 '{x}' 轉換為數值")
+                                return
+                    
+                    if not values:
+                        messagebox.showerror("錯誤", "通道數據為空")
+                        return
+                        
+                    channel_data.append(values)
+                except Exception as e:
+                    messagebox.showerror("錯誤", f"處理通道數據時發生錯誤: {str(e)}")
+                    return
+            
+            # 檢查數據長度是否一致
+            data_lengths = [len(data) for data in channel_data]
+            if len(set(data_lengths)) > 1:
+                messagebox.showerror("錯誤", f"各通道數據長度不一致: {data_lengths}")
+                return
+            
+            # 獲取時間間隔
+            try:
+                time_interval = float(time_entry.get())
+                if time_interval <= 0:
+                    messagebox.showerror("錯誤", "時間間隔必須大於零")
+                    return
+            except ValueError:
+                messagebox.showerror("錯誤", "時間間隔必須是數字")
+                return
+            
+            # 創建時間戳
+            start_time = datetime.now()
+            timestamps = [start_time + timedelta(seconds=i*time_interval) for i in range(data_lengths[0])]
+            
+            # 創建模擬的感測器數據
+            sensor_data = []
+            for i in range(data_lengths[0]):
+                record = {
+                    'created_at': timestamps[i].strftime("%Y-%m-%d %H:%M:%S"),
+                    'ch0': channel_data[0][i],
+                    'ch1': channel_data[1][i],
+                    'ch2': channel_data[2][i],
+                    'ch3': channel_data[3][i],
+                    'ch4': channel_data[4][i],
+                    'ch5': channel_data[5][i],
+                    'timestamp': timestamps[i].strftime("%Y%m%d%H%M%S")
+                }
+                sensor_data.append(record)
+            
+            # 更新UI中的時間範圍
+            start_time_entry.delete(0, tk.END)
+            start_time_entry.insert(0, timestamps[0].strftime("%Y-%m-%d %H:%M:%S"))
+            
+            end_time_entry.delete(0, tk.END)
+            end_time_entry.insert(0, timestamps[-1].strftime("%Y-%m-%d %H:%M:%S"))
+            
+            # 更新序號
+            serial_id_entry.delete(0, tk.END)
+            serial_id_entry.insert(0, "TEST_DATA")
+            
+            # 保存測試數據
+            save_path = save_sensor_data(sensor_data, "test_data.json")
+            
+            if save_path:
+                # 獲取CSV路徑
+                _, csv_path, _ = get_data_file_paths(filename="test_data.json")
+                
+                messagebox.showinfo("成功", f"測試數據已保存到:\nJSON: {save_path}\nCSV: {csv_path}")
+                
+                # 關閉測試數據視窗
+                test_window.destroy()
+                
+                # 繪製圖表
+                plot_combined_data(sensor_data)
+            
+        except Exception as e:
+            messagebox.showerror("錯誤", f"處理測試數據時發生錯誤: {str(e)}")
+            traceback.print_exc()
+    
+    process_button = ttk.Button(button_frame, text="處理測試數據", command=process_test_data)
+    process_button.pack(side=tk.RIGHT, padx=5)
+    
+    # 添加取消按鈕
+    cancel_button = ttk.Button(button_frame, text="取消", command=test_window.destroy)
+    cancel_button.pack(side=tk.RIGHT, padx=5)
 
 # 在主程式開始時調用
 if __name__ == "__main__":
