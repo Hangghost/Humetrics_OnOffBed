@@ -1064,6 +1064,7 @@ def plot_combined_data(sensor_data):
                                 
                                 # 添加翻身事件
                                 flip_events = np.zeros(data_length)
+                                print(df.columns)
                                 timestamps = pd.to_datetime(df['timestamp'])  # 將時間欄位轉換為datetime格式
                                 
                                 # 對每個翻身時間點進行處理
