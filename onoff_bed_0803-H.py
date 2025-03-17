@@ -67,7 +67,7 @@ global TAB_K
 TAB_K = 8
 
 # 確保 log_file 目錄存在
-LOG_DIR = "./_log_file"
+LOG_DIR = "./_logs/pyqt-viewer"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
@@ -456,7 +456,7 @@ def OpenCmbFile():
 
     # 將為處理的訊號存成CSV
     data_csv = pd.DataFrame(data)
-    data_csv.to_csv(f"{cmb_name[:-4]}_raw.csv", index=False)
+    data_csv.to_csv(f"{LOG_DIR}/{cmb_name[:-4]}_raw.csv", index=False)
 
     # --------------------------------------------------------------------
     lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
@@ -1731,49 +1731,49 @@ mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
 app.exec_()
 
-def log_movement_calculation():
-    """記錄位移計算過程"""
-    global dist, dist_air, rising_dist, rising_dist_air, d10
+# def log_movement_calculation():
+#     """記錄位移計算過程"""
+#     global dist, dist_air, rising_dist, rising_dist_air, d10
     
-    # 初始化日誌檔案
-    log_file = open('onoff_bed_movement_log.txt', 'w', encoding='utf-8')
-    log_file.write("=== 位移計算過程日誌 ===\n")
+#     # 初始化日誌檔案
+#     log_file = open(f'{LOG_DIR}/onoff_bed_movement_log.txt', 'w', encoding='utf-8')
+#     log_file.write("=== 位移計算過程日誌 ===\n")
     
-    if len(d10) > 0:
-        log_file.write(f"處理數據長度: {len(d10[0])}\n")
+#     if len(d10) > 0:
+#         log_file.write(f"處理數據長度: {len(d10[0])}\n")
         
-        # 記錄位移值
-        log_file.write("\n位移值統計:\n")
-        log_file.write(f"一般床墊位移前10個值: {dist[:10]}\n")
-        log_file.write(f"一般床墊位移統計: 最小={np.min(dist)}, 最大={np.max(dist)}, 平均={np.mean(dist):.2f}\n")
+#         # 記錄位移值
+#         log_file.write("\n位移值統計:\n")
+#         log_file.write(f"一般床墊位移前10個值: {dist[:10]}\n")
+#         log_file.write(f"一般床墊位移統計: 最小={np.min(dist)}, 最大={np.max(dist)}, 平均={np.mean(dist):.2f}\n")
         
-        log_file.write(f"氣墊床位移前10個值: {dist_air[:10]}\n")
-        log_file.write(f"氣墊床位移統計: 最小={np.min(dist_air)}, 最大={np.max(dist_air)}, 平均={np.mean(dist_air):.2f}\n")
+#         log_file.write(f"氣墊床位移前10個值: {dist_air[:10]}\n")
+#         log_file.write(f"氣墊床位移統計: 最小={np.min(dist_air)}, 最大={np.max(dist_air)}, 平均={np.mean(dist_air):.2f}\n")
         
-        # 記錄位移差值
-        log_file.write("\n位移差值統計:\n")
-        log_file.write(f"一般床墊位移差值前10個值: {rising_dist[:10]}\n")
-        log_file.write(f"一般床墊位移差值統計: 最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}\n")
+#         # 記錄位移差值
+#         log_file.write("\n位移差值統計:\n")
+#         log_file.write(f"一般床墊位移差值前10個值: {rising_dist[:10]}\n")
+#         log_file.write(f"一般床墊位移差值統計: 最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}\n")
         
-        log_file.write(f"氣墊床位移差值前10個值: {rising_dist_air[:10]}\n")
-        log_file.write(f"氣墊床位移差值統計: 最小={np.min(rising_dist_air)}, 最大={np.max(rising_dist_air)}, 平均={np.mean(rising_dist_air):.2f}\n")
+#         log_file.write(f"氣墊床位移差值前10個值: {rising_dist_air[:10]}\n")
+#         log_file.write(f"氣墊床位移差值統計: 最小={np.min(rising_dist_air)}, 最大={np.max(rising_dist_air)}, 平均={np.mean(rising_dist_air):.2f}\n")
         
-        # 記錄翻身檢測結果
-        movement_threshold = 8  # 預設閾值，可能需要調整
-        flip_mask = (rising_dist > movement_threshold)
-        log_file.write(f"\n翻身檢測結果 (閾值={movement_threshold}):\n")
-        log_file.write(f"翻身檢測前10個值: {flip_mask[:10]}\n")
-        log_file.write(f"翻身檢測統計: 翻身點數={np.sum(flip_mask)}, 總點數={len(flip_mask)}\n")
+#         # 記錄翻身檢測結果
+#         movement_threshold = 8  # 預設閾值，可能需要調整
+#         flip_mask = (rising_dist > movement_threshold)
+#         log_file.write(f"\n翻身檢測結果 (閾值={movement_threshold}):\n")
+#         log_file.write(f"翻身檢測前10個值: {flip_mask[:10]}\n")
+#         log_file.write(f"翻身檢測統計: 翻身點數={np.sum(flip_mask)}, 總點數={len(flip_mask)}\n")
         
-        # 記錄在床狀態
-        log_file.write(f"\n在床狀態前10個值: {onbed[:10]}\n")
-        log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
+#         # 記錄在床狀態
+#         log_file.write(f"\n在床狀態前10個值: {onbed[:10]}\n")
+#         log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
     
-    else:
-        log_file.write("沒有可用的數據\n")
+#     else:
+#         log_file.write("沒有可用的數據\n")
     
-    # 關閉日誌檔案
-    log_file.close()
+#     # 關閉日誌檔案
+#     log_file.close()
 
 # # 在OpenCmbFile函數中添加調用
 # def OpenCmbFile():

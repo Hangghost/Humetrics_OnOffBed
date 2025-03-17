@@ -106,6 +106,13 @@ query_done = threading.Event()  # 查询完成状态标记
 # 在文件開頭添加全局變數
 global startday, n10, d10, x10, data_resp, rising_dist, rising_dist_air, base_final, parameter_table
 
+def bordered_print(*args, **kwargs):
+    """帶邊框的打印函數，使輸出更容易閱讀"""
+    border = "=" * 50
+    print(border)
+    print(*args, **kwargs)
+    print(border)
+
 # 添加檔案路徑相關的函數
 def get_data_file_paths(serial_id=None, start_time=None, end_time=None, filename=None):
     """
@@ -521,6 +528,16 @@ def save_sensor_data(sensor_data, filename=None):
             # 如果有通知狀態，也加入到記錄中
             if 'notify_status' in sensor_data[i]:
                 record['notify_status'] = sensor_data[i]['notify_status']
+            
+            # 如果有床狀態相關欄位，也加入到記錄中
+            if 'Bed_Status' in sensor_data[i]:
+                record['Bed_Status'] = sensor_data[i]['Bed_Status']
+            
+            if 'Rising_Dist_Normal' in sensor_data[i]:
+                record['Rising_Dist_Normal'] = sensor_data[i]['Rising_Dist_Normal']
+                
+            if 'Rising_Dist_Air' in sensor_data[i]:
+                record['Rising_Dist_Air'] = sensor_data[i]['Rising_Dist_Air']
                 
             save_data['data'].append(record)
         
@@ -532,13 +549,23 @@ def save_sensor_data(sensor_data, filename=None):
         with open(filepath_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
-            # 檢查是否有通知狀態欄位
+            # 檢查是否有各種狀態欄位
             has_notify = any('notify_status' in record for record in sensor_data)
+            has_bed_status = any('Bed_Status' in record for record in sensor_data)
+            has_rising_dist_normal = any('Rising_Dist_Normal' in record for record in sensor_data)
+            has_rising_dist_air = any('Rising_Dist_Air' in record for record in sensor_data)
             
             # 寫入標題列
             headers = ['created_at', 'ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'timestamp']
             if has_notify:
                 headers.append('notify_status')
+            if has_bed_status:
+                headers.append('Bed_Status')
+            if has_rising_dist_normal:
+                headers.append('Rising_Dist_Normal')
+            if has_rising_dist_air:
+                headers.append('Rising_Dist_Air')
+            
             writer.writerow(headers)
             
             # 寫入數據列
@@ -556,8 +583,22 @@ def save_sensor_data(sensor_data, filename=None):
                 
                 # 如果有通知狀態，也加入到CSV中
                 if has_notify:
-                    row.append(record.get('notify_status', ''))
-                    
+                    # 增加debug輸出，確認通知狀態
+                    notify_value = record.get('notify_status', '')
+                    # if notify_value:
+                    #     bordered_print(f"Debug: 找到非空通知狀態: {notify_value} for timestamp {record['timestamp']}")
+                    row.append(notify_value)
+                
+                # 如果有床狀態相關欄位，也加入到CSV中
+                if has_bed_status:
+                    row.append(record.get('Bed_Status', ''))
+                
+                if has_rising_dist_normal:
+                    row.append(record.get('Rising_Dist_Normal', ''))
+                
+                if has_rising_dist_air:
+                    row.append(record.get('Rising_Dist_Air', ''))
+                
                 writer.writerow(row)
 
         print(f"成功儲存資料到 {filepath_json} 和 {filepath_csv}")
@@ -906,7 +947,9 @@ def fetch_from_elastic(serial_id, start_time, end_time):
                 source = hit['_source']
                 timestamp = source.get('timestamp')
                 if timestamp:
-                    notify_dict[timestamp] = source.get('statusType')
+                    # 確保timestamp是字符串
+                    timestamp_str = str(timestamp)
+                    notify_dict[timestamp_str] = source.get('statusType')
                     notify_count += 1
             
             # 如果已達到限制，跳出迴圈
@@ -929,13 +972,24 @@ def fetch_from_elastic(serial_id, start_time, end_time):
         
         print(f"成功獲取 {notify_count} 筆通知資料")
         
+        # 除錯：印出timestamp類型
+        if notify_dict:
+            first_notify_key = next(iter(notify_dict.keys()))
+            bordered_print(f"notify_dict第一筆timestamp類型: {type(first_notify_key)}, 值: {first_notify_key}")
+        
+        if all_records:
+            first_record_timestamp = all_records[0].get('timestamp')
+            bordered_print(f"sensor_data第一筆timestamp類型: {type(first_record_timestamp)}, 值: {first_record_timestamp}")
+            
         # 將通知資料整合到感測器資料中
         if notify_dict and all_records:
             matched_count = 0
             for record in all_records:
                 timestamp = record.get('timestamp')
-                if timestamp in notify_dict:
-                    record['notify_status'] = notify_dict[timestamp]
+                # 轉換timestamp格式，確保匹配
+                timestamp_str = str(timestamp)
+                if timestamp_str in notify_dict:
+                    record['notify_status'] = notify_dict[timestamp_str]
                     matched_count += 1
             
             print(f"成功將 {matched_count} 筆通知資料整合到感測器資料中")
@@ -1024,6 +1078,49 @@ def plot_combined_data(sensor_data):
                 messagebox.showerror("Error", "事件檢測失敗")
                 return
             
+            # 將初始演算法判斷結果整合到原始資料中
+            data_length = len(sensor_data)
+            
+            # 確保所有陣列長度與 sensor_data 相同
+            bed_status_arr = initial_events['bed_status']
+            rising_dist = initial_events['rising_dist']
+            rising_dist_air = initial_events['rising_dist_air']
+            
+            # 截斷或填充床狀態資料
+            if len(bed_status_arr) > data_length:
+                bed_status_arr = bed_status_arr[:data_length]
+            elif len(bed_status_arr) < data_length:
+                # 如果陣列較短，用最後一個值填充
+                bed_status_arr = np.pad(bed_status_arr, 
+                    (0, data_length - len(bed_status_arr)), 
+                    'edge')
+            
+            # 截斷或填充Rising_Dist_Normal資料
+            if len(rising_dist) > data_length:
+                rising_dist = rising_dist[:data_length]
+            elif len(rising_dist) < data_length:
+                rising_dist = np.pad(rising_dist, 
+                    (0, data_length - len(rising_dist)), 
+                    'edge')
+            
+            # 截斷或填充Rising_Dist_Air資料
+            if len(rising_dist_air) > data_length:
+                rising_dist_air = rising_dist_air[:data_length]
+            elif len(rising_dist_air) < data_length:
+                rising_dist_air = np.pad(rising_dist_air, 
+                    (0, data_length - len(rising_dist_air)), 
+                    'edge')
+            
+            # 將結果添加到sensor_data中
+            for i in range(data_length):
+                sensor_data[i]['Bed_Status'] = int(bed_status_arr[i])
+                sensor_data[i]['Rising_Dist_Normal'] = int(rising_dist[i])
+                sensor_data[i]['Rising_Dist_Air'] = int(rising_dist_air[i])
+            
+            # 自動保存更新後的資料
+            save_sensor_data(sensor_data)
+            print(f"已將初始演算法判斷結果整合到資料中並儲存")
+            
             def update_plot():
                 try:
                     new_params = get_parameters_from_table(parameter_table)
@@ -1071,6 +1168,50 @@ def plot_combined_data(sensor_data):
                             # # 額外印出 onload 中每個陣列的長度
                             # for i, onload_arr in enumerate(new_events["onload"]):
                             #     print(f'onload[{i}] 長度: {len(onload_arr)}')
+                            
+                            # 將演算法判斷結果整合到原始資料中
+                            nonlocal sensor_data
+                            data_length = len(sensor_data)
+                            
+                            # 確保所有陣列長度與 sensor_data 相同
+                            bed_status_arr = new_events['bed_status']
+                            rising_dist = new_events['rising_dist']
+                            rising_dist_air = new_events['rising_dist_air']
+                            
+                            # 截斷或填充床狀態資料
+                            if len(bed_status_arr) > data_length:
+                                bed_status_arr = bed_status_arr[:data_length]
+                            elif len(bed_status_arr) < data_length:
+                                # 如果陣列較短，用最後一個值填充
+                                bed_status_arr = np.pad(bed_status_arr, 
+                                    (0, data_length - len(bed_status_arr)), 
+                                    'edge')
+                            
+                            # 截斷或填充Rising_Dist_Normal資料
+                            if len(rising_dist) > data_length:
+                                rising_dist = rising_dist[:data_length]
+                            elif len(rising_dist) < data_length:
+                                rising_dist = np.pad(rising_dist, 
+                                    (0, data_length - len(rising_dist)), 
+                                    'edge')
+                            
+                            # 截斷或填充Rising_Dist_Air資料
+                            if len(rising_dist_air) > data_length:
+                                rising_dist_air = rising_dist_air[:data_length]
+                            elif len(rising_dist_air) < data_length:
+                                rising_dist_air = np.pad(rising_dist_air, 
+                                    (0, data_length - len(rising_dist_air)), 
+                                    'edge')
+                            
+                            # 將結果添加到sensor_data中
+                            for i in range(data_length):
+                                sensor_data[i]['Bed_Status'] = int(bed_status_arr[i])
+                                sensor_data[i]['Rising_Dist_Normal'] = int(rising_dist[i])
+                                sensor_data[i]['Rising_Dist_Air'] = int(rising_dist_air[i])
+                            
+                            # 自動保存更新後的資料
+                            save_sensor_data(sensor_data)
+                            print(f"已將演算法判斷結果整合到資料中並儲存")
                             
                             # 繪製各通道在床狀態
                             for ch in range(6):

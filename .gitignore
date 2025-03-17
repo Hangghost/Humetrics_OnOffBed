@@ -167,6 +167,3 @@ humetric_mqtt_certificate.pem
 .DS_Store
 poetry.lock
 .env
-
-localrawviewer_events_log.txt
-localrawviewer_log.txt
