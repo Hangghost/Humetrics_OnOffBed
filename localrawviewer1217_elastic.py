@@ -177,6 +177,15 @@ class BedParameters:
         # 床墊類型
         self.is_air_mattress = False  # True為空氣床墊，False為一般床墊
 
+    def __str__(self):
+        return (f"床參數: 基本閾值={self.bed_threshold}, 噪音1={self.noise_1}, 噪音2={self.noise_2}, "
+                f"移動閾值={self.movement_threshold}, 空氣床墊={self.is_air_mattress}, "
+                f"預載值={self.channel_params['preload']}, 主要閾值={self.channel_params['threshold1']}, "
+                f"次要閾值={self.channel_params['threshold2']}, 偏移值={self.channel_params['offset']}")
+
+    def __repr__(self):
+        return self.__str__()
+
 # 添加參數表初始化
 def init_parameter_table(root):
     """初始化參數表"""
@@ -1000,8 +1009,30 @@ def plot_combined_data(sensor_data):
                     if new_params:
                         # 只有當參數改變時才重新偵測
                         if params != new_params:
+                            # 準備一個參數差異字符串
+                            diff_str = []
+                            if params.bed_threshold != new_params.bed_threshold:
+                                diff_str.append(f"床閾值: {params.bed_threshold} → {new_params.bed_threshold}")
+                            if params.noise_1 != new_params.noise_1:
+                                diff_str.append(f"噪音1: {params.noise_1} → {new_params.noise_1}")
+                            if params.noise_2 != new_params.noise_2:
+                                diff_str.append(f"噪音2: {params.noise_2} → {new_params.noise_2}")
+                            if params.movement_threshold != new_params.movement_threshold:
+                                diff_str.append(f"移動閾值: {params.movement_threshold} → {new_params.movement_threshold}")
+                            if params.is_air_mattress != new_params.is_air_mattress:
+                                diff_str.append(f"空氣床墊: {params.is_air_mattress} → {new_params.is_air_mattress}")
+                            
+                            # 檢查各通道參數
+                            for param_type in ['preload', 'threshold1', 'threshold2', 'offset']:
+                                for ch in range(6):
+                                    if params.channel_params[param_type][ch] != new_params.channel_params[param_type][ch]:
+                                        diff_str.append(f"通道{ch+1} {param_type}: {params.channel_params[param_type][ch]} → {new_params.channel_params[param_type][ch]}")
+                            
+                            # 輸出參數變化
+                            change_summary = ", ".join(diff_str) if diff_str else "未檢測到具體變化"
+                            print(f"參數變化: {change_summary}")
+                            
                             new_events = detect_bed_events(processed_data, new_params)
-                            print("參數改變，重新偵測")
                         else:
                             new_events = initial_events
                             print("參數未改變，使用初始事件")
@@ -1020,98 +1051,98 @@ def plot_combined_data(sensor_data):
                             for i, onload_arr in enumerate(new_events["onload"]):
                                 print(f'onload[{i}] 長度: {len(onload_arr)}')
 
-                            # 讀取原始CSV檔案
-                            serial_id = serial_id_entry.get()
-                            start_time = start_time_entry.get()
-                            end_time = end_time_entry.get()
-                            csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
+                            # # 讀取原始CSV檔案
+                            # serial_id = serial_id_entry.get()
+                            # start_time = start_time_entry.get()
+                            # end_time = end_time_entry.get()
+                            # csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
                             
-                            if os.path.exists(csv_file):
-                                df = pd.read_csv(csv_file)
-                                data_length = len(df)
+                            # if os.path.exists(csv_file):
+                            #     df = pd.read_csv(csv_file)
+                            #     data_length = len(df)
                                 
-                                # 確保所有陣列長度與 df 相同
-                                # 添加演算法判斷結果
-                                bed_status_arr = new_events['bed_status']
-                                if len(bed_status_arr) > data_length:
-                                    bed_status_arr = bed_status_arr[:data_length]
-                                elif len(bed_status_arr) < data_length:
-                                    # 如果陣列較短，用最後一個值填充
-                                    bed_status_arr = np.pad(bed_status_arr, 
-                                        (0, data_length - len(bed_status_arr)), 
-                                        'edge')
-                                df['Bed_Status'] = bed_status_arr
+                            #     # 確保所有陣列長度與 df 相同
+                            #     # 添加演算法判斷結果
+                            #     bed_status_arr = new_events['bed_status']
+                            #     if len(bed_status_arr) > data_length:
+                            #         bed_status_arr = bed_status_arr[:data_length]
+                            #     elif len(bed_status_arr) < data_length:
+                            #         # 如果陣列較短，用最後一個值填充
+                            #         bed_status_arr = np.pad(bed_status_arr, 
+                            #             (0, data_length - len(bed_status_arr)), 
+                            #             'edge')
+                            #     df['Bed_Status'] = bed_status_arr
 
-                                # 處理 Rising_Dist_Normal
-                                rising_dist = new_events['rising_dist']
-                                if len(rising_dist) > data_length:
-                                    rising_dist = rising_dist[:data_length]
-                                elif len(rising_dist) < data_length:
-                                    rising_dist = np.pad(rising_dist, 
-                                        (0, data_length - len(rising_dist)), 
-                                        'edge')
-                                df['Rising_Dist_Normal'] = rising_dist
+                            #     # 處理 Rising_Dist_Normal
+                            #     rising_dist = new_events['rising_dist']
+                            #     if len(rising_dist) > data_length:
+                            #         rising_dist = rising_dist[:data_length]
+                            #     elif len(rising_dist) < data_length:
+                            #         rising_dist = np.pad(rising_dist, 
+                            #             (0, data_length - len(rising_dist)), 
+                            #             'edge')
+                            #     df['Rising_Dist_Normal'] = rising_dist
 
-                                # 處理 Rising_Dist_Air
-                                rising_dist_air = new_events['rising_dist_air']
-                                if len(rising_dist_air) > data_length:
-                                    rising_dist_air = rising_dist_air[:data_length]
-                                elif len(rising_dist_air) < data_length:
-                                    rising_dist_air = np.pad(rising_dist_air, 
-                                        (0, data_length - len(rising_dist_air)), 
-                                        'edge')
-                                df['Rising_Dist_Air'] = rising_dist_air
+                            #     # 處理 Rising_Dist_Air
+                            #     rising_dist_air = new_events['rising_dist_air']
+                            #     if len(rising_dist_air) > data_length:
+                            #         rising_dist_air = rising_dist_air[:data_length]
+                            #     elif len(rising_dist_air) < data_length:
+                            #         rising_dist_air = np.pad(rising_dist_air, 
+                            #             (0, data_length - len(rising_dist_air)), 
+                            #             'edge')
+                            #     df['Rising_Dist_Air'] = rising_dist_air
                                 
-                                # 添加翻身事件
-                                flip_events = np.zeros(data_length)
-                                print(df.columns)
-                                timestamps = pd.to_datetime(df['timestamp'])  # 將時間欄位轉換為datetime格式
+                            #     # 添加翻身事件
+                            #     flip_events = np.zeros(data_length)
+                            #     print(df.columns)
+                            #     timestamps = pd.to_datetime(df['timestamp'])  # 將時間欄位轉換為datetime格式
                                 
-                                # 對每個翻身時間點進行處理
-                                flip_times = []
-                                for idx in new_events['flip_points']:
-                                    # print(f"處理索引 {idx}")
-                                    if idx < len(timestamps):
-                                        flip_times.append(timestamps[idx])
-                                        # print(f"成功添加時間點: {timestamps[idx]}")
-                                    else:
-                                        # print(f"索引超出範圍: {idx} >= {len(timestamps)}")
-                                        pass
+                            #     # 對每個翻身時間點進行處理
+                            #     flip_times = []
+                            #     for idx in new_events['flip_points']:
+                            #         # print(f"處理索引 {idx}")
+                            #         if idx < len(timestamps):
+                            #             flip_times.append(timestamps[idx])
+                            #             # print(f"成功添加時間點: {timestamps[idx]}")
+                            #         else:
+                            #             # print(f"索引超出範圍: {idx} >= {len(timestamps)}")
+                            #             pass
 
-                                # print(f"生成的flip_times長度: {len(flip_times)}")
+                            #     # print(f"生成的flip_times長度: {len(flip_times)}")
 
-                                # 繪製翻身標記
-                                if flip_times and show_vars['flip'].get():
-                                    # print(f"準備繪製 {len(flip_times)} 個翻身標記")
-                                    ax2.scatter(flip_times, 
-                                               [1.1] * len(flip_times),
-                                               marker='v',
-                                               color='#FF0000',
-                                               s=100,
-                                               zorder=10,
-                                               label='Flip')
-                                    # print(f"成功繪製 {len(flip_times)} 個翻身標記")
-                                else:
-                                    # print(f"未能繪製翻身標記: flip_times為空={not bool(flip_times)}, show_flip={show_vars['flip'].get()}")
-                                    pass
+                            #     # 繪製翻身標記
+                            #     if flip_times and show_vars['flip'].get():
+                            #         # print(f"準備繪製 {len(flip_times)} 個翻身標記")
+                            #         ax2.scatter(flip_times, 
+                            #                    [1.1] * len(flip_times),
+                            #                    marker='v',
+                            #                    color='#FF0000',
+                            #                    s=100,
+                            #                    zorder=10,
+                            #                    label='Flip')
+                            #         # print(f"成功繪製 {len(flip_times)} 個翻身標記")
+                            #     else:
+                            #         # print(f"未能繪製翻身標記: flip_times為空={not bool(flip_times)}, show_flip={show_vars['flip'].get()}")
+                            #         pass
 
-                                # 添加在床狀態
-                                # bed_status_arr = new_events['bed_status']
-                                # if len(bed_status_arr) > data_length:
-                                #     bed_status_arr = bed_status_arr[:data_length]
-                                # elif len(bed_status_arr) < data_length:
-                                #     # 如果陣列較短，用最後一個值填充
-                                #     bed_status_arr = np.pad(bed_status_arr, 
-                                #         (0, data_length - len(bed_status_arr)), 
-                                #         'edge')
-                                # df['Bed_Status'] = bed_status_arr
+                            #     # 添加在床狀態
+                            #     # bed_status_arr = new_events['bed_status']
+                            #     # if len(bed_status_arr) > data_length:
+                            #     #     bed_status_arr = bed_status_arr[:data_length]
+                            #     # elif len(bed_status_arr) < data_length:
+                            #     #     # 如果陣列較短，用最後一個值填充
+                            #     #     bed_status_arr = np.pad(bed_status_arr, 
+                            #     #         (0, data_length - len(bed_status_arr)), 
+                            #     #         'edge')
+                            #     # df['Bed_Status'] = bed_status_arr
                                 
-                                # 保存更新後的CSV
-                                df.to_csv(csv_file, index=False)
-                                print(f"已更新演算法判斷結果到檔案: {csv_file}")
+                            #     # 保存更新後的CSV
+                            #     df.to_csv(csv_file, index=False)
+                            #     print(f"已更新演算法判斷結果到檔案: {csv_file}")
                             
-                            # 清除現有圖表
-                            ax2.clear()
+                            # # 清除現有圖表
+                            # ax2.clear()
                             
                             # 繪製各通道在床狀態
                             for ch in range(6):
@@ -2037,13 +2068,13 @@ if __name__ == "__main__":
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
     # start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    start_time_entry.insert(0, '2025-03-08 12:00:00')
+    start_time_entry.insert(0, '2025-03-15 12:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
     # end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    end_time_entry.insert(0, '2025-03-09 12:00:00')
+    end_time_entry.insert(0, '2025-03-16 12:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环
