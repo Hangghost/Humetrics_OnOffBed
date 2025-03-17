@@ -717,7 +717,7 @@ def OpenCmbFile():
         }
         
         # 收集參數表中的所有數據
-        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset_level']
+        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
         for row in range(4):
             param_dict['Parameter'].append(param_names[row])
             for col in range(6):  # 前6個通道
@@ -910,18 +910,35 @@ def EvalParameters():
     global base_final
     base_final = []
 
+    # 初始化日誌檔案
+    log_file = open('onoff_bed_log.txt', 'w', encoding='utf-8')
+    log_file.write("=== EvalParameters 函數日誌 ===\n")
+    log_file.write(f"處理數據長度: {d10[0].shape[0]}\n")
+    log_file.write(f"參數設定: noise_onbed={noise_onbed}, noise_offbed={noise_offbed}, bed_threshold={bed_threshold}\n")
+
     l = d10[0].shape[0]
     onbed = np.zeros((l,))  # 初始化在床狀態陣列
     onload = []             # 初始化負載狀態列表
     total = 0              # 初始化總負載
 
     for ch in range(6):
+        log_file.write(f"\n處理通道 {ch}:\n")
         max10 = x10[ch] + offset_edit[ch]    # 最大值加上偏移
         med10 = d10[ch] + offset_edit[ch]     # 中值加上偏移
         n = n10[ch]                           # 噪聲值
         preload = preload_edit[ch]            # 預載值
+        
+        log_file.write(f"  通道 {ch} 偏移值: {offset_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 預載值: {preload}\n")
+        log_file.write(f"  通道 {ch} 閾值1: {th1_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 閾值2: {th2_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 原始數據前10個值: {med10[:10]}\n")
+        log_file.write(f"  通道 {ch} 噪聲值前10個值: {n[:10]}\n")
+        
         # 判斷是否為零點（無負載狀態）
         zeroing = np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5))
+        log_file.write(f"  通道 {ch} 零點判定前10個值: {zeroing[:10]}\n")
+        
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
         approach = max10 - (th1 + th2)           # 計算接近度
@@ -929,6 +946,10 @@ def EvalParameters():
         np.clip(speed, 1, 16, out=speed)         # 限制速度範圍
         app_sp = approach * speed                # 接近度與速度的乘積
         sp_1024 = 1024 - speed                   # 速度的補數
+        
+        log_file.write(f"  通道 {ch} 接近度前10個值: {approach[:10]}\n")
+        log_file.write(f"  通道 {ch} 速度前10個值: {speed[:10]}\n")
+        
         #----------------------------------------------------
         base = (app_sp[0] // 1024 + med10[0]) // 2
         base = np.int64(base)
@@ -939,8 +960,15 @@ def EvalParameters():
             base = (base * sp_1024[i] + app_sp[i]) // 1024  # 動態更新基線
             baseline[i] = base
         
-        total = total + med10[:] - baseline      # 累加所有通道的淨負載
-        o = np.less(th1, med10[:] - baseline)    # 判斷是否超過閾值
+        log_file.write(f"  通道 {ch} 基線前10個值: {baseline[:10]}\n")
+        
+        channel_total = med10[:] - baseline      # 計算通道負載
+        log_file.write(f"  通道 {ch} 負載前10個值: {channel_total[:10]}\n")
+        
+        total = total + channel_total      # 累加所有通道的淨負載
+        o = np.less(th1, channel_total)    # 判斷是否超過閾值
+        log_file.write(f"  通道 {ch} 負載狀態前10個值: {o[:10]}\n")
+        
         onload.append(o)                         # 記錄該通道的負載狀態
         onbed = onbed + o                        # 累加到總體在床狀態
 
@@ -948,8 +976,18 @@ def EvalParameters():
         zdata_final.append(d_zero)
         base_final.append(baseline)
 
-    onbed = onbed + np.less(bed_threshold, total)  # 加入總負載判斷
-    onbed = np.int32(onbed > 0)                    # 轉換為0/1狀態
+    log_file.write(f"\n總負載前10個值: {total[:10]}\n")
+    bed_threshold_check = np.less(bed_threshold, total)
+    log_file.write(f"床閾值檢查前10個值: {bed_threshold_check[:10]}\n")
+    
+    onbed = onbed + bed_threshold_check 
+    onbed = np.int32(onbed > 0)
+    
+    log_file.write(f"最終在床狀態前10個值: {onbed[:10]}\n")
+    log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
+    
+    # 關閉日誌檔案
+    log_file.close()
     
     return onload, onbed
 
@@ -1692,4 +1730,453 @@ row_layout.addWidget(json_button)  # 使用已存在的 row_layout 而不是 too
 mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
 app.exec_()
+
+def log_movement_calculation():
+    """記錄位移計算過程"""
+    global dist, dist_air, rising_dist, rising_dist_air, d10
+    
+    # 初始化日誌檔案
+    log_file = open('onoff_bed_movement_log.txt', 'w', encoding='utf-8')
+    log_file.write("=== 位移計算過程日誌 ===\n")
+    
+    if len(d10) > 0:
+        log_file.write(f"處理數據長度: {len(d10[0])}\n")
+        
+        # 記錄位移值
+        log_file.write("\n位移值統計:\n")
+        log_file.write(f"一般床墊位移前10個值: {dist[:10]}\n")
+        log_file.write(f"一般床墊位移統計: 最小={np.min(dist)}, 最大={np.max(dist)}, 平均={np.mean(dist):.2f}\n")
+        
+        log_file.write(f"氣墊床位移前10個值: {dist_air[:10]}\n")
+        log_file.write(f"氣墊床位移統計: 最小={np.min(dist_air)}, 最大={np.max(dist_air)}, 平均={np.mean(dist_air):.2f}\n")
+        
+        # 記錄位移差值
+        log_file.write("\n位移差值統計:\n")
+        log_file.write(f"一般床墊位移差值前10個值: {rising_dist[:10]}\n")
+        log_file.write(f"一般床墊位移差值統計: 最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}\n")
+        
+        log_file.write(f"氣墊床位移差值前10個值: {rising_dist_air[:10]}\n")
+        log_file.write(f"氣墊床位移差值統計: 最小={np.min(rising_dist_air)}, 最大={np.max(rising_dist_air)}, 平均={np.mean(rising_dist_air):.2f}\n")
+        
+        # 記錄翻身檢測結果
+        movement_threshold = 8  # 預設閾值，可能需要調整
+        flip_mask = (rising_dist > movement_threshold)
+        log_file.write(f"\n翻身檢測結果 (閾值={movement_threshold}):\n")
+        log_file.write(f"翻身檢測前10個值: {flip_mask[:10]}\n")
+        log_file.write(f"翻身檢測統計: 翻身點數={np.sum(flip_mask)}, 總點數={len(flip_mask)}\n")
+        
+        # 記錄在床狀態
+        log_file.write(f"\n在床狀態前10個值: {onbed[:10]}\n")
+        log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
+    
+    else:
+        log_file.write("沒有可用的數據\n")
+    
+    # 關閉日誌檔案
+    log_file.close()
+
+# 在OpenCmbFile函數中添加調用
+def OpenCmbFile():
+    global cmb_name
+    status_bar.showMessage('Reading ' + cmb_name + ' ........')
+    QApplication.processEvents()  
+
+    global n10
+    global d10
+    global x10
+    global n10_sel
+    global d10_sel
+    global x10_sel
+
+    #---------------------------------------------------------
+    txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
+    with open(txt_path, mode='r', newline='') as file:
+        reader = csv.reader(file)
+        t = []
+        filelen = []
+        # 逐行读取数据并将其添加到列表中
+        for row in reader:
+            dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
+            gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
+            gmt_dt = gmt.localize(dt)                
+            tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
+            tw_dt = gmt_dt.astimezone(tz)
+            t.append(tw_dt)
+            filelen.append(int(row[1]))
+
+        t = np.array(t)
+        filelen = np.array(filelen)
+        bcg = np.median(filelen) == 3000
+
+    #---------------------------------------------------------
+    cmb_path = os.path.join(LOG_DIR, cmb_name)
+    with open(cmb_path, "rb") as f:            
+        iCueSN.setText(cmb_name.split('/')[-1][0:15])
+        status_bar.showMessage('Converting to 24bit data ........')
+        QApplication.processEvents()
+
+        data = f.read() # 讀取資料
+        data = np.frombuffer(data, dtype=np.uint8)
+        if bcg:
+            # 將數據重塑為每55字節一組
+            data = data.reshape(-1, 55)
+        else:
+            # 將數據重塑為每24字節一組
+            data = data.reshape(-1, 24)
+        # 提取每組的前18字節
+        data18 = data[:, :18].reshape(-1)
+        # 將前18字節的數據轉換為24位整數
+        # 每3字節為一組，將其轉換為24位整數
+        reshaped_data = np.int32(data18.reshape(-1, 3))
+        int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
+        int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+
+    #---------------------------------------------------------
+    if radio_Normal.isChecked():
+        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+    else:
+        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+
+    for ch in range(6):
+        para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
+        para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
+        para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
+    
+    para_table.item(0, 6).setText(str(reg_table[str(41)]))
+
+    para_table.item(2, 7).setText(str(reg_table[str(54)]))
+    para_table.item(0, 7).setText(str(reg_table[str(55)]))
+
+    para_table.item(0, 8).setText(str(reg_table[str(56)]))
+    para_table.item(2, 8).setText(str(reg_table[str(57)]))
+
+    # 重新塑形數組以分開通道
+    data = int_data.reshape(-1, 6)
+    global data_bcg
+    #data_bcg = [x, y, z]
+
+    # 將為處理的訊號存成CSV
+    data_csv = pd.DataFrame(data)
+    data_csv.to_csv(f"{cmb_name[:-4]}_raw.csv", index=False)
+
+    # --------------------------------------------------------------------
+    lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
+    
+    global n10
+    global d10
+    global x10
+    global data_resp
+    global rising_dist
+    global rising_dist_air
+    n10 = []
+    d10 = []
+    x10 = []
+    data_resp = []
+    dist = 0
+    dist_air = 0
+
+    for ch in range(6):
+        status_bar.showMessage(f'Processing CH{ch+1} ........')
+        QApplication.processEvents()
+        # --------------------------------------------------------
+        hp = np.convolve(data[:,ch], [-1, -2, -3, -4, 4, 3, 2, 1], mode='same')
+        n = np.convolve(np.abs(hp / 16), lpf, mode='full')
+        n = n[10:-37] / 4096
+        n = n[::10]
+        n10.append(np.int32(n))
+        # --------------------------------------------------------
+        data_pd = pd.Series(data[:,ch]) # 將通道的數據轉換為Pandas的Series數據結構
+        med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的中位數，窗口大小為10
+        med10 = np.array(med10)
+        med10 = med10[::10]
+        d10.append(np.int32(med10))
+        # --------------------------------------------------------
+        max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為10 
+        max10 = np.array(max10)
+        max10 = np.int32(max10[::10])
+        x10.append(np.int32(max10))
+        # --------------------------------------------------------
+        resp = data[:,ch] - savgol_filter(data[:,ch], 105, 3)
+        resp = np.repeat(resp, 10).astype(np.float64)
+        resp = savgol_filter(resp, 151, 3)
+        #data_bcg.append(resp)
+        # 計算 dist ----------------------------------------------   
+        a = [1, -1023/1024]
+        b = [1/1024, 0]
+        pos_iirmean = lfilter(b, a, med10) # 1 second # IIR濾波
+        med10_pd = pd.Series(med10)
+        mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為30 
+        mean_30sec = np.int32(mean_30sec)        
+        diff = (mean_30sec - pos_iirmean) / 256
+        if ch == 1:
+            diff = diff / 3
+        dist = dist + np.square(diff) # 累加平方差
+        dist[dist > 8000000] = 8000000 # 限制最大值
+        # 計算 dist (air mattress) -------------------------------
+        mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為60 
+        mean_60sec = np.int32(mean_60sec)
+        # [60][60][60][60][60][60][60][60][60][60]
+        # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        
+        #                     10 minutes mean ->|         b[60]
+        #                                     [60][60][60][60]                                    
+        a = np.zeros([780,])
+        a[0] = 1
+        b = np.zeros([780,])
+        for s in range(10):
+            b[s*60 + 180] = -0.1
+        b[60] = 1
+        diff = lfilter(b, a, mean_60sec) # 1 second
+        if ch == 1:
+            diff = diff / 3
+        dist_air = dist_air + np.square(diff / 256)
+
+    # 一般床墊的位移差值計算
+    # Convert to pandas Series
+    dist = pd.Series(dist)
+    # Calculate the difference with a shift of 60
+    shift = 60
+    rising_dist = dist.shift(-shift) - dist
+    # Fill NaN values resulting from the shift to maintain the same length as the original array
+    rising_dist = np.int32(rising_dist.fillna(0))
+    rising_dist[rising_dist < 0] = 0
+    rising_dist = rising_dist // 127
+    rising_dist[rising_dist > 1000] = 1000
+
+    # 空氣床墊的位移差值計算
+    # Convert to pandas Series
+    dist_air = pd.Series(dist_air)
+    # Calculate the difference with a shift of 60
+    shift = 60
+    rising_dist_air = dist_air.shift(-shift) - dist_air
+    # Fill NaN values resulting from the shift to maintain the same length as the original array
+    rising_dist_air = np.int32(rising_dist_air.fillna(0))
+    rising_dist_air[rising_dist_air < 0] = 0
+    rising_dist_air = rising_dist_air // 127
+    rising_dist_air[rising_dist_air > 1000] = 1000
+    
+    global idx10
+    global idx1sec
+    # 由檔案開始時間/資料長度計算對應 index --------------------------------------------   
+    idx1sec = np.array([])
+    idx100 = np.array([])
+    idx10 = np.array([])
+    idx100_sum = 0
+    idx10_sum = 0
+
+    # 迭代資料的每一個索引 i
+    for i in range(filelen.shape[0]):
+
+        if i < filelen.shape[0] - 1:
+            t_diff = np.int32((t[i + 1] - t[i]).total_seconds())  # 計算相鄰時間之差（秒）
+        else:
+            t_diff = 600  # 若為最後一個數據，設定時間差為 600 秒
+
+        if t_diff > 660:
+            t_blank = t_diff - 600  # 若時間差超過 660 秒，計算空白時間
+            t_diff = 600  # 設定時間差為 600 秒
+        else:
+            t_blank = 0
+
+        # 將索引值加入對應的陣列中
+        # 生成三種不同採樣率的索引：
+        # - idx1sec: 1秒一個點
+        # - idx100: 100ms一個點
+        # - idx10: 10ms一個點
+        idx1sec = np.append(idx1sec, np.floor(np.linspace(0, filelen[i]//10 - 1, t_diff)) + idx100_sum//10)
+        idx100 = np.append(idx100, np.floor(np.linspace(0, filelen[i] - 1, t_diff*10)) + idx100_sum)
+        idx10 = np.append(idx10, np.floor(np.linspace(0, filelen[i]*10 - 1, t_diff*100)) + idx10_sum)
+
+        # 處理空白時間
+        idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
+        idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
+        idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
+
+        idx100_sum = idx100_sum + filelen[i]  # 更新索引值總和
+        idx10_sum = idx10_sum + filelen[i]*10  # 更新索引值總和
+        
+
+    # 計算不同取樣率對應的時間 --------------------------------------------------------    
+    st = (t[0] - t[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
+    global startday
+    startday = t[0].replace(hour=0, minute=0, second=0, microsecond=0)
+
+    global t10ms
+    global t1sec
+    t1sec = np.array(range(np.int32((t[-1] - t[0]).total_seconds()) + 600)) + st
+    idx1sec = np.int32(idx1sec)
+    idx100 = np.int32(idx100)
+    idx10 = np.int32(idx10)
+    t100ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*10)
+    t10ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*100)
+    t100ms = np.around(t100ms, decimals=1)
+    t10ms = np.around(t10ms, decimals=2)
+
+    # for ch in range(9):   
+    #     data_bcg[ch] = data_bcg[ch][idx10]
+
+    ##--------------------------------------
+    x_range, y_range = raw_plot.viewRange()
+    center = (x_range[0] + x_range[1]) / 2
+
+    # 設定新的顯示範圍，以中心點為基準，前後各10單位
+    st = center - 10
+    ed = center + 10
+
+    # 調整顯示範圍，確保不超出資料範圍
+    if st < t100ms[0]:
+        st = t100ms[0]
+        ed = st + 20
+    if ed > t100ms[-1]:
+        ed = t100ms[-1]
+        st = ed - 20
+
+    # --------------------------------------------------------------------
+    global legend_raw
+    global legend_bit
+    # Customize the legend background color
+    if check_NightMode.isChecked():
+        legend_bg = pg.mkBrush(color=hex_to_rgb('202020'))  # Red background for the legend
+    else:
+        legend_bg = pg.mkBrush(color=hex_to_rgb('e0e0e0'))  # Red background for the legend
+    
+    legend_raw = raw_plot.addLegend()
+    legend_raw.setBrush(legend_bg)
+    update_raw_plot()
+
+    legend_bit = bit_plot.addLegend()
+    legend_bit.setBrush(legend_bg)
+    update_bit_plot()
+
+    status_bar.showMessage(cmb_name)    
+
+    # 在所有資料處理完成後，最後初始化標記線
+    try:
+        raw_plot.vLine.hide()
+        bit_plot.vLine.hide()
+    except:
+        pass
+        
+    # 重新創建標記線
+    raw_plot.vLine = pg.InfiniteLine(
+        angle=90, 
+        movable=True,
+        pen=pg.mkPen(color='r', width=2)
+    )
+    bit_plot.vLine = pg.InfiniteLine(
+        angle=90, 
+        movable=True,
+        pen=pg.mkPen(color='r', width=2)
+    )
+    
+    # 添加到圖表中
+    raw_plot.addItem(raw_plot.vLine)
+    bit_plot.addItem(bit_plot.vLine)
+    
+    # 預設隱藏
+    raw_plot.vLine.hide()
+    bit_plot.vLine.hide()
+    
+    status_bar.showMessage(cmb_name)
+
+    # --------------------------------------------------------------------
+    # 在處理完所有數據後，加入以下代碼來保存CSV
+    try:
+        # 建立輸出檔案名稱
+        csv_filename = f"{cmb_name[:-4]}_data.csv"
+        csv_filepath = os.path.join(DATA_DIR, csv_filename)
+        
+        # 準備數據
+        data_dict = {
+            'DateTime': [startday + timedelta(seconds=t) for t in t1sec],
+            'Timestamp': t1sec
+        }
+        
+        # 添加各通道的數據
+        for ch in range(6):
+            data_dict[f'Channel_{ch+1}_Raw'] = d10[ch][idx1sec]
+            data_dict[f'Channel_{ch+1}_Noise'] = n10[ch][idx1sec]
+            data_dict[f'Channel_{ch+1}_Max'] = x10[ch][idx1sec]
+        
+        # 添加位移和翻身數據
+        data_dict['Rising_Dist_Normal'] = rising_dist[idx1sec]
+        data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
+        data_dict['OnBed_Status'] = onbed
+        
+        # 轉換為DataFrame並保存
+        df = pd.DataFrame(data_dict)
+        df.to_csv(csv_filepath, index=False)
+        
+        # 儲存參數設定
+        param_filename = f"{cmb_name[:-4]}_parameters.csv"
+        param_filepath = os.path.join(DATA_DIR, param_filename)
+        
+        # 準備參數數據
+        param_dict = {
+            'Parameter': [],
+            'Channel_1': [], 'Channel_2': [], 'Channel_3': [],
+            'Channel_4': [], 'Channel_5': [], 'Channel_6': []
+        }
+        
+        # 收集參數表中的所有數據
+        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
+        for row in range(4):
+            param_dict['Parameter'].append(param_names[row])
+            for col in range(6):  # 前6個通道
+                value = para_table.item(row, col).text()
+                param_dict[f'Channel_{col+1}'].append(value)
+        
+        # 添加其他重要參數
+        additional_params = [
+            ('Total', str(bed_threshold)),
+            ('Noise_1', str(noise_onbed)),
+            ('Noise_2', str(noise_offbed)),
+            ('Set Flip', str(dist_thr)),
+            ('Air_Mattress', str(air_mattress)),
+            ('Device_SN', iCueSN.text()),
+            ('Start_Time', str(startday))
+        ]
+
+        for param_name, param_value in additional_params:
+            param_dict['Parameter'].append(param_name)
+            param_dict['Channel_1'].append(param_value)
+            # 只填充其他通道的空值
+            for col in ['Channel_2', 'Channel_3', 'Channel_4', 'Channel_5', 'Channel_6']:
+                param_dict[col].append('')
+        
+        # 轉換為DataFrame並保存
+        df_param = pd.DataFrame(param_dict)
+        df_param.to_csv(param_filepath, index=False)
+        
+        status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'保存檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+
+    # 計算位移差值
+    rising_dist = np.int32(rising_dist.fillna(0))
+    rising_dist[rising_dist < 0] = 0
+    rising_dist = rising_dist // 127
+    rising_dist[rising_dist > 1000] = 1000
+
+    # 空氣床墊的位移差值計算
+    # Convert to pandas Series
+    dist_air = pd.Series(dist_air)
+    # Calculate the difference with a shift of 60
+    shift = 60
+    rising_dist_air = dist_air.shift(-shift) - dist_air
+    # Fill NaN values resulting from the shift to maintain the same length as the original array
+    rising_dist_air = np.int32(rising_dist_air.fillna(0))
+    rising_dist_air[rising_dist_air < 0] = 0
+    rising_dist_air = rising_dist_air // 127
+    rising_dist_air[rising_dist_air > 1000] = 1000
+    
+    # 計算在床狀態
+    EvalParameters()
+    
+    # 記錄位移計算過程
+    log_movement_calculation()
+    
+    return True
 

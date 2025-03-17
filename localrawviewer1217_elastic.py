@@ -1398,6 +1398,12 @@ def process_sensor_data(sensor_data, params):
 def calculate_movement_indicators(processed_data, params):
     """計算位移指標和基線"""
     try:
+        # 初始化日誌檔案
+        log_file = open('localrawviewer_log.txt', 'w', encoding='utf-8')
+        log_file.write("=== calculate_movement_indicators 函數日誌 ===\n")
+        log_file.write(f"處理數據長度: {len(processed_data['d10'][0])}\n")
+        log_file.write(f"參數設定: noise_1={params.noise_1}, noise_2={params.noise_2}, bed_threshold={params.bed_threshold}\n")
+        
         # 初始化
         l = len(processed_data['d10'][0])
         onbed = np.zeros((l,))
@@ -1408,16 +1414,34 @@ def calculate_movement_indicators(processed_data, params):
         
         # 對每個通道進行處理
         for ch in range(6):
+            log_file.write(f"\n處理通道 {ch}:\n")
             # 取得數據
             max10 = processed_data['x10'][ch] + params.channel_params['offset'][ch]
             med10 = processed_data['d10'][ch] + params.channel_params['offset'][ch]
             n = processed_data['n10'][ch]
             preload = params.channel_params['preload'][ch]
-            # print("數據處理完成")
+            
+            log_file.write(f"  通道 {ch} 偏移值: {params.channel_params['offset'][ch]}\n")
+            log_file.write(f"  通道 {ch} 預載值: {preload}\n")
+            log_file.write(f"  通道 {ch} 閾值1: {params.channel_params['threshold1'][ch]}\n")
+            log_file.write(f"  通道 {ch} 閾值2: {params.channel_params['threshold2'][ch]}\n")
+            log_file.write(f"  通道 {ch} 原始數據前10個值: {med10[:10]}\n")
+            log_file.write(f"  通道 {ch} 噪聲值前10個值: {n[:10]}\n")
+            
+            # 特別記錄索引235的數據
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的原始數據: {med10[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的噪聲值: {n[235]}\n")
             
             # 零點判定
             zeroing = np.less(n * np.right_shift(max10, 5), 
                             params.noise_2 * np.right_shift(preload, 5))
+            log_file.write(f"  通道 {ch} 零點判定前10個值: {zeroing[:10]}\n")
+            
+            # 特別記錄索引235的零點判定
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的零點判定: {zeroing[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的零點判定計算: {n[235]} * {np.right_shift(max10[235], 5)} < {params.noise_2} * {np.right_shift(preload, 5)}\n")
             
             # 計算基線參數
             th1 = params.channel_params['threshold1'][ch]
@@ -1427,7 +1451,16 @@ def calculate_movement_indicators(processed_data, params):
             np.clip(speed, 1, 16, out=speed)
             app_sp = approach * speed
             sp_1024 = 1024 - speed
-            # print('計算基線參數完成')
+            
+            log_file.write(f"  通道 {ch} 接近度前10個值: {approach[:10]}\n")
+            log_file.write(f"  通道 {ch} 速度前10個值: {speed[:10]}\n")
+            
+            # 特別記錄索引235的基線參數
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的接近度: {approach[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的速度: {speed[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的app_sp: {app_sp[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的sp_1024: {sp_1024[235]}\n")
             
             # 動態基線計算
             base = (app_sp[0] // 1024 + med10[0]) // 2
@@ -1439,25 +1472,62 @@ def calculate_movement_indicators(processed_data, params):
                     base = np.int64(med10[i])
                 base = (base * sp_1024[i] + app_sp[i]) // 1024
                 baseline[i] = base
-            # print('動態基線計算完成')
+            
+            log_file.write(f"  通道 {ch} 基線前10個值: {baseline[:10]}\n")
+            
+            # 特別記錄索引235的基線
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的基線: {baseline[235]}\n")
             
             # 計算負載和在床狀態
-            total = total + med10[:] - baseline
-            o = np.less(th1, med10[:] - baseline)
+            channel_total = med10[:] - baseline
+            log_file.write(f"  通道 {ch} 負載前10個值: {channel_total[:10]}\n")
+            
+            # 特別記錄索引235的負載
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的負載: {channel_total[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的負載計算: {med10[235]} - {baseline[235]} = {channel_total[235]}\n")
+            
+            total = total + channel_total
+            o = np.less(th1, channel_total)
             onload.append(o)
             onbed = onbed + o
-            # print('計算負載和在床狀態完成')
+            
+            log_file.write(f"  通道 {ch} 負載狀態前10個值: {o[:10]}\n")
+            
+            # 特別記錄索引235的負載狀態
+            if l > 235:
+                log_file.write(f"  通道 {ch} 索引235的負載狀態: {o[235]}\n")
+                log_file.write(f"  通道 {ch} 索引235的負載狀態計算: {th1} < {channel_total[235]} = {o[235]}\n")
             
             # 保存零點數據和基線
             d_zero = med10 - baseline
             zdata_final.append(d_zero)
             base_final.append(baseline)
-            # print('保存零點數據和基線完成')
         
         # 最終在床判定
-        onbed = onbed + np.less(params.bed_threshold, total)
+        log_file.write(f"\n總負載前10個值: {total[:10]}\n")
+        bed_threshold_check = np.less(params.bed_threshold, total)
+        log_file.write(f"床閾值檢查前10個值: {bed_threshold_check[:10]}\n")
+        
+        # 特別記錄索引235的總負載和床閾值檢查
+        if l > 235:
+            log_file.write(f"\n索引235的總負載: {total[235]}\n")
+            log_file.write(f"索引235的床閾值檢查: {params.bed_threshold} < {total[235]} = {bed_threshold_check[235]}\n")
+            log_file.write(f"索引235的在床狀態（閾值檢查前）: {onbed[235]}\n")
+        
+        onbed = onbed + bed_threshold_check
         onbed = np.int32(onbed > 0)
-        # print('最終在床判定完成')
+        
+        log_file.write(f"最終在床狀態前10個值: {onbed[:10]}\n")
+        log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
+        
+        # 特別記錄索引235的最終在床狀態
+        if l > 235:
+            log_file.write(f"索引235的最終在床狀態: {onbed[235]}\n")
+        
+        # 關閉日誌檔案
+        log_file.close()
         
         # 返回所有計算結果
         return {
@@ -1475,6 +1545,12 @@ def calculate_movement_indicators(processed_data, params):
 def detect_bed_events(processed_data, params):
     """檢測床上事件（離床/上床/翻身）"""
     try:
+        # 初始化日誌檔案
+        log_file = open('localrawviewer_events_log.txt', 'w', encoding='utf-8')
+        log_file.write("=== detect_bed_events 函數日誌 ===\n")
+        log_file.write(f"處理數據長度: {len(processed_data['d10'][0])}\n")
+        log_file.write(f"參數設定: movement_threshold={params.movement_threshold}, is_air_mattress={params.is_air_mattress}\n")
+        
         l = len(processed_data['d10'][0])
         events = {
             'bed_status': np.zeros((l,)),
@@ -1489,25 +1565,44 @@ def detect_bed_events(processed_data, params):
         dist_air = 0   # 氣墊床
         
         for ch in range(6):
+            log_file.write(f"\n處理通道 {ch} 位移計算:\n")
             # refer to onoff_bed_0803-H.py line 498
             med10 = processed_data['d10'][ch]
             med10_pd = pd.Series(med10)
+            
+            log_file.write(f"  通道 {ch} 原始數據前10個值: {med10[:10]}\n")
             
             # 一般床墊位移計算
             a = [1, -1023/1024]
             b = [1/1024, 0]
             pos_iirmean = lfilter(b, a, med10)
+            log_file.write(f"  通道 {ch} IIR濾波後前10個值: {pos_iirmean[:10]}\n")
+            
             mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
             mean_30sec = np.int32(mean_30sec)
+            log_file.write(f"  通道 {ch} 30秒平均前10個值: {mean_30sec[:10]}\n")
+            
             diff = (mean_30sec - pos_iirmean) / 256
             if ch == 1:
                 diff = diff / 3
-            dist = dist + np.square(diff)
+                log_file.write(f"  通道 {ch} 差值除以3後前10個值: {diff[:10]}\n")
+            else:
+                log_file.write(f"  通道 {ch} 差值前10個值: {diff[:10]}\n")
+            
+            channel_dist = np.square(diff)
+            log_file.write(f"  通道 {ch} 平方差前10個值: {channel_dist[:10]}\n")
+            
+            dist = dist + channel_dist
+            if ch == 5:  # 最後一個通道處理完後記錄總位移
+                log_file.write(f"  累計位移前10個值: {dist[:10]}\n")
+            
             dist[dist > 8000000] = 8000000
             
             # 氣墊床位移計算
             mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
             mean_60sec = np.int32(mean_60sec)
+            log_file.write(f"  通道 {ch} 60秒平均前10個值: {mean_60sec[:10]}\n")
+            
             a = np.zeros(780)
             a[0] = 1
             b = np.zeros(780)
@@ -1515,12 +1610,21 @@ def detect_bed_events(processed_data, params):
                 b[s*60 + 180] = -0.1
             b[60] = 1
             diff = lfilter(b, a, mean_60sec)
+            
             if ch == 1:
                 diff = diff / 3
-            dist_air = dist_air + np.square(diff / 256)
+            
+            channel_dist_air = np.square(diff / 256)
+            log_file.write(f"  通道 {ch} 氣墊床平方差前10個值: {channel_dist_air[:10]}\n")
+            
+            dist_air = dist_air + channel_dist_air
+            if ch == 5:  # 最後一個通道處理完後記錄總位移
+                log_file.write(f"  累計氣墊床位移前10個值: {dist_air[:10]}\n")
         
         # 計算位移差值
         shift = 60
+        log_file.write(f"\n計算位移差值 (shift={shift}):\n")
+        
         # 一般床墊
         dist_series = pd.Series(dist)
         rising_dist = dist_series.shift(-shift) - dist_series
@@ -1529,6 +1633,9 @@ def detect_bed_events(processed_data, params):
         rising_dist[rising_dist < 0] = 0
         rising_dist = rising_dist // 127
         rising_dist[rising_dist > 1000] = 1000
+        
+        log_file.write(f"一般床墊位移差值前10個值: {rising_dist[:10]}\n")
+        log_file.write(f"一般床墊位移差值統計: 最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}\n")
         
         # 氣墊床
         dist_air_series = pd.Series(dist_air)
@@ -1539,6 +1646,9 @@ def detect_bed_events(processed_data, params):
         rising_dist_air = rising_dist_air // 127
         rising_dist_air[rising_dist_air > 1000] = 1000
         
+        log_file.write(f"氣墊床位移差值前10個值: {rising_dist_air[:10]}\n")
+        log_file.write(f"氣墊床位移差值統計: 最小={np.min(rising_dist_air)}, 最大={np.max(rising_dist_air)}, 平均={np.mean(rising_dist_air):.2f}\n")
+        
         # 儲存位移結果
         events['rising_dist'] = rising_dist
         events['rising_dist_air'] = rising_dist_air
@@ -1546,8 +1656,13 @@ def detect_bed_events(processed_data, params):
         # 檢測翻身事件並找出中間點
         if params.is_air_mattress == 0:
             flip_mask = (rising_dist > params.movement_threshold)
+            log_file.write(f"\n使用一般床墊位移差值檢測翻身 (閾值={params.movement_threshold})\n")
         else:
             flip_mask = (rising_dist_air > params.movement_threshold)
+            log_file.write(f"\n使用氣墊床位移差值檢測翻身 (閾值={params.movement_threshold})\n")
+        
+        log_file.write(f"翻身檢測結果前10個值: {flip_mask[:10]}\n")
+        log_file.write(f"翻身檢測統計: 翻身點數={np.sum(flip_mask)}, 總點數={len(flip_mask)}\n")
             
         # 找出連續翻身區間
         flip_regions = []
@@ -1564,14 +1679,23 @@ def detect_bed_events(processed_data, params):
         if start_idx is not None:
             flip_regions.append((start_idx, len(flip_mask)-1))
         
+        log_file.write(f"連續翻身區間: {flip_regions}\n")
+        
         # 計算每個翻身區間的中間點
         events['flip_points'] = [(start + (end - start)//2) for start, end in flip_regions]
+        log_file.write(f"翻身中間點: {events['flip_points']}\n")
         
         # 取得在床狀態
+        log_file.write("\n計算在床狀態:\n")
         movement_data = calculate_movement_indicators(processed_data, params)
         if movement_data:
             events['bed_status'] = movement_data['onbed']
             events['onload'] = movement_data['onload']
+            log_file.write(f"在床狀態前10個值: {events['bed_status'][:10]}\n")
+            log_file.write(f"在床狀態統計: 在床={np.sum(events['bed_status'])}, 離床={len(events['bed_status']) - np.sum(events['bed_status'])}\n")
+        
+        # 關閉日誌檔案
+        log_file.close()
         
         return events
         
