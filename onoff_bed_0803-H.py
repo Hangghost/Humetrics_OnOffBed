@@ -911,7 +911,7 @@ def EvalParameters():
     base_final = []
 
     # 初始化日誌檔案
-    log_file = open('onoff_bed_log.txt', 'w', encoding='utf-8')
+    log_file = open(f'{LOG_DIR}/onoff_bed_log.txt', 'w', encoding='utf-8')
     log_file.write("=== EvalParameters 函數日誌 ===\n")
     log_file.write(f"處理數據長度: {d10[0].shape[0]}\n")
     log_file.write(f"參數設定: noise_onbed={noise_onbed}, noise_offbed={noise_offbed}, bed_threshold={bed_threshold}\n")
