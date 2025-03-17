@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 import pymysql
 import matplotlib.pyplot as plt
@@ -28,7 +29,7 @@ import sys
 load_dotenv()
 
 # 確保 log_file 目錄存在
-LOG_DIR = "./_log_file"
+LOG_DIR = "./_logs/tk-viewer"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
@@ -185,6 +186,26 @@ class BedParameters:
 
     def __repr__(self):
         return self.__str__()
+
+    def __eq__(self, other):
+        if not isinstance(other, BedParameters):
+            return False
+        
+        # 比較基本閾值
+        if (self.bed_threshold != other.bed_threshold or
+            self.noise_1 != other.noise_1 or
+            self.noise_2 != other.noise_2 or
+            self.movement_threshold != other.movement_threshold or
+            self.is_air_mattress != other.is_air_mattress):
+            return False
+            
+        # 比較各通道參數
+        for param_type in ['preload', 'threshold1', 'threshold2', 'offset']:
+            for ch in range(6):
+                if self.channel_params[param_type][ch] != other.channel_params[param_type][ch]:
+                    return False
+                    
+        return True
 
 # 添加參數表初始化
 def init_parameter_table(root):
@@ -1039,110 +1060,17 @@ def plot_combined_data(sensor_data):
                             
                         if new_events:
                             
-                            # 印出 new_events 各欄位的資料長度
-                            print(f'bed_status 長度: {len(new_events["bed_status"])}')
-                            print(f'movement 長度: {len(new_events["movement"])}')
-                            print(f'flip_points 長度: {len(new_events["flip_points"])}')
-                            print(f'rising_dist 長度: {len(new_events["rising_dist"])}')
-                            print(f'rising_dist_air 長度: {len(new_events["rising_dist_air"])}')
-                            print(f'onload 長度: {len(new_events["onload"])}')
+                            # # 印出 new_events 各欄位的資料長度
+                            # print(f'bed_status 長度: {len(new_events["bed_status"])}')
+                            # print(f'movement 長度: {len(new_events["movement"])}')
+                            # print(f'flip_points 長度: {len(new_events["flip_points"])}')
+                            # print(f'rising_dist 長度: {len(new_events["rising_dist"])}')
+                            # print(f'rising_dist_air 長度: {len(new_events["rising_dist_air"])}')
+                            # print(f'onload 長度: {len(new_events["onload"])}')
                             
-                            # 額外印出 onload 中每個陣列的長度
-                            for i, onload_arr in enumerate(new_events["onload"]):
-                                print(f'onload[{i}] 長度: {len(onload_arr)}')
-
-                            # # 讀取原始CSV檔案
-                            # serial_id = serial_id_entry.get()
-                            # start_time = start_time_entry.get()
-                            # end_time = end_time_entry.get()
-                            # csv_file = f"./_data/local_viewer/{serial_id}_{start_time}_{end_time}.csv"
-                            
-                            # if os.path.exists(csv_file):
-                            #     df = pd.read_csv(csv_file)
-                            #     data_length = len(df)
-                                
-                            #     # 確保所有陣列長度與 df 相同
-                            #     # 添加演算法判斷結果
-                            #     bed_status_arr = new_events['bed_status']
-                            #     if len(bed_status_arr) > data_length:
-                            #         bed_status_arr = bed_status_arr[:data_length]
-                            #     elif len(bed_status_arr) < data_length:
-                            #         # 如果陣列較短，用最後一個值填充
-                            #         bed_status_arr = np.pad(bed_status_arr, 
-                            #             (0, data_length - len(bed_status_arr)), 
-                            #             'edge')
-                            #     df['Bed_Status'] = bed_status_arr
-
-                            #     # 處理 Rising_Dist_Normal
-                            #     rising_dist = new_events['rising_dist']
-                            #     if len(rising_dist) > data_length:
-                            #         rising_dist = rising_dist[:data_length]
-                            #     elif len(rising_dist) < data_length:
-                            #         rising_dist = np.pad(rising_dist, 
-                            #             (0, data_length - len(rising_dist)), 
-                            #             'edge')
-                            #     df['Rising_Dist_Normal'] = rising_dist
-
-                            #     # 處理 Rising_Dist_Air
-                            #     rising_dist_air = new_events['rising_dist_air']
-                            #     if len(rising_dist_air) > data_length:
-                            #         rising_dist_air = rising_dist_air[:data_length]
-                            #     elif len(rising_dist_air) < data_length:
-                            #         rising_dist_air = np.pad(rising_dist_air, 
-                            #             (0, data_length - len(rising_dist_air)), 
-                            #             'edge')
-                            #     df['Rising_Dist_Air'] = rising_dist_air
-                                
-                            #     # 添加翻身事件
-                            #     flip_events = np.zeros(data_length)
-                            #     print(df.columns)
-                            #     timestamps = pd.to_datetime(df['timestamp'])  # 將時間欄位轉換為datetime格式
-                                
-                            #     # 對每個翻身時間點進行處理
-                            #     flip_times = []
-                            #     for idx in new_events['flip_points']:
-                            #         # print(f"處理索引 {idx}")
-                            #         if idx < len(timestamps):
-                            #             flip_times.append(timestamps[idx])
-                            #             # print(f"成功添加時間點: {timestamps[idx]}")
-                            #         else:
-                            #             # print(f"索引超出範圍: {idx} >= {len(timestamps)}")
-                            #             pass
-
-                            #     # print(f"生成的flip_times長度: {len(flip_times)}")
-
-                            #     # 繪製翻身標記
-                            #     if flip_times and show_vars['flip'].get():
-                            #         # print(f"準備繪製 {len(flip_times)} 個翻身標記")
-                            #         ax2.scatter(flip_times, 
-                            #                    [1.1] * len(flip_times),
-                            #                    marker='v',
-                            #                    color='#FF0000',
-                            #                    s=100,
-                            #                    zorder=10,
-                            #                    label='Flip')
-                            #         # print(f"成功繪製 {len(flip_times)} 個翻身標記")
-                            #     else:
-                            #         # print(f"未能繪製翻身標記: flip_times為空={not bool(flip_times)}, show_flip={show_vars['flip'].get()}")
-                            #         pass
-
-                            #     # 添加在床狀態
-                            #     # bed_status_arr = new_events['bed_status']
-                            #     # if len(bed_status_arr) > data_length:
-                            #     #     bed_status_arr = bed_status_arr[:data_length]
-                            #     # elif len(bed_status_arr) < data_length:
-                            #     #     # 如果陣列較短，用最後一個值填充
-                            #     #     bed_status_arr = np.pad(bed_status_arr, 
-                            #     #         (0, data_length - len(bed_status_arr)), 
-                            #     #         'edge')
-                            #     # df['Bed_Status'] = bed_status_arr
-                                
-                            #     # 保存更新後的CSV
-                            #     df.to_csv(csv_file, index=False)
-                            #     print(f"已更新演算法判斷結果到檔案: {csv_file}")
-                            
-                            # # 清除現有圖表
-                            # ax2.clear()
+                            # # 額外印出 onload 中每個陣列的長度
+                            # for i, onload_arr in enumerate(new_events["onload"]):
+                            #     print(f'onload[{i}] 長度: {len(onload_arr)}')
                             
                             # 繪製各通道在床狀態
                             for ch in range(6):
@@ -1159,6 +1087,9 @@ def plot_combined_data(sensor_data):
                             # 繪製整體在床狀態
                             if show_vars['bed_status'].get():
                                 print(f"timestamps長度: {len(timestamps)}")
+                                # 印出頭尾幾個 timestamps 的資料
+                                print(f"timestamps頭尾資料: {timestamps[:2]} ... {timestamps[-2:]}")
+
                                 data = new_events['bed_status'][:len(timestamps)]  # 嚴格截斷
                                 sampled_data = data[::sample_rate]
                                 print(f"data長度: {len(data)}")
@@ -1430,7 +1361,7 @@ def calculate_movement_indicators(processed_data, params):
     """計算位移指標和基線"""
     try:
         # 初始化日誌檔案
-        log_file = open('localrawviewer_log.txt', 'w', encoding='utf-8')
+        log_file = open(f'{LOG_DIR}/localrawviewer_log.txt', 'w', encoding='utf-8')
         log_file.write("=== calculate_movement_indicators 函數日誌 ===\n")
         log_file.write(f"處理數據長度: {len(processed_data['d10'][0])}\n")
         log_file.write(f"參數設定: noise_1={params.noise_1}, noise_2={params.noise_2}, bed_threshold={params.bed_threshold}\n")
@@ -1577,7 +1508,7 @@ def detect_bed_events(processed_data, params):
     """檢測床上事件（離床/上床/翻身）"""
     try:
         # 初始化日誌檔案
-        log_file = open('localrawviewer_events_log.txt', 'w', encoding='utf-8')
+        log_file = open(f'{LOG_DIR}/localrawviewer_events_log.txt', 'w', encoding='utf-8')
         log_file.write("=== detect_bed_events 函數日誌 ===\n")
         log_file.write(f"處理數據長度: {len(processed_data['d10'][0])}\n")
         log_file.write(f"參數設定: movement_threshold={params.movement_threshold}, is_air_mattress={params.is_air_mattress}\n")
@@ -2068,13 +1999,13 @@ if __name__ == "__main__":
     ttk.Label(root, text="Start Time (YYYY-MM-DD HH:MM:SS):").grid(row=2, column=0, padx=5, pady=5)
     start_time_entry = ttk.Entry(root)
     # start_time_entry.insert(0, default_start_time.strftime("%Y-%m-%d %H:%M:%S"))
-    start_time_entry.insert(0, '2025-03-15 12:00:00')
+    start_time_entry.insert(0, '2025-03-14 12:00:00')
     start_time_entry.grid(row=2, column=1, padx=5, pady=5)
 
     ttk.Label(root, text="End Time (YYYY-MM-DD HH:MM:SS):").grid(row=3, column=0, padx=5, pady=5)
     end_time_entry = ttk.Entry(root)
     # end_time_entry.insert(0, default_end_time.strftime("%Y-%m-%d %H:%M:%S"))
-    end_time_entry.insert(0, '2025-03-16 12:00:00')
+    end_time_entry.insert(0, '2025-03-15 12:00:00')
     end_time_entry.grid(row=3, column=1, padx=5, pady=5)
 
     # 启动主循环
