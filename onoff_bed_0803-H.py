@@ -61,7 +61,38 @@ import time
 from datetime import datetime, timedelta
 import json
 import ssl
+from ftplib import FTP
 #import threading
+
+# 初始化全域變數
+global noise_onbed
+global noise_offbed
+global bed_threshold
+global preload_edit
+global th1_edit
+global th2_edit
+global offset_edit
+global legend_raw
+global legend_bit
+global rising_dist
+global rising_dist_air
+global dist_thr
+global air_mattress
+
+# 設定預設值
+noise_onbed = 80
+noise_offbed = 80
+bed_threshold = 30000
+preload_edit = [40000] * 6
+th1_edit = [60000] * 6
+th2_edit = [90000] * 6
+offset_edit = [0] * 6
+legend_raw = None
+legend_bit = None
+rising_dist = None
+rising_dist_air = None
+dist_thr = 5
+air_mattress = 0
 
 global TAB_K
 TAB_K = 8
@@ -753,10 +784,73 @@ def OpenCmbFile():
         status_bar.showMessage(f'保存檔案時發生錯誤: {str(e)}')
         QApplication.processEvents()
 
+    # 計算位移差值
+    rising_dist = np.int32(rising_dist.fillna(0))
+    rising_dist[rising_dist < 0] = 0
+    rising_dist = rising_dist // 127
+    rising_dist[rising_dist > 1000] = 1000
+
+    # 空氣床墊的位移差值計算
+    # Convert to pandas Series
+    dist_air = pd.Series(dist_air)
+    # Calculate the difference with a shift of 60
+    shift = 60
+    rising_dist_air = dist_air.shift(-shift) - dist_air
+    # Fill NaN values resulting from the shift to maintain the same length as the original array
+    rising_dist_air = np.int32(rising_dist_air.fillna(0))
+    rising_dist_air[rising_dist_air < 0] = 0
+    rising_dist_air = rising_dist_air // 127
+    rising_dist_air[rising_dist_air > 1000] = 1000
+    
+    # 計算在床狀態
+    EvalParameters()
+    
+    # 記錄位移計算過程
+    log_movement_calculation()
+    
+    return True
+
 #-----------------------------------------------------------------------
 def update_raw_plot():
     global raw_plot_ch
-    GetParaTable()
+    global noise_onbed
+    global noise_offbed
+    global bed_threshold
+    global preload_edit
+    global th1_edit
+    global th2_edit
+    global offset_edit
+    global d10
+    global idx1sec
+
+    print("\n=== onoff_bed_0803-H.py 參數驗證 ===")
+    print(f"噪音參數:")
+    print(f"  noise_onbed (臥床噪音閾值): {noise_onbed}")
+    print(f"  noise_offbed (離床噪音閾值): {noise_offbed}")
+    print(f"  bed_threshold (臥床總負載閾值): {bed_threshold}")
+    print("\n各通道參數:")
+    for ch in range(6):
+        print(f"通道 {ch}:")
+        print(f"  預載值 (min_preload): {preload_edit[ch]}")
+        print(f"  閾值1 (threshold1): {th1_edit[ch]}")
+        print(f"  閾值2 (threshold2): {th2_edit[ch]}")
+        print(f"  位移閾值 (offset): {offset_edit[ch]}")
+    print("=" * 50)
+
+    try:
+        GetParaTable()
+    except Exception as e:
+        print(f"GetParaTable 錯誤: {str(e)}")
+        return
+        
+    # 確保 d10 和 idx1sec 已初始化
+    if 'd10' not in globals() or d10 is None:
+        print("警告: d10 未初始化")
+        return
+    if 'idx1sec' not in globals() or idx1sec is None:
+        print("警告: idx1sec 未初始化")
+        return
+        
     # --------------------------------------------------------------------
     data_median = []
     data_max = []
@@ -1185,47 +1279,76 @@ def end_calendar(event):
 #--------------------------------------------------------------------------
 def download_files_by_time_range(FILE_PATH, ST_TIME, ED_TIME, FTP_ADDR, USER, PASW, FILESIZE):
     # 建立FTP連線
-    ftp = FTP(FTP_ADDR)
-    ftp.login(USER, PASW)
-    # 列出目錄下所有檔案
-    file_list = []
-
     try:
-        status_bar.showMessage('Get FTP directory ...')
-        QApplication.processEvents()
-        ftp.dir(FILE_PATH, file_list.append)
-    except:
-        status_bar.showMessage('FTP error !!!')
-        QApplication.processEvents()
+        ftp = FTP(FTP_ADDR)
+        ftp.login(USER, PASW)
+        # 列出目錄下所有檔案
+        file_list = []
 
-    # 過濾出符合時間範圍的檔案
-    filtered_list = []
-    for file_info in file_list:
-        file_name = file_info.split()[-1]
-        file_size = int(file_info.split()[4])
-        if file_name.endswith('.dat') and file_size == FILESIZE:
-            file_time_str = file_name.split('.dat')[0]
-            if ST_TIME <= file_time_str <= ED_TIME:
-                filtered_list.append(file_name)
-
-    # 下載檔案並記錄檔案名稱
-    n = 0
-    with open('filelist.txt', 'w') as f:
-        for file_name in filtered_list:
-            local_path = os.path.join(os.getcwd(), file_name)
-            with open(local_path, 'wb') as lf:
-                ftp.retrbinary(f'RETR {FILE_PATH}/{file_name}', lf.write)
-            f.write(file_name + '\n')
-            n = n + 1        
-            status_bar.showMessage(f"Copying from {data_source.currentText()} ...   ( {file_name} )")
+        status_bar.showMessage(f'正在連接 FTP 伺服器 {FTP_ADDR}...')
+        QApplication.processEvents()
+        
+        try:
+            status_bar.showMessage(f'正在獲取目錄 {FILE_PATH} 的檔案列表...')
             QApplication.processEvents()
-    # 關閉FTP連線
-    ftp.quit()
-    return n
+            ftp.dir(FILE_PATH, file_list.append)
+        except Exception as e:
+            status_bar.showMessage(f'FTP 目錄錯誤: {str(e)}')
+            QApplication.processEvents()
+            ftp.quit()
+            return 0
+
+        # 過濾出符合時間範圍的檔案
+        filtered_list = []
+        for file_info in file_list:
+            parts = file_info.split()
+            if len(parts) < 9:
+                continue
+                
+            file_name = parts[-1]
+            try:
+                file_size = int(parts[4])
+                if file_name.endswith('.dat') and file_size == FILESIZE:
+                    file_time_str = file_name.split('.dat')[0]
+                    if ST_TIME <= file_time_str <= ED_TIME:
+                        filtered_list.append(file_name)
+            except (ValueError, IndexError) as e:
+                print(f"跳過檔案 {file_info}: {str(e)}")
+                continue
+
+        # 下載檔案並記錄檔案名稱
+        n = 0
+        with open('filelist.txt', 'w') as f:
+            for file_name in filtered_list:
+                try:
+                    local_path = os.path.join(os.getcwd(), file_name)
+                    with open(local_path, 'wb') as lf:
+                        ftp.retrbinary(f'RETR {FILE_PATH}/{file_name}', lf.write)
+                    f.write(file_name + '\n')
+                    n = n + 1        
+                    status_bar.showMessage(f"正在從 {data_source.currentText()} 下載...   ( {file_name} )")
+                    QApplication.processEvents()
+                except Exception as e:
+                    status_bar.showMessage(f"下載檔案 {file_name} 失敗: {str(e)}")
+                    QApplication.processEvents()
+                    
+        # 關閉FTP連線
+        ftp.quit()
+        status_bar.showMessage(f"成功下載 {n} 個檔案")
+        QApplication.processEvents()
+        return n
+    except Exception as e:
+        status_bar.showMessage(f"FTP 連接失敗: {str(e)}")
+        QApplication.processEvents()
+        return 0
 
 #--------------------------------------------------------------------------
 def loadClicked(event):
-    global cmb_name  # 將global宣告移到函數開頭
+    global cmb_name
+    global rising_dist
+    global rising_dist_air
+    global dist_thr
+    global air_mattress
     
     ST_TIME = start_time.text()
     ED_TIME = end_time.text()
@@ -1430,8 +1553,11 @@ def change_NightMode(state):
         wav_plot.setBackground([255,255,255])
         bit_plot.setBackground([255,255,255])
         legend_bg = pg.mkBrush(color=hex_to_rgb('e0e0e0'))  # Red background for the legend
-    legend_raw.setBrush(legend_bg)
-    legend_bit.setBrush(legend_bg)
+    
+    if legend_raw is not None:
+        legend_raw.setBrush(legend_bg)
+    if legend_bit is not None:
+        legend_bit.setBrush(legend_bg)
 
 #--------------------------------------------------------------------------
 def horizontal_header_clicked(section):
