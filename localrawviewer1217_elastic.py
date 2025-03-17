@@ -1007,15 +1007,6 @@ def plot_combined_data(sensor_data):
                             print("參數未改變，使用初始事件")
                             
                         if new_events:
-                            # 生成時間軸
-                            timestamps = [
-                                datetime.strptime(str(row['timestamp']), "%Y%m%d%H%M%S") + timedelta(hours=8)
-                                for row in sensor_data
-                            ][:len(processed_data['d10'][0])]  # 嚴格對齊處理後數據長度
-
-                            # 統一降採樣計算方式
-                            sample_rate = max(len(timestamps) // 87000, 1)  # 動態計算採樣率
-                            sampled_timestamps = timestamps[::sample_rate]
                             
                             # 印出 new_events 各欄位的資料長度
                             print(f'bed_status 長度: {len(new_events["bed_status"])}')
@@ -1079,41 +1070,19 @@ def plot_combined_data(sensor_data):
                                 # 對每個翻身時間點進行處理
                                 flip_times = []
                                 for idx in new_events['flip_points']:
+                                    # print(f"處理索引 {idx}")
                                     if idx < len(timestamps):
                                         flip_times.append(timestamps[idx])
-                                
-                                # 清除現有圖表
-                                ax2.clear()
-                                
-                                # 繪製各通道在床狀態
-                                for ch in range(6):
-                                    if show_vars['channels'][ch].get():
-                                        data = new_events['onload'][ch][:len(timestamps)]  # 嚴格截斷
-                                        sampled_data = data[::sample_rate]
-                                        safe_plot(ax2, 
-                                                 sampled_timestamps, 
-                                                 sampled_data,
-                                                 label=f'Ch{ch+1}',
-                                                 alpha=0.5)
-                                print("在床狀態繪製完成")
-                                
-                                # 繪製整體在床狀態
-                                if show_vars['bed_status'].get():
-                                    print(f"timestamps長度: {len(timestamps)}")
-                                    data = new_events['bed_status'][:len(timestamps)]  # 嚴格截斷
-                                    sampled_data = data[::sample_rate]
-                                    print(f"data長度: {len(data)}")
-                                    print(f"sampled_data長度: {len(sampled_data)}")
-                                    safe_plot(ax2,
-                                             sampled_timestamps,
-                                             sampled_data,
-                                             label='Bed Status', 
-                                             color='blue', 
-                                             linewidth=2)
-                                    print("整體在床狀態繪製完成")
-                                
+                                        # print(f"成功添加時間點: {timestamps[idx]}")
+                                    else:
+                                        # print(f"索引超出範圍: {idx} >= {len(timestamps)}")
+                                        pass
+
+                                # print(f"生成的flip_times長度: {len(flip_times)}")
+
                                 # 繪製翻身標記
                                 if flip_times and show_vars['flip'].get():
+                                    # print(f"準備繪製 {len(flip_times)} 個翻身標記")
                                     ax2.scatter(flip_times, 
                                                [1.1] * len(flip_times),
                                                marker='v',
@@ -1121,28 +1090,72 @@ def plot_combined_data(sensor_data):
                                                s=100,
                                                zorder=10,
                                                label='Flip')
-                                
-                                # 設置圖表格式
-                                ax2.xaxis.set_major_locator(MaxNLocator(nbins=12))
-                                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-                                ax2.xaxis.set_minor_locator(AutoLocator())
-                                ax2.set_ylabel('Events')
-                                ax2.set_ylim(-0.2, 1.2)
-                                ax2.legend()
-                                ax2.grid(True)
-                                fig.autofmt_xdate()
-                                canvas.draw()
-                                
-                                # 在更新圖表後強制同步x軸範圍
-                                ax2.set_xlim(ax1.get_xlim())
+                                    # print(f"成功繪製 {len(flip_times)} 個翻身標記")
+                                else:
+                                    # print(f"未能繪製翻身標記: flip_times為空={not bool(flip_times)}, show_flip={show_vars['flip'].get()}")
+                                    pass
+
+                                # 添加在床狀態
+                                # bed_status_arr = new_events['bed_status']
+                                # if len(bed_status_arr) > data_length:
+                                #     bed_status_arr = bed_status_arr[:data_length]
+                                # elif len(bed_status_arr) < data_length:
+                                #     # 如果陣列較短，用最後一個值填充
+                                #     bed_status_arr = np.pad(bed_status_arr, 
+                                #         (0, data_length - len(bed_status_arr)), 
+                                #         'edge')
+                                # df['Bed_Status'] = bed_status_arr
                                 
                                 # 保存更新後的CSV
                                 df.to_csv(csv_file, index=False)
                                 print(f"已更新演算法判斷結果到檔案: {csv_file}")
+                            
+                            # 清除現有圖表
+                            ax2.clear()
+                            
+                            # 繪製各通道在床狀態
+                            for ch in range(6):
+                                if show_vars['channels'][ch].get():
+                                    data = new_events['onload'][ch][:len(timestamps)]  # 嚴格截斷
+                                    sampled_data = data[::sample_rate]
+                                    safe_plot(ax2, 
+                                             sampled_timestamps, 
+                                             sampled_data,
+                                             label=f'Ch{ch+1}',
+                                             alpha=0.5)
+                            print("在床狀態繪製完成")
+                            
+                            # 繪製整體在床狀態
+                            if show_vars['bed_status'].get():
+                                print(f"timestamps長度: {len(timestamps)}")
+                                data = new_events['bed_status'][:len(timestamps)]  # 嚴格截斷
+                                sampled_data = data[::sample_rate]
+                                print(f"data長度: {len(data)}")
+                                print(f"sampled_data長度: {len(sampled_data)}")
+                                safe_plot(ax2,
+                                         sampled_timestamps,
+                                         sampled_data,
+                                         label='Bed Status', 
+                                         color='blue', 
+                                         linewidth=2)
+                                print("整體在床狀態繪製完成")
+                            
+                            # 設置圖表格式
+                            ax2.xaxis.set_major_locator(MaxNLocator(nbins=12))
+                            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+                            ax2.xaxis.set_minor_locator(AutoLocator())
+                            ax2.set_ylabel('Events')
+                            ax2.set_ylim(-0.2, 1.2)
+                            ax2.legend()
+                            ax2.grid(True)
+                            fig.autofmt_xdate()
+                            canvas.draw()
+                            
+                            # 在更新圖表後強制同步x軸範圍
+                            ax2.set_xlim(ax1.get_xlim())
 
                 except Exception as e:
                     print(f"更新圖表和保存數據時發生錯誤: {str(e)}")
-                    traceback.print_exc()
             
             # 創建新視窗來顯示圖表
             plot_window = tk.Toplevel(root)
@@ -1383,21 +1396,7 @@ def process_sensor_data(sensor_data, params):
         return None
 
 def calculate_movement_indicators(processed_data, params):
-    """計算移動指標"""
-    print("\n=== localrawviewer1217_elastic.py 參數驗證 ===")
-    print(f"噪音參數:")
-    print(f"  noise_1 (臥床噪音閾值): {params.noise_1}")
-    print(f"  noise_2 (離床噪音閾值): {params.noise_2}")
-    print(f"  bed_threshold (臥床總負載閾值): {params.bed_threshold}")
-    print("\n各通道參數:")
-    for ch in range(6):
-        print(f"通道 {ch}:")
-        print(f"  預載值 (min_preload): {params.channel_params['preload'][ch]}")
-        print(f"  閾值1 (threshold1): {params.channel_params['threshold1'][ch]}")
-        print(f"  閾值2 (threshold2): {params.channel_params['threshold2'][ch]}")
-        print(f"  位移閾值 (offset): {params.channel_params['offset'][ch]}")
-    print("=" * 50)
-
+    """計算位移指標和基線"""
     try:
         # 初始化日誌檔案
         log_file = open('localrawviewer_log.txt', 'w', encoding='utf-8')
