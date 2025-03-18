@@ -1671,20 +1671,10 @@ def calculate_movement_indicators(processed_data, params):
             log_file.write(f"  通道 {ch} 原始數據前10個值: {med10[:10]}\n")
             log_file.write(f"  通道 {ch} 噪聲值前10個值: {n[:10]}\n")
             
-            # 特別記錄索引235的數據
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的原始數據: {med10[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的噪聲值: {n[235]}\n")
-            
             # 零點判定
             zeroing = np.less(n * np.right_shift(max10, 5), 
                             params.noise_2 * np.right_shift(preload, 5))
             log_file.write(f"  通道 {ch} 零點判定前10個值: {zeroing[:10]}\n")
-            
-            # 特別記錄索引235的零點判定
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的零點判定: {zeroing[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的零點判定計算: {n[235]} * {np.right_shift(max10[235], 5)} < {params.noise_2} * {np.right_shift(preload, 5)}\n")
             
             # 計算基線參數
             th1 = params.channel_params['threshold1'][ch]
@@ -1697,13 +1687,6 @@ def calculate_movement_indicators(processed_data, params):
             
             log_file.write(f"  通道 {ch} 接近度前10個值: {approach[:10]}\n")
             log_file.write(f"  通道 {ch} 速度前10個值: {speed[:10]}\n")
-            
-            # 特別記錄索引235的基線參數
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的接近度: {approach[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的速度: {speed[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的app_sp: {app_sp[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的sp_1024: {sp_1024[235]}\n")
             
             # 動態基線計算
             base = (app_sp[0] // 1024 + med10[0]) // 2
@@ -1718,18 +1701,9 @@ def calculate_movement_indicators(processed_data, params):
             
             log_file.write(f"  通道 {ch} 基線前10個值: {baseline[:10]}\n")
             
-            # 特別記錄索引235的基線
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的基線: {baseline[235]}\n")
-            
             # 計算負載和在床狀態
             channel_total = med10[:] - baseline
             log_file.write(f"  通道 {ch} 負載前10個值: {channel_total[:10]}\n")
-            
-            # 特別記錄索引235的負載
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的負載: {channel_total[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的負載計算: {med10[235]} - {baseline[235]} = {channel_total[235]}\n")
             
             total = total + channel_total
             o = np.less(th1, channel_total)
@@ -1737,11 +1711,6 @@ def calculate_movement_indicators(processed_data, params):
             onbed = onbed + o
             
             log_file.write(f"  通道 {ch} 負載狀態前10個值: {o[:10]}\n")
-            
-            # 特別記錄索引235的負載狀態
-            if l > 235:
-                log_file.write(f"  通道 {ch} 索引235的負載狀態: {o[235]}\n")
-                log_file.write(f"  通道 {ch} 索引235的負載狀態計算: {th1} < {channel_total[235]} = {o[235]}\n")
             
             # 保存零點數據和基線
             d_zero = med10 - baseline
@@ -1753,21 +1722,11 @@ def calculate_movement_indicators(processed_data, params):
         bed_threshold_check = np.less(params.bed_threshold, total)
         log_file.write(f"床閾值檢查前10個值: {bed_threshold_check[:10]}\n")
         
-        # 特別記錄索引235的總負載和床閾值檢查
-        if l > 235:
-            log_file.write(f"\n索引235的總負載: {total[235]}\n")
-            log_file.write(f"索引235的床閾值檢查: {params.bed_threshold} < {total[235]} = {bed_threshold_check[235]}\n")
-            log_file.write(f"索引235的在床狀態（閾值檢查前）: {onbed[235]}\n")
-        
         onbed = onbed + bed_threshold_check
         onbed = np.int32(onbed > 0)
         
         log_file.write(f"最終在床狀態前10個值: {onbed[:10]}\n")
         log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
-        
-        # 特別記錄索引235的最終在床狀態
-        if l > 235:
-            log_file.write(f"索引235的最終在床狀態: {onbed[235]}\n")
         
         # 關閉日誌檔案
         log_file.close()
