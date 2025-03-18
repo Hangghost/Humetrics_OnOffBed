@@ -458,8 +458,19 @@ def OpenCmbFile():
     data_csv = pd.DataFrame(data)
     data_csv.to_csv(f"{LOG_DIR}/{cmb_name[:-4]}_raw.csv", index=False)
 
+    # 初始化日誌檔案
+    preprocess_log_file = open(f'{LOG_DIR}/{cmb_name[:-4]}_preprocess_log.txt', 'w', encoding='utf-8')
+    preprocess_log_file.write("=== 資料前處理函數日誌 ===\n")
+    preprocess_log_file.write(f"檔案名稱: {cmb_name}\n")
+    preprocess_log_file.write(f"資料形狀: {data.shape}\n")
+    preprocess_log_file.write(f"是否為BCG資料: {bcg}\n")
+    preprocess_log_file.write(f"資料時間點數量: {len(t)}\n")
+    preprocess_log_file.write(f"資料時間範圍: {t[0]} 到 {t[-1]}\n\n")
+
     # --------------------------------------------------------------------
     lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
+    
+    preprocess_log_file.write("低通濾波器係數: " + str(lpf) + "\n\n")
     
     global n10
     global d10
@@ -477,43 +488,71 @@ def OpenCmbFile():
     for ch in range(6):
         status_bar.showMessage(f'Processing CH{ch+1} ........')
         QApplication.processEvents()
+        preprocess_log_file.write(f"正在處理通道 {ch+1}:\n")
+        
         # --------------------------------------------------------
         hp = np.convolve(data[:,ch], [-1, -2, -3, -4, 4, 3, 2, 1], mode='same')
+        preprocess_log_file.write(f"  通道 {ch+1} 高通濾波後前10個值: {hp[:10]}\n")
+        
         n = np.convolve(np.abs(hp / 16), lpf, mode='full')
         n = n[10:-37] / 4096
         n = n[::10]
         n10.append(np.int32(n))
+        preprocess_log_file.write(f"  通道 {ch+1} 噪聲值前10個元素: {n[:10]}\n")
+        
         # --------------------------------------------------------
         data_pd = pd.Series(data[:,ch]) # 將通道的數據轉換為Pandas的Series數據結構
         med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的中位數，窗口大小為10
         med10 = np.array(med10)
         med10 = med10[::10]
         d10.append(np.int32(med10))
+        preprocess_log_file.write(f"  通道 {ch+1} 中值前10個元素: {med10[:10]}\n")
+        
         # --------------------------------------------------------
         max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為10 
         max10 = np.array(max10)
         max10 = np.int32(max10[::10])
         x10.append(np.int32(max10))
+        preprocess_log_file.write(f"  通道 {ch+1} 最大值前10個元素: {max10[:10]}\n")
+        
         # --------------------------------------------------------
         resp = data[:,ch] - savgol_filter(data[:,ch], 105, 3)
         resp = np.repeat(resp, 10).astype(np.float64)
         resp = savgol_filter(resp, 151, 3)
         #data_bcg.append(resp)
+        preprocess_log_file.write(f"  通道 {ch+1} 呼吸訊號前10個元素: {resp[:10]}\n")
+        
         # 計算 dist ----------------------------------------------   
         a = [1, -1023/1024]
         b = [1/1024, 0]
+        preprocess_log_file.write(f"  IIR濾波器係數 a: {a}, b: {b}\n")
+        
         pos_iirmean = lfilter(b, a, med10) # 1 second # IIR濾波
+        preprocess_log_file.write(f"  通道 {ch+1} IIR濾波後前10個元素: {pos_iirmean[:10]}\n")
+        
         med10_pd = pd.Series(med10)
         mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為30 
         mean_30sec = np.int32(mean_30sec)        
+        preprocess_log_file.write(f"  通道 {ch+1} 30秒平均值前10個元素: {mean_30sec[:10]}\n")
+        
         diff = (mean_30sec - pos_iirmean) / 256
         if ch == 1:
             diff = diff / 3
+            preprocess_log_file.write(f"  通道 {ch+1} 差值除以3後前10個元素: {diff[:10]}\n")
+        else:
+            preprocess_log_file.write(f"  通道 {ch+1} 差值前10個元素: {diff[:10]}\n")
+            
+        dist_before = dist
         dist = dist + np.square(diff) # 累加平方差
         dist[dist > 8000000] = 8000000 # 限制最大值
+        preprocess_log_file.write(f"  累加通道 {ch+1} 後的位移前10個元素: {dist[:10]}\n")
+        preprocess_log_file.write(f"  通道 {ch+1} 對位移的貢獻前10個元素: {(dist - dist_before)[:10]}\n")
+        
         # 計算 dist (air mattress) -------------------------------
         mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為60 
         mean_60sec = np.int32(mean_60sec)
+        preprocess_log_file.write(f"  通道 {ch+1} 60秒平均值前10個元素: {mean_60sec[:10]}\n")
+        
         # [60][60][60][60][60][60][60][60][60][60]
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        
         #                     10 minutes mean ->|         b[60]
@@ -524,38 +563,47 @@ def OpenCmbFile():
         for s in range(10):
             b[s*60 + 180] = -0.1
         b[60] = 1
+        preprocess_log_file.write(f"  空氣床濾波器係數 a 非零元素位置: {np.where(a != 0)[0]}, 值: {a[np.where(a != 0)[0]]}\n")
+        preprocess_log_file.write(f"  空氣床濾波器係數 b 非零元素位置: {np.where(b != 0)[0]}, 值: {b[np.where(b != 0)[0]]}\n")
+        
         diff = lfilter(b, a, mean_60sec) # 1 second
         if ch == 1:
             diff = diff / 3
+            preprocess_log_file.write(f"  通道 {ch+1} 空氣床差值除以3後前10個元素: {diff[:10]}\n")
+        else:
+            preprocess_log_file.write(f"  通道 {ch+1} 空氣床差值前10個元素: {diff[:10]}\n")
+        
+        dist_air_before = dist_air
         dist_air = dist_air + np.square(diff / 256)
+        preprocess_log_file.write(f"  累加通道 {ch+1} 後的空氣床位移前10個元素: {dist_air[:10]}\n")
+        preprocess_log_file.write(f"  通道 {ch+1} 對空氣床位移的貢獻前10個元素: {(dist_air - dist_air_before)[:10]}\n\n")
 
     # 一般床墊的位移差值計算
+    preprocess_log_file.write("計算一般床墊的位移差值:\n")
     # Convert to pandas Series
     dist = pd.Series(dist)
     # Calculate the difference with a shift of 60
     shift = 60
-    rising_dist = dist.shift(-shift) - dist
-    # Fill NaN values resulting from the shift to maintain the same length as the original array
-    rising_dist = np.int32(rising_dist.fillna(0))
-    rising_dist[rising_dist < 0] = 0
-    rising_dist = rising_dist // 127
-    rising_dist[rising_dist > 1000] = 1000
+    preprocess_log_file.write(f"  位移差值計算使用的偏移量: {shift}\n")
+    
+    rising_dist = calculate_rising_dist(dist, preprocess_log_file)
+    preprocess_log_file.write(f"  計算後的位移差值前10個元素: {rising_dist[:10]}\n\n")
 
     # 空氣床墊的位移差值計算
+    preprocess_log_file.write("計算空氣床墊的位移差值:\n")
     # Convert to pandas Series
     dist_air = pd.Series(dist_air)
     # Calculate the difference with a shift of 60
     shift = 60
-    rising_dist_air = dist_air.shift(-shift) - dist_air
-    # Fill NaN values resulting from the shift to maintain the same length as the original array
-    rising_dist_air = np.int32(rising_dist_air.fillna(0))
-    rising_dist_air[rising_dist_air < 0] = 0
-    rising_dist_air = rising_dist_air // 127
-    rising_dist_air[rising_dist_air > 1000] = 1000
+    preprocess_log_file.write(f"  空氣床位移差值計算使用的偏移量: {shift}\n")
+    
+    rising_dist_air = calculate_rising_dist(dist_air, preprocess_log_file)
+    preprocess_log_file.write(f"  計算後的空氣床位移差值前10個元素: {rising_dist_air[:10]}\n\n")
     
     global idx10
     global idx1sec
     # 由檔案開始時間/資料長度計算對應 index --------------------------------------------   
+    preprocess_log_file.write("計算時間索引:\n")
     idx1sec = np.array([])
     idx100 = np.array([])
     idx10 = np.array([])
@@ -564,40 +612,59 @@ def OpenCmbFile():
 
     # 迭代資料的每一個索引 i
     for i in range(filelen.shape[0]):
-
+        preprocess_log_file.write(f"  處理時間索引 {i}:\n")
+        
         if i < filelen.shape[0] - 1:
             t_diff = np.int32((t[i + 1] - t[i]).total_seconds())  # 計算相鄰時間之差（秒）
         else:
             t_diff = 600  # 若為最後一個數據，設定時間差為 600 秒
+        preprocess_log_file.write(f"    時間差: {t_diff} 秒\n")
 
         if t_diff > 660:
             t_blank = t_diff - 600  # 若時間差超過 660 秒，計算空白時間
             t_diff = 600  # 設定時間差為 600 秒
+            preprocess_log_file.write(f"    時間差過大，調整為 {t_diff} 秒，空白時間: {t_blank} 秒\n")
         else:
             t_blank = 0
+            preprocess_log_file.write(f"    時間差正常，空白時間: {t_blank} 秒\n")
 
         # 將索引值加入對應的陣列中
         # 生成三種不同採樣率的索引：
         # - idx1sec: 1秒一個點
         # - idx100: 100ms一個點
         # - idx10: 10ms一個點
+        idx1sec_old_len = len(idx1sec)
+        idx100_old_len = len(idx100)
+        idx10_old_len = len(idx10)
+        
         idx1sec = np.append(idx1sec, np.floor(np.linspace(0, filelen[i]//10 - 1, t_diff)) + idx100_sum//10)
         idx100 = np.append(idx100, np.floor(np.linspace(0, filelen[i] - 1, t_diff*10)) + idx100_sum)
         idx10 = np.append(idx10, np.floor(np.linspace(0, filelen[i]*10 - 1, t_diff*100)) + idx10_sum)
-
+        
+        preprocess_log_file.write(f"    新增索引點數: idx1sec: {len(idx1sec) - idx1sec_old_len}, idx100: {len(idx100) - idx100_old_len}, idx10: {len(idx10) - idx10_old_len}\n")
+        
         # 處理空白時間
-        idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
-        idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
-        idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
+        if t_blank > 0:
+            blank_1sec_old_len = len(idx1sec)
+            blank_100_old_len = len(idx100)
+            blank_10_old_len = len(idx10)
+            
+            idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
+            idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
+            idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
+            
+            preprocess_log_file.write(f"    空白時間索引點數: idx1sec: {len(idx1sec) - blank_1sec_old_len}, idx100: {len(idx100) - blank_100_old_len}, idx10: {len(idx10) - blank_10_old_len}\n")
 
         idx100_sum = idx100_sum + filelen[i]  # 更新索引值總和
         idx10_sum = idx10_sum + filelen[i]*10  # 更新索引值總和
+        preprocess_log_file.write(f"    索引累計: idx100_sum: {idx100_sum}, idx10_sum: {idx10_sum}\n")
         
 
     # 計算不同取樣率對應的時間 --------------------------------------------------------    
     st = (t[0] - t[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
     global startday
     startday = t[0].replace(hour=0, minute=0, second=0, microsecond=0)
+    preprocess_log_file.write(f"\n基準時間: {startday}, 起始秒數: {st}\n")
 
     global t10ms
     global t1sec
@@ -609,6 +676,17 @@ def OpenCmbFile():
     t10ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*100)
     t100ms = np.around(t100ms, decimals=1)
     t10ms = np.around(t10ms, decimals=2)
+    
+    preprocess_log_file.write(f"時間向量: t1sec 長度: {len(t1sec)}, 範圍: {t1sec[0]} 到 {t1sec[-1]}\n")
+    preprocess_log_file.write(f"時間向量: t100ms 長度: {len(t100ms)}, 範圍: {t100ms[0]} 到 {t100ms[-1]}\n")
+    preprocess_log_file.write(f"時間向量: t10ms 長度: {len(t10ms)}, 範圍: {t10ms[0]} 到 {t10ms[-1]}\n")
+    
+    preprocess_log_file.write(f"索引向量: idx1sec 長度: {len(idx1sec)}, 範圍: {idx1sec[0] if len(idx1sec) > 0 else 'N/A'} 到 {idx1sec[-1] if len(idx1sec) > 0 else 'N/A'}\n")
+    preprocess_log_file.write(f"索引向量: idx100 長度: {len(idx100)}, 範圍: {idx100[0] if len(idx100) > 0 else 'N/A'} 到 {idx100[-1] if len(idx100) > 0 else 'N/A'}\n")
+    preprocess_log_file.write(f"索引向量: idx10 長度: {len(idx10)}, 範圍: {idx10[0] if len(idx10) > 0 else 'N/A'} 到 {idx10[-1] if len(idx10) > 0 else 'N/A'}\n")
+    
+    preprocess_log_file.write("\n前處理完成\n")
+    preprocess_log_file.close()
 
     # for ch in range(9):   
     #     data_bcg[ch] = data_bcg[ch][idx10]
@@ -1055,8 +1133,16 @@ def OpenJsonFile():
         return
     
     try:
+        # 初始化日誌檔案
+        json_log_file = open(f'{LOG_DIR}/{os.path.basename(json_path)[:-5]}_preprocess_log.txt', 'w', encoding='utf-8')
+        json_log_file.write("=== JSON資料前處理函數日誌 ===\n")
+        json_log_file.write(f"檔案名稱: {os.path.basename(json_path)}\n")
+        
         # 讀取 JSON 資料
+        json_log_file.write("正在讀取JSON資料...\n")
         timestamps, channels_data = load_json_data(json_path)
+        json_log_file.write(f"讀取完成，資料點數: {len(timestamps)}\n")
+        json_log_file.write(f"時間範圍: {timestamps[0]} 到 {timestamps[-1]}\n\n")
         
         # 初始化資料陣列
         d10 = []  # 中值
@@ -1067,56 +1153,101 @@ def OpenJsonFile():
         dist = np.zeros(len(timestamps))
         dist_air = np.zeros(len(timestamps))
         
+        json_log_file.write("開始處理通道資料...\n")
+        
         # 處理每個通道的資料
         for ch, ch_data in enumerate(channels_data):
+            json_log_file.write(f"\n處理通道 {ch+1}:\n")
             ch_data = np.array(ch_data)
             med10 = ch_data  # 原始值作為中值
+            json_log_file.write(f"  通道 {ch+1} 原始數據前10個值: {med10[:10]}\n")
             
             # 計算雜訊值（可以根據需求調整計算方法）
             noise = np.abs(np.diff(med10, prepend=med10[0])) 
             noise = np.maximum.accumulate(noise)
+            json_log_file.write(f"  通道 {ch+1} 噪聲值前10個值: {noise[:10]}\n")
             
             d10.append(med10)
             n10.append(noise)
             x10.append(med10)  # 最大值暫時使用原始值
             
             # 計算位移值（與原始程式相同的計算邏輯）
+            json_log_file.write("  計算位移值:\n")
             a = [1, -1023/1024]
             b = [1/1024, 0]
+            json_log_file.write(f"    IIR濾波器係數 a: {a}, b: {b}\n")
+            
             pos_iirmean = lfilter(b, a, med10)
+            json_log_file.write(f"    IIR濾波後前10個值: {pos_iirmean[:10]}\n")
+            
             med10_pd = pd.Series(med10)
             mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
             mean_30sec = np.int32(mean_30sec)
+            json_log_file.write(f"    30秒平均值前10個值: {mean_30sec[:10]}\n")
             
             diff = (mean_30sec - pos_iirmean) / 256
             if ch == 1:  # 現在 ch 已經定義了
                 diff = diff / 3
+                json_log_file.write(f"    通道 {ch+1} 差值除以3後前10個值: {diff[:10]}\n")
+            else:
+                json_log_file.write(f"    通道 {ch+1} 差值前10個值: {diff[:10]}\n")
+            
+            dist_before = dist.copy()
             dist = dist + np.square(diff)
             dist[dist > 8000000] = 8000000
+            json_log_file.write(f"    累加通道 {ch+1} 後的位移前10個值: {dist[:10]}\n")
+            json_log_file.write(f"    通道 {ch+1} 對位移的貢獻前10個值: {(dist - dist_before)[:10]}\n")
             
             # 計算空氣床墊的位移值
+            json_log_file.write("  計算空氣床墊位移值:\n")
             mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
             mean_60sec = np.int32(mean_60sec)
+            json_log_file.write(f"    60秒平均值前10個值: {mean_60sec[:10]}\n")
             
+            # 濾波器係數
             a = np.zeros([780,])
             a[0] = 1
             b = np.zeros([780,])
             for s in range(10):
                 b[s*60 + 180] = -0.1
             b[60] = 1
+            json_log_file.write(f"    空氣床濾波器係數 a 非零元素位置: {np.where(a != 0)[0]}, 值: {a[np.where(a != 0)[0]]}\n")
+            json_log_file.write(f"    空氣床濾波器係數 b 非零元素位置: {np.where(b != 0)[0]}, 值: {b[np.where(b != 0)[0]]}\n")
+            
             diff = lfilter(b, a, mean_60sec)
             if ch == 1:
                 diff = diff / 3
+                json_log_file.write(f"    通道 {ch+1} 空氣床差值除以3後前10個值: {diff[:10]}\n")
+            else:
+                json_log_file.write(f"    通道 {ch+1} 空氣床差值前10個值: {diff[:10]}\n")
+            
+            dist_air_before = dist_air.copy()
             dist_air = dist_air + np.square(diff / 256)
+            json_log_file.write(f"    累加通道 {ch+1} 後的空氣床位移前10個值: {dist_air[:10]}\n")
+            json_log_file.write(f"    通道 {ch+1} 對空氣床位移的貢獻前10個值: {(dist_air - dist_air_before)[:10]}\n")
         
         # 計算翻身指標
-        rising_dist = calculate_rising_dist(dist)
-        rising_dist_air = calculate_rising_dist(dist_air)
+        json_log_file.write("\n計算翻身指標:\n")
+        json_log_file.write("  一般床墊:\n")
+        rising_dist = calculate_rising_dist(dist, json_log_file)
+        json_log_file.write(f"    翻身指標前10個值: {rising_dist[:10]}\n")
+        
+        json_log_file.write("  空氣床墊:\n")
+        rising_dist_air = calculate_rising_dist(dist_air, json_log_file)
+        json_log_file.write(f"    翻身指標前10個值: {rising_dist_air[:10]}\n")
         
         # 設定時間相關變數
         startday = timestamps[0].replace(hour=0, minute=0, second=0, microsecond=0)
+        json_log_file.write(f"\n基準時間: {startday}\n")
+        
         t1sec = np.array([(t - startday).total_seconds() for t in timestamps])
+        json_log_file.write(f"時間向量t1sec前10個值: {t1sec[:10]}\n")
+        
         idx1sec = np.arange(len(t1sec))
+        json_log_file.write(f"索引向量idx1sec前10個值: {idx1sec[:10]}\n")
+        
+        json_log_file.write("\nJSON資料前處理完成\n")
+        json_log_file.close()
         
         # 計算在床狀態
         EvalParameters()
@@ -1131,15 +1262,51 @@ def OpenJsonFile():
         status_bar.showMessage(f"載入 JSON 檔案時發生錯誤: {str(e)}")
         QApplication.processEvents()
 
-def calculate_rising_dist(dist):
-    """計算翻身指標的輔助函數"""
+def calculate_rising_dist(dist, log_file=None):
+    """計算翻身指標的輔助函數
+    
+    Args:
+        dist: 位移資料
+        log_file: 日誌文件對象，如果提供則記錄計算過程
+    
+    Returns:
+        計算後的翻身指標
+    """
+    if log_file:
+        log_file.write("  計算翻身指標細節:\n")
+        log_file.write(f"    位移資料前10個值: {dist[:10]}\n")
+    
     dist_series = pd.Series(dist)
     shift = 60
+    
+    if log_file:
+        log_file.write(f"    使用的偏移量: {shift}\n")
+    
     rising_dist = dist_series.shift(-shift) - dist_series
+    
+    if log_file:
+        log_file.write(f"    偏移差值前10個值: {rising_dist[:10]}\n")
+    
     rising_dist = np.int32(rising_dist.fillna(0))
+    
+    if log_file:
+        log_file.write(f"    填充NaN後前10個值: {rising_dist[:10]}\n")
+    
     rising_dist[rising_dist < 0] = 0
+    
+    if log_file:
+        log_file.write(f"    負值處理後前10個值: {rising_dist[:10]}\n")
+    
     rising_dist = rising_dist // 127
+    
+    if log_file:
+        log_file.write(f"    除以127後前10個值: {rising_dist[:10]}\n")
+    
     rising_dist[rising_dist > 1000] = 1000
+    
+    if log_file:
+        log_file.write(f"    限制最大值後前10個值: {rising_dist[:10]}\n")
+    
     return rising_dist
 
 #-----------------------------------------------------------------------   
