@@ -24,6 +24,7 @@ import ssl
 import time
 import csv
 import sys
+from tkinter import filedialog
 
 # 載入環境變數
 load_dotenv()
@@ -2031,6 +2032,14 @@ def setup_main_window():
     # 添加測試數據按鈕
     test_data_button = ttk.Button(root, text="輸入測試數據", command=create_test_data_window)
     test_data_button.grid(row=5, column=2, columnspan=2, pady=10)
+    
+    # 添加實驗比較按鈕
+    experiment_button = ttk.Button(root, text="實驗比較", command=compare_with_experiment)
+    experiment_button.grid(row=6, column=0, columnspan=2, pady=10)
+    
+    # 添加結果比較按鈕
+    results_button = ttk.Button(root, text="結果比較", command=compare_results)
+    results_button.grid(row=6, column=2, columnspan=2, pady=10)
 
 # 添加測試數據輸入功能
 def create_test_data_window():
@@ -2270,6 +2279,328 @@ def create_test_data_window():
     # 添加取消按鈕
     cancel_button = ttk.Button(button_frame, text="取消", command=test_window.destroy)
     cancel_button.pack(side=tk.RIGHT, padx=5)
+
+def load_experiment_data(filename=None):
+    """
+    從實驗中的降採樣資料檔案讀取資料，用於與onoff_bed_0803-H.py進行比較
+    
+    Args:
+        filename: 降採樣資料檔案的路徑，如果為None則彈出對話框選擇
+        
+    Returns:
+        sensor_data: 載入的感測器資料
+    """
+    try:
+        if filename is None:
+            # 打開檔案選擇對話框
+            experiment_dir = os.path.join(os.getcwd(), "_data", "experiment")
+            if not os.path.exists(experiment_dir):
+                os.makedirs(experiment_dir, exist_ok=True)
+                
+            filename = filedialog.askopenfilename(
+                title="選擇降採樣資料檔案",
+                initialdir=experiment_dir,
+                filetypes=[("JSON 檔案", "*.json"), ("CSV 檔案", "*.csv"), ("所有檔案", "*.*")]
+            )
+            
+            if not filename:
+                print("未選擇檔案")
+                return None
+        
+        print(f"讀取實驗用降採樣資料: {filename}")
+        
+        # 根據檔案類型決定讀取方式
+        if filename.endswith('.json'):
+            with open(filename, 'r') as f:
+                json_data = json.load(f)
+                sensor_data = json_data['data']
+                
+                # 如果資料是字串格式，需要轉換為數值型態
+                for i in range(len(sensor_data)):
+                    for ch in range(6):
+                        ch_key = f'ch{ch}'
+                        if isinstance(sensor_data[i][ch_key], str):
+                            sensor_data[i][ch_key] = int(sensor_data[i][ch_key])
+        
+        elif filename.endswith('.csv'):
+            sensor_data = []
+            with open(filename, 'r', newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    # 轉換通道數據為整數
+                    for ch in range(6):
+                        ch_key = f'ch{ch}'
+                        if ch_key in row:
+                            row[ch_key] = int(row[ch_key])
+                    sensor_data.append(row)
+        else:
+            print(f"不支援的檔案格式: {filename}")
+            return None
+        
+        print(f"成功讀取實驗用降採樣資料，共 {len(sensor_data)} 筆記錄")
+        return sensor_data
+        
+    except Exception as e:
+        print(f"讀取實驗用降採樣資料時發生錯誤: {str(e)}")
+        messagebox.showerror("Error", f"讀取實驗用降採樣資料時發生錯誤: {str(e)}")
+        return None
+
+
+def compare_with_experiment():
+    """
+    使用實驗用降採樣資料進行驗證，並與onoff_bed_0803-H.py比較結果
+    """
+    try:
+        # 讀取實驗用降採樣資料
+        sensor_data = load_experiment_data()
+        if not sensor_data:
+            return
+        
+        # 讀取參數
+        # 嘗試使用與onoff_bed_0803-H.py相同的參數檔案
+        experiment_params_dir = os.path.join(os.getcwd(), "_data", "experiment")
+        params_file = filedialog.askopenfilename(
+            title="選擇參數檔案",
+            initialdir=experiment_params_dir,
+            filetypes=[("CSV 檔案", "*.csv"), ("所有檔案", "*.*")]
+        )
+        
+        if not params_file:
+            print("未選擇參數檔案")
+            return
+        
+        # 初始化參數
+        params = BedParameters()
+        
+        # 嘗試讀取參數檔案
+        if params_file.endswith('.csv'):
+            with open(params_file, 'r', newline='') as csvfile:
+                reader = csv.reader(csvfile)
+                next(reader)  # 跳過標題行
+                
+                for row in reader:
+                    if len(row) >= 3:
+                        param_id = row[0]
+                        description = row[1]
+                        value = row[2]
+                        
+                        if description == 'Total Sum':
+                            params.bed_threshold = int(value)
+                        elif description == 'Noise 1':
+                            params.noise_1 = int(value)
+                        elif description == 'Noise 2':
+                            params.noise_2 = int(value)
+                        elif description == 'Set Flip':
+                            params.movement_threshold = int(value)
+                        elif description == 'Air mattress':
+                            params.is_air_mattress = int(value)
+                        elif 'min_preload' in description:
+                            ch = int(description.split()[1]) - 1
+                            params.channel_params['preload'][ch] = int(value)
+                        elif 'threshold_1' in description:
+                            ch = int(description.split()[1]) - 1
+                            params.channel_params['threshold1'][ch] = int(value)
+                        elif 'threshold_2' in description:
+                            ch = int(description.split()[1]) - 1
+                            params.channel_params['threshold2'][ch] = int(value)
+        
+        # 建立實驗日誌目錄
+        log_dir = os.path.join(os.getcwd(), "_data", "experiment", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # 設定日誌檔案路徑
+        global LOG_DIR
+        original_log_dir = LOG_DIR
+        LOG_DIR = log_dir
+        
+        # 處理資料
+        print("開始處理實驗用資料...")
+        processed_data = process_sensor_data(sensor_data, params)
+        if processed_data:
+            print(f"資料處理完成，長度: {len(processed_data['d10'][0])}")
+            
+            # 計算位移指標
+            movement_data = calculate_movement_indicators(processed_data, params)
+            if movement_data:
+                print(f"位移指標計算完成")
+                print(f"在床狀態: 在床={np.sum(movement_data['onbed'])}, 離床={len(movement_data['onbed']) - np.sum(movement_data['onbed'])}")
+            
+            # 檢測床上事件
+            events = detect_bed_events(processed_data, params)
+            if events:
+                print(f"事件檢測完成")
+                print(f"翻身點數: {len(events['flip_points'])}")
+                print(f"在床狀態: 在床={np.sum(events['bed_status'])}, 離床={len(events['bed_status']) - np.sum(events['bed_status'])}")
+                
+                # 儲存結果
+                result_path = os.path.join(log_dir, "localrawviewer_experiment_results.csv")
+                results = {
+                    'timestamp': [row['timestamp'] for row in sensor_data[:len(events['bed_status'])]],
+                    'bed_status': events['bed_status'],
+                    'rising_dist': events['rising_dist'],
+                    'rising_dist_air': events['rising_dist_air']
+                }
+                results_df = pd.DataFrame(results)
+                results_df.to_csv(result_path, index=False)
+                print(f"結果已儲存至: {result_path}")
+                
+                # 還原日誌目錄
+                LOG_DIR = original_log_dir
+                
+                # 顯示訊息
+                messagebox.showinfo("處理完成", f"實驗資料處理完成，結果已儲存至: {result_path}")
+                
+                return results
+        
+        # 還原日誌目錄
+        LOG_DIR = original_log_dir
+        
+    except Exception as e:
+        print(f"實驗資料處理時發生錯誤: {str(e)}")
+        messagebox.showerror("Error", f"實驗資料處理時發生錯誤: {str(e)}")
+        return None
+
+def compare_results():
+    """
+    比較localrawviewer和onoff_bed的處理結果，並生成比較報告
+    """
+    try:
+        # 選擇localrawviewer的結果檔案
+        experiment_dir = os.path.join(os.getcwd(), "_data", "experiment", "logs")
+        if not os.path.exists(experiment_dir):
+            messagebox.showerror("錯誤", "找不到實驗結果目錄")
+            return
+            
+        localraw_file = filedialog.askopenfilename(
+            title="選擇localrawviewer的結果檔案",
+            initialdir=experiment_dir,
+            filetypes=[("CSV 檔案", "*.csv"), ("所有檔案", "*.*")]
+        )
+        
+        if not localraw_file:
+            return
+            
+        # 選擇onoff_bed的結果檔案
+        onoff_file = filedialog.askopenfilename(
+            title="選擇onoff_bed的結果檔案",
+            initialdir=os.path.join(os.getcwd(), "_data", "experiment"),
+            filetypes=[("CSV 檔案", "*.csv"), ("所有檔案", "*.*")]
+        )
+        
+        if not onoff_file:
+            return
+            
+        # 讀取兩個檔案
+        localraw_df = pd.read_csv(localraw_file)
+        onoff_df = pd.read_csv(onoff_file)
+        
+        # 確保時間戳相同
+        if len(localraw_df) != len(onoff_df):
+            # 嘗試根據時間戳合併
+            localraw_df['timestamp'] = localraw_df['timestamp'].astype(str)
+            onoff_df['timestamp'] = onoff_df['timestamp'].astype(str)
+            
+            # 合併資料
+            merged_df = pd.merge(
+                localraw_df, 
+                onoff_df, 
+                on='timestamp', 
+                how='inner',
+                suffixes=('_localraw', '_onoff')
+            )
+            
+            if len(merged_df) == 0:
+                messagebox.showerror("錯誤", "無法合併兩個結果檔案，時間戳不匹配")
+                return
+                
+            print(f"合併後的資料長度: {len(merged_df)}")
+        else:
+            # 直接使用相同索引合併
+            merged_df = pd.DataFrame()
+            merged_df['timestamp'] = localraw_df['timestamp']
+            merged_df['bed_status_localraw'] = localraw_df['bed_status']
+            merged_df['bed_status_onoff'] = onoff_df['bed_status']
+            merged_df['rising_dist_localraw'] = localraw_df['rising_dist']
+            merged_df['rising_dist_onoff'] = onoff_df['rising_dist']
+            merged_df['rising_dist_air_localraw'] = localraw_df['rising_dist_air']
+            merged_df['rising_dist_air_onoff'] = onoff_df['rising_dist_air']
+            
+        # 計算差異
+        merged_df['bed_status_diff'] = (merged_df['bed_status_localraw'] != merged_df['bed_status_onoff']).astype(int)
+        merged_df['rising_dist_diff'] = merged_df['rising_dist_localraw'] - merged_df['rising_dist_onoff']
+        merged_df['rising_dist_air_diff'] = merged_df['rising_dist_air_localraw'] - merged_df['rising_dist_air_onoff']
+        
+        # 生成統計報告
+        total_records = len(merged_df)
+        bed_status_diff_count = merged_df['bed_status_diff'].sum()
+        bed_status_match_percent = 100 * (1 - bed_status_diff_count / total_records)
+        
+        rising_dist_mean_diff = merged_df['rising_dist_diff'].mean()
+        rising_dist_std_diff = merged_df['rising_dist_diff'].std()
+        rising_dist_max_diff = merged_df['rising_dist_diff'].abs().max()
+        
+        rising_dist_air_mean_diff = merged_df['rising_dist_air_diff'].mean()
+        rising_dist_air_std_diff = merged_df['rising_dist_air_diff'].std()
+        rising_dist_air_max_diff = merged_df['rising_dist_air_diff'].abs().max()
+        
+        # 輸出報告到文字檔案
+        report_path = os.path.join(experiment_dir, "comparison_report.txt")
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("=== 演算法比較報告 ===\n\n")
+            f.write(f"localrawviewer1217_elastic.py 結果檔案: {os.path.basename(localraw_file)}\n")
+            f.write(f"onoff_bed_0803-H.py 結果檔案: {os.path.basename(onoff_file)}\n")
+            f.write(f"總記錄數: {total_records}\n\n")
+            
+            f.write("== 在床狀態比較 ==\n")
+            f.write(f"相符記錄數: {total_records - bed_status_diff_count}\n")
+            f.write(f"不相符記錄數: {bed_status_diff_count}\n")
+            f.write(f"相符率: {bed_status_match_percent:.2f}%\n\n")
+            
+            f.write("== 一般床墊位移差值比較 ==\n")
+            f.write(f"平均差異: {rising_dist_mean_diff:.2f}\n")
+            f.write(f"標準差: {rising_dist_std_diff:.2f}\n")
+            f.write(f"最大絕對差異: {rising_dist_max_diff}\n\n")
+            
+            f.write("== 氣墊床位移差值比較 ==\n")
+            f.write(f"平均差異: {rising_dist_air_mean_diff:.2f}\n")
+            f.write(f"標準差: {rising_dist_air_std_diff:.2f}\n")
+            f.write(f"最大絕對差異: {rising_dist_air_max_diff}\n\n")
+            
+            # 儲存前10個差異的記錄作為範例
+            diff_samples = merged_df[merged_df['bed_status_diff'] == 1].head(10)
+            if len(diff_samples) > 0:
+                f.write("== 在床狀態差異樣本 (前10筆) ==\n")
+                for i, row in diff_samples.iterrows():
+                    f.write(f"時間戳: {row['timestamp']}, localraw: {row['bed_status_localraw']}, onoff: {row['bed_status_onoff']}\n")
+            
+        # 儲存完整比較結果
+        comparison_path = os.path.join(experiment_dir, "detailed_comparison.csv")
+        merged_df.to_csv(comparison_path, index=False)
+        
+        # 顯示報告
+        messagebox.showinfo("比較完成", f"比較報告已生成並儲存至: {report_path}\n詳細比較結果: {comparison_path}")
+        
+        # 顯示簡要統計
+        print("\n=== 演算法比較統計 ===")
+        print(f"總記錄數: {total_records}")
+        print(f"在床狀態相符率: {bed_status_match_percent:.2f}%")
+        print(f"一般床墊位移差值平均差異: {rising_dist_mean_diff:.2f}")
+        print(f"氣墊床位移差值平均差異: {rising_dist_air_mean_diff:.2f}")
+        
+        # 返回比較結果
+        return {
+            'total_records': total_records,
+            'bed_status_match_percent': bed_status_match_percent,
+            'rising_dist_mean_diff': rising_dist_mean_diff,
+            'rising_dist_air_mean_diff': rising_dist_air_mean_diff,
+            'report_path': report_path,
+            'comparison_path': comparison_path
+        }
+        
+    except Exception as e:
+        print(f"比較結果時發生錯誤: {str(e)}")
+        messagebox.showerror("Error", f"比較結果時發生錯誤: {str(e)}")
+        return None
 
 # 在主程式開始時調用
 if __name__ == "__main__":
