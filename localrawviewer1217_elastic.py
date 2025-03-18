@@ -1078,6 +1078,12 @@ def plot_combined_data(sensor_data):
                 messagebox.showerror("Error", "事件檢測失敗")
                 return
             
+            # 保存基線數據
+            movement_data = calculate_movement_indicators(processed_data, params)
+            if movement_data:
+                baseline_filepath = save_baseline_data(sensor_data, movement_data)
+                print(f"基線數據已保存到: {baseline_filepath}")
+            
             # 將初始演算法判斷結果整合到原始資料中
             data_length = len(sensor_data)
             
@@ -1150,27 +1156,43 @@ def plot_combined_data(sensor_data):
                             change_summary = ", ".join(diff_str) if diff_str else "未檢測到具體變化"
                             print(f"參數變化: {change_summary}")
                             
+                            # 清空圖表以重新繪製
+                            ax1.clear()
+                            ax2.clear()
+                            ax1.cla()  # 完全清除，包括圖例
+                            ax2.cla()  # 完全清除，包括圖例
+                            
+                            # 重新繪製原始信號
+                            for ch in range(6):
+                                if show_vars['channels'][ch].get():
+                                    plot_length = min(len(timestamps), len(processed_data['d10'][ch]))
+                                    ax1.plot(timestamps[:plot_length], 
+                                            processed_data['d10'][ch][:plot_length], 
+                                            label=f'CH{ch}', 
+                                            alpha=0.7)
+                            
+                            # 使用新參數計算基線（但不在上半部繪製）
+                            new_movement_data = calculate_movement_indicators(processed_data, new_params)
+                            
+                            # 設置上圖表格式
+                            ax1.set_ylabel('Sensor Values')
+                            # 避免重複標籤
+                            handles, labels = ax1.get_legend_handles_labels()
+                            by_label = dict(zip(labels, handles))
+                            ax1.legend(by_label.values(), by_label.keys())
+                            ax1.grid(True)
+                            
+                            # 檢測床上事件
                             new_events = detect_bed_events(processed_data, new_params)
                         else:
                             new_events = initial_events
+                            new_movement_data = movement_data
                             print("參數未改變，使用初始事件")
                             
                         if new_events:
-                            
-                            # # 印出 new_events 各欄位的資料長度
-                            # print(f'bed_status 長度: {len(new_events["bed_status"])}')
-                            # print(f'movement 長度: {len(new_events["movement"])}')
-                            # print(f'flip_points 長度: {len(new_events["flip_points"])}')
-                            # print(f'rising_dist 長度: {len(new_events["rising_dist"])}')
-                            # print(f'rising_dist_air 長度: {len(new_events["rising_dist_air"])}')
-                            # print(f'onload 長度: {len(new_events["onload"])}')
-                            
-                            # # 額外印出 onload 中每個陣列的長度
-                            # for i, onload_arr in enumerate(new_events["onload"]):
-                            #     print(f'onload[{i}] 長度: {len(onload_arr)}')
-                            
                             # 將演算法判斷結果整合到原始資料中
                             nonlocal sensor_data
+                            nonlocal canvas  # 声明使用外部canvas变量
                             data_length = len(sensor_data)
                             
                             # 確保所有陣列長度與 sensor_data 相同
@@ -1213,6 +1235,34 @@ def plot_combined_data(sensor_data):
                             save_sensor_data(sensor_data)
                             print(f"已將演算法判斷結果整合到資料中並儲存")
                             
+                            # 在ax2中繪製基線
+                            if new_movement_data and 'baseline' in new_movement_data:
+                                for ch in range(6):
+                                    if show_vars['channels'][ch].get():
+                                        # 將基線數據規範化到0-1範圍以便在下半部圖表中顯示
+                                        baseline_data = new_movement_data['baseline'][ch][:len(timestamps)]
+                                        # 獲取基線數據的最小值和最大值
+                                        min_val = np.min(baseline_data)
+                                        max_val = np.max(baseline_data)
+                                        # 規範化基線數據到0.2-0.8範圍，避免與在床狀態(0/1)混淆
+                                        if max_val > min_val:
+                                            normalized_baseline = 0.2 + 0.6 * (baseline_data - min_val) / (max_val - min_val)
+                                        else:
+                                            normalized_baseline = np.ones_like(baseline_data) * 0.5
+                                        
+                                        # 對基線數據進行采樣
+                                        sampled_baseline = normalized_baseline[::sample_rate]
+                                        sampled_baseline_length = min(len(sampled_timestamps), len(sampled_baseline))
+                                        
+                                        # 繪製基線
+                                        safe_plot(ax2,
+                                                sampled_timestamps[:sampled_baseline_length],
+                                                sampled_baseline[:sampled_baseline_length],
+                                                label=f'Baseline{ch}',
+                                                linestyle='--',
+                                                color=f'C{ch}',
+                                                alpha=0.7)
+                            
                             # 繪製各通道在床狀態
                             for ch in range(6):
                                 if show_vars['channels'][ch].get():
@@ -1249,13 +1299,21 @@ def plot_combined_data(sensor_data):
                             ax2.xaxis.set_minor_locator(AutoLocator())
                             ax2.set_ylabel('Events')
                             ax2.set_ylim(-0.2, 1.2)
-                            ax2.legend()
+                            # 避免重複標籤
+                            handles, labels = ax2.get_legend_handles_labels()
+                            by_label = dict(zip(labels, handles))
+                            ax2.legend(by_label.values(), by_label.keys())
                             ax2.grid(True)
                             fig.autofmt_xdate()
-                            canvas.draw()
                             
                             # 在更新圖表後強制同步x軸範圍
                             ax2.set_xlim(ax1.get_xlim())
+                            
+                            # 確保時間軸標籤不重疊
+                            fig.autofmt_xdate()
+                            
+                            # 繪製畫布
+                            canvas.draw()
 
                 except Exception as e:
                     print(f"更新圖表和保存數據時發生錯誤: {str(e)}")
@@ -1344,6 +1402,12 @@ def plot_combined_data(sensor_data):
             update_ticks(ax1)
             update_ticks(ax2)
             
+            # 清空圖表以防止重複的圖例
+            ax1.clear()
+            ax2.clear()
+            ax1.cla()  # 完全清除，包括圖例
+            ax2.cla()  # 完全清除，包括圖例
+            
             # 繪製數據（使用時間軸）
             for ch in range(6):
                 # 確保數據長度一致
@@ -1367,11 +1431,87 @@ def plot_combined_data(sensor_data):
             ax2.grid(True, which='major', linestyle='-')
             ax2.grid(True, which='minor', linestyle=':')
             
-            # 確保時間軸標籤不重疊
-            fig.autofmt_xdate()
+            # 在下部圖表(ax2)繪製基線
+            if movement_data and 'baseline' in movement_data:
+                for ch in range(6):
+                    if show_vars['channels'][ch].get():
+                        # 將基線數據規範化到0-1範圍以便在下半部圖表中顯示
+                        baseline_data = movement_data['baseline'][ch][:len(timestamps)]
+                        # 獲取基線數據的最小值和最大值
+                        min_val = np.min(baseline_data)
+                        max_val = np.max(baseline_data)
+                        # 規範化基線數據到0.2-0.8範圍，避免與在床狀態(0/1)混淆
+                        if max_val > min_val:
+                            normalized_baseline = 0.2 + 0.6 * (baseline_data - min_val) / (max_val - min_val)
+                        else:
+                            normalized_baseline = np.ones_like(baseline_data) * 0.5
+                        
+                        # 對基線數據進行采樣
+                        sampled_baseline = normalized_baseline[::sample_rate]
+                        sampled_baseline_length = min(len(sampled_timestamps), len(sampled_baseline))
+                        
+                        # 繪製基線
+                        safe_plot(ax2,
+                                sampled_timestamps[:sampled_baseline_length],
+                                sampled_baseline[:sampled_baseline_length],
+                                label=f'Baseline{ch}',
+                                linestyle='--',
+                                color=f'C{ch}',
+                                alpha=0.7)
+            
+            # 繪製各通道在床狀態
+            for ch in range(6):
+                if show_vars['channels'][ch].get():
+                    data = initial_events['onload'][ch][:len(timestamps)]  # 嚴格截斷
+                    sampled_data = data[::sample_rate]
+                    safe_plot(ax2, 
+                             sampled_timestamps, 
+                             sampled_data,
+                             label=f'Ch{ch+1}',
+                             alpha=0.5)
+            print("在床狀態繪製完成")
+            
+            # 繪製整體在床狀態
+            if show_vars['bed_status'].get():
+                print(f"timestamps長度: {len(timestamps)}")
+                # 印出頭尾幾個 timestamps 的資料
+                print(f"timestamps頭尾資料: {timestamps[:2]} ... {timestamps[-2:]}")
+
+                data = initial_events['bed_status'][:len(timestamps)]  # 嚴格截斷
+                sampled_data = data[::sample_rate]
+                print(f"data長度: {len(data)}")
+                print(f"sampled_data長度: {len(sampled_data)}")
+                safe_plot(ax2,
+                         sampled_timestamps,
+                         sampled_data,
+                         label='Bed Status', 
+                         color='blue', 
+                         linewidth=2)
+                print("整體在床狀態繪製完成")
             
             # 創建畫布
             canvas = FigureCanvasTkAgg(fig, master=plot_window)
+            
+            # 設置圖表格式
+            ax2.xaxis.set_major_locator(MaxNLocator(nbins=12))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+            ax2.xaxis.set_minor_locator(AutoLocator())
+            ax2.set_ylabel('Events')
+            ax2.set_ylim(-0.2, 1.2)
+            # 避免重複標籤
+            handles, labels = ax2.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax2.legend(by_label.values(), by_label.keys())
+            ax2.grid(True)
+            fig.autofmt_xdate()
+            
+            # 在更新圖表後強制同步x軸範圍
+            ax2.set_xlim(ax1.get_xlim())
+            
+            # 確保時間軸標籤不重疊
+            fig.autofmt_xdate()
+            
+            # 繪製畫布
             canvas.draw()
             
             # 添加工具欄
@@ -1794,6 +1934,8 @@ def detect_bed_events(processed_data, params):
         if movement_data:
             events['bed_status'] = movement_data['onbed']
             events['onload'] = movement_data['onload']
+            # 添加基線數據
+            events['baseline'] = movement_data['baseline']
             log_file.write(f"在床狀態前10個值: {events['bed_status'][:10]}\n")
             log_file.write(f"在床狀態統計: 在床={np.sum(events['bed_status'])}, 離床={len(events['bed_status']) - np.sum(events['bed_status'])}\n")
         
@@ -1842,6 +1984,10 @@ def save_processed_data(sensor_data, processed_data, parameters):
         data_dict['Rising_Dist_Normal'] = movement_data['rising_dist'][:min_length]
         data_dict['Rising_Dist_Air'] = movement_data['rising_dist_air'][:min_length]
         
+        # 添加各通道的基線數據
+        for ch in range(6):
+            data_dict[f'Channel_{ch+1}_Baseline'] = movement_data['baseline'][ch][:min_length]
+        
         # 檢查所有數據長度是否一致
         lengths = [len(arr) for arr in data_dict.values()]
         if len(set(lengths)) > 1:
@@ -1862,6 +2008,54 @@ def save_processed_data(sensor_data, processed_data, parameters):
     except Exception as e:
         print(f"Error details: {str(e)}")
         messagebox.showerror("Error", f"保存數據時發生錯誤: {str(e)}")
+        return None
+
+def save_baseline_data(sensor_data, movement_data):
+    """單獨保存基線數據為CSV文件"""
+    try:
+        if not movement_data or 'baseline' not in movement_data:
+            print("沒有可用的基線數據")
+            return None
+        
+        # 建立時間戳列
+        timestamps = [
+            datetime.strptime(str(row['timestamp']), "%Y%m%d%H%M%S") + timedelta(hours=8)
+            for row in sensor_data
+        ]
+        
+        # 取得基線數據
+        baselines = movement_data['baseline']
+        
+        # 取得最短的數據長度，確保所有數據長度一致
+        min_length = min(
+            len(timestamps),
+            min(len(arr) for arr in baselines)
+        )
+        
+        # 截取所有數據到相同長度
+        timestamps = timestamps[:min_length]
+        
+        # 準備數據字典
+        data_dict = {
+            'Timestamp': timestamps
+        }
+        
+        # 添加各通道的基線數據
+        for ch in range(6):
+            data_dict[f'Channel_{ch+1}_Baseline'] = baselines[ch][:min_length]
+            data_dict[f'Channel_{ch+1}_Raw'] = movement_data['zdata'][ch][:min_length] + baselines[ch][:min_length]
+            data_dict[f'Channel_{ch+1}_ZData'] = movement_data['zdata'][ch][:min_length]  # 零點數據
+        
+        # 保存為CSV
+        df = pd.DataFrame(data_dict)
+        filename = f"baseline_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filepath = os.path.join(DATA_DIR, filename)
+        df.to_csv(filepath, index=False)
+        
+        print(f"成功保存基線數據，長度: {min_length}")
+        return filepath
+    except Exception as e:
+        print(f"保存基線數據錯誤: {str(e)}")
         return None
 
 # 在主程式中初始化參數表
