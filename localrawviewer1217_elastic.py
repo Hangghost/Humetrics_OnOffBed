@@ -1650,7 +1650,7 @@ def calculate_movement_indicators(processed_data, params):
         
         # 初始化
         l = len(processed_data['d10'][0])
-        onbed = np.zeros((l,))
+        onbed = np.zeros((l,), dtype=np.int32)
         onload = []
         total = 0
         zdata_final = []
@@ -1756,7 +1756,7 @@ def detect_bed_events(processed_data, params):
         
         l = len(processed_data['d10'][0])
         events = {
-            'bed_status': np.zeros((l,)),
+            'bed_status': np.zeros((l,), dtype=np.int32),
             'movement': [],
             'flip_points': [],  # 改為儲存翻身的時間點
             'rising_dist': np.zeros((l,)),
@@ -2413,11 +2413,267 @@ def compare_with_experiment():
         original_log_dir = LOG_DIR
         LOG_DIR = log_dir
         
-        # 處理資料
-        print("開始處理實驗用資料...")
-        processed_data = process_sensor_data(sensor_data, params)
+        # ======== 使用onoff_bed_0803-H.py的已處理數據檔案 ========
+        # 讀取onoff_bed_0803-H.py的已處理數據檔案（_downsampled_檔案）
+        downsampled_file = filedialog.askopenfilename(
+            title="選擇onoff_bed_0803-H.py的已處理數據檔案",
+            initialdir=experiment_params_dir,
+            filetypes=[("JSON 檔案", "*.json"), ("所有檔案", "*.*")]
+        )
+        
+        if not downsampled_file:
+            print("未選擇已處理數據檔案")
+            return
+            
+        print(f"讀取已處理數據檔案: {downsampled_file}")
+        
+        # 讀取JSON格式的降採樣數據
+        with open(downsampled_file, 'r') as f:
+            downsampled_data = json.load(f)
+            
+        # 直接使用已處理好的數據，而不再次執行process_sensor_data
+        print("使用已處理好的數據進行事件檢測...")
+        
+        # 構建初始的 processed_data 字典結構
+        raw_onoff_data = {
+            'n10': downsampled_data.get('n10', []),
+            'd10': downsampled_data.get('d10', []),
+            'x10': downsampled_data.get('x10', [])
+        }
+        
+        # 立即進行格式轉換和檢查
+        print("\n===== 轉換 onoff_processed_data 格式 =====")
+        onoff_processed_data = {}
+        
+        for key in ['n10', 'd10', 'x10']:
+            if key in raw_onoff_data:
+                print(f"\n處理 {key} 數據:")
+                raw_data = raw_onoff_data[key]
+                
+                # 檢查格式並轉換
+                if not isinstance(raw_data, list):
+                    print(f"  {key} 不是列表，創建空列表")
+                    onoff_processed_data[key] = [np.array([0])] * 6
+                    continue
+                
+                # 檢查是否已經是6個通道
+                if len(raw_data) == 6:
+                    print(f"  {key} 已有6個通道，檢查每個通道的格式")
+                    new_channels = []
+                    for ch, ch_data in enumerate(raw_data):
+                        if isinstance(ch_data, list):
+                            print(f"  通道 {ch} 是列表，轉換為numpy數組")
+                            new_channels.append(np.array(ch_data))
+                        elif isinstance(ch_data, int):
+                            print(f"  通道 {ch} 是整數 {ch_data}，創建包含該整數的numpy數組")
+                            new_channels.append(np.array([ch_data]))
+                        elif hasattr(ch_data, 'shape'):
+                            print(f"  通道 {ch} 已是numpy數組，形狀: {ch_data.shape}")
+                            new_channels.append(ch_data)
+                        else:
+                            print(f"  通道 {ch} 類型未知: {type(ch_data)}，創建空numpy數組")
+                            new_channels.append(np.array([0]))
+                    
+                    onoff_processed_data[key] = new_channels
+                
+                # 如果是單一數組或列表，擴展為6個通道
+                elif len(raw_data) == 1:
+                    print(f"  {key} 只有1個元素，擴展為6個通道")
+                    first_item = raw_data[0]
+                    
+                    if isinstance(first_item, list):
+                        print(f"  第一個元素是列表，長度: {len(first_item)}")
+                        # 檢查是否可能是壓縮的6通道數據
+                        if len(first_item) % 6 == 0:
+                            # 嘗試將數據拆分為6個通道
+                            print(f"  嘗試將數據拆分為6個通道")
+                            samples_per_channel = len(first_item) // 6
+                            new_channels = []
+                            for ch in range(6):
+                                ch_data = first_item[ch::6]  # 每隔6個取一個
+                                if len(ch_data) < samples_per_channel:
+                                    # 填充到相同長度
+                                    ch_data = ch_data + [0] * (samples_per_channel - len(ch_data))
+                                new_channels.append(np.array(ch_data))
+                            onoff_processed_data[key] = new_channels
+                        else:
+                            # 直接複製成6個相同通道
+                            print(f"  複製成6個相同通道")
+                            onoff_processed_data[key] = [np.array(first_item)] * 6
+                    elif isinstance(first_item, int):
+                        print(f"  第一個元素是整數 {first_item}，創建6個包含該整數的numpy數組")
+                        onoff_processed_data[key] = [np.array([first_item])] * 6
+                    elif hasattr(first_item, 'shape'):
+                        print(f"  第一個元素是numpy數組，形狀: {first_item.shape}，複製為6個通道")
+                        onoff_processed_data[key] = [first_item.copy()] * 6
+                    else:
+                        print(f"  第一個元素類型未知: {type(first_item)}，創建6個空numpy數組")
+                        onoff_processed_data[key] = [np.array([0])] * 6
+                
+                # 其他情況，創建空數據
+                else:
+                    print(f"  {key} 有 {len(raw_data)} 個元素，不是6個或1個，創建6個空通道")
+                    onoff_processed_data[key] = [np.array([0])] * 6
+            
+            else:
+                print(f"\n{key} 不存在，創建空數據")
+                onoff_processed_data[key] = [np.array([0])] * 6
+        
+        # 檢查三個鍵的數組長度是否一致，如有需要進行截斷
+        print("\n檢查所有通道長度是否一致...")
+        min_lengths = []
+        for key in ['n10', 'd10', 'x10']:
+            lengths = [len(arr) for arr in onoff_processed_data[key]]
+            print(f"{key} 各通道長度: {lengths}")
+            min_length = min(lengths) if lengths else 0
+            min_lengths.append(min_length)
+        
+        # 取所有數據的最小長度
+        global_min_length = min(min_lengths) if min_lengths else 0
+        print(f"所有數據的最小長度: {global_min_length}")
+        
+        # 截斷所有數組到最小長度
+        if global_min_length > 0:
+            for key in ['n10', 'd10', 'x10']:
+                for ch in range(6):
+                    if len(onoff_processed_data[key][ch]) > global_min_length:
+                        print(f"截斷 {key} 通道 {ch} 從 {len(onoff_processed_data[key][ch])} 到 {global_min_length}")
+                        onoff_processed_data[key][ch] = onoff_processed_data[key][ch][:global_min_length]
+        
+        print("\nonoff_processed_data 已成功轉換格式")
+
+        # ======== 使用localrawviewer1217_elastic.py的已處理數據檔案 ========
+        localraw_processed_data = process_sensor_data(sensor_data, params)
+        
+        # ========= 對比兩種數據結構的差異 =========
+        print("\n========= 對比數據結構差異 =========")
+        print(f"onoff_processed_data 結構:")
+        print(f"- 鍵值列表: {list(onoff_processed_data.keys())}")
+        for key in onoff_processed_data:
+            if isinstance(onoff_processed_data[key], list):
+                print(f"- {key} 是一個列表，長度: {len(onoff_processed_data[key])}")
+                if len(onoff_processed_data[key]) > 0:
+                    first_item = onoff_processed_data[key][0]
+                    print(f"  - 第一個元素類型: {type(first_item)}")
+                    if hasattr(first_item, 'shape'):
+                        print(f"  - 第一個元素形狀: {first_item.shape}")
+                    elif isinstance(first_item, list):
+                        print(f"  - 第一個元素長度: {len(first_item)}")
+        
+        print(f"\nlocalraw_processed_data 結構:")
+        print(f"- 鍵值列表: {list(localraw_processed_data.keys())}")
+        for key in localraw_processed_data:
+            if isinstance(localraw_processed_data[key], list):
+                print(f"- {key} 是一個列表，長度: {len(localraw_processed_data[key])}")
+                if len(localraw_processed_data[key]) > 0:
+                    first_item = localraw_processed_data[key][0]
+                    print(f"  - 第一個元素類型: {type(first_item)}")
+                    if hasattr(first_item, 'shape'):
+                        print(f"  - 第一個元素形狀: {first_item.shape}")
+                    elif isinstance(first_item, list):
+                        print(f"  - 第一個元素長度: {len(first_item)}")
+        
+        # 比較兩個數據的前10個值
+        print("\n========= 對比數據內容 =========")
+        for key in ['n10', 'd10', 'x10']:
+            if key in onoff_processed_data and key in localraw_processed_data:
+                if len(onoff_processed_data[key]) > 0 and len(localraw_processed_data[key]) > 0:
+                    print(f"\n{key} 的前10個值比較 (通道 0):")
+                    onoff_data = onoff_processed_data[key][0][:10] if len(onoff_processed_data[key]) > 0 else []
+                    localraw_data = localraw_processed_data[key][0][:10] if len(localraw_processed_data[key]) > 0 else []
+                    print(f"onoff_data: {onoff_data}")
+                    print(f"localraw_data: {localraw_data}")
+                    
+                    # 檢查數據差異
+                    if isinstance(onoff_data, np.ndarray) and isinstance(localraw_data, np.ndarray):
+                        if onoff_data.size > 0 and localraw_data.size > 0:
+                            print(f"兩者差異統計: 最大差值={np.max(np.abs(onoff_data - localraw_data))}, 平均差值={np.mean(np.abs(onoff_data - localraw_data))}")
+        
+        # 檢查在床狀態判斷的關鍵點
+        print("\n========= 模擬在床狀態計算 =========")
+        
+        # 對兩種數據分別進行在床狀態計算
+        print("1. 使用 onoff_processed_data 計算在床狀態:")
+        try:
+            # 使用已經轉換好的 onoff_processed_data
+            temp_movement_data = calculate_movement_indicators(onoff_processed_data, params)
+            if temp_movement_data:
+                print(f"- 成功計算位移指標")
+                print(f"- 在床狀態: 在床={np.sum(temp_movement_data['onbed'])}, 離床={len(temp_movement_data['onbed']) - np.sum(temp_movement_data['onbed'])}")
+                print(f"- 在床比例: {np.sum(temp_movement_data['onbed'])/len(temp_movement_data['onbed'])*100:.2f}%")
+                # 顯示前10個在床狀態值
+                print(f"- 前10個在床狀態值: {temp_movement_data['onbed'][:10]}")
+                print(f"- 第一個通道負載前10個值: {temp_movement_data['total'][:10] if 'total' in temp_movement_data else '無總負載數據'}")
+                
+                # 同時測試事件檢測
+                try:
+                    temp_events = detect_bed_events(onoff_processed_data, params)
+                    if temp_events:
+                        print(f"- 事件檢測成功")
+                        print(f"- 在床狀態統計: 在床={np.sum(temp_events['bed_status'])}, 離床={len(temp_events['bed_status']) - np.sum(temp_events['bed_status'])}")
+                        print(f"- 在床比例: {np.sum(temp_events['bed_status'])/len(temp_events['bed_status'])*100:.2f}%")
+                        print(f"- 前10個事件床狀態值: {temp_events['bed_status'][:10]}")
+                    else:
+                        print("- 事件檢測失敗")
+                except Exception as e:
+                    print(f"- 使用 onoff_processed_data 進行事件檢測時出錯: {str(e)}")
+            else:
+                print("- 無法計算位移指標，可能是數據結構問題")
+        except Exception as e:
+            print(f"- 處理 onoff_processed_data 時出錯: {str(e)}")
+            # 顯示詳細的錯誤堆疊跟踪
+            import traceback
+            print(traceback.format_exc())
+        
+        print("\n2. 使用 localraw_processed_data 計算在床狀態:")
+        try:
+            temp_movement_data = calculate_movement_indicators(localraw_processed_data, params)
+            if temp_movement_data:
+                print(f"- 成功計算位移指標")
+                print(f"- 在床狀態: 在床={np.sum(temp_movement_data['onbed'])}, 離床={len(temp_movement_data['onbed']) - np.sum(temp_movement_data['onbed'])}")
+                print(f"- 在床比例: {np.sum(temp_movement_data['onbed'])/len(temp_movement_data['onbed'])*100:.2f}%")
+                # 顯示前10個在床狀態值
+                print(f"- 前10個在床狀態值: {temp_movement_data['onbed'][:10]}")
+                print(f"- 第一個通道負載前10個值: {temp_movement_data['total'][:10] if 'total' in temp_movement_data else '無總負載數據'}")
+                
+                # 同時測試事件檢測
+                try:
+                    temp_events = detect_bed_events(localraw_processed_data, params)
+                    if temp_events:
+                        print(f"- 事件檢測成功")
+                        print(f"- 在床狀態統計: 在床={np.sum(temp_events['bed_status'])}, 離床={len(temp_events['bed_status']) - np.sum(temp_events['bed_status'])}")
+                        print(f"- 在床比例: {np.sum(temp_events['bed_status'])/len(temp_events['bed_status'])*100:.2f}%")
+                        print(f"- 前10個事件床狀態值: {temp_events['bed_status'][:10]}")
+                    else:
+                        print("- 事件檢測失敗")
+                except Exception as e:
+                    print(f"- 使用 localraw_processed_data 進行事件檢測時出錯: {str(e)}")
+            else:
+                print("- 無法計算位移指標，可能是數據結構問題")
+        except Exception as e:
+            print(f"- 處理 localraw_processed_data 時出錯: {str(e)}")
+            # 顯示詳細的錯誤堆疊跟踪
+            import traceback
+            print(traceback.format_exc())
+        
+        # ========= 如需繼續使用其中一種數據，請取消下面相應的註釋 =========
+        
+        # 添加選擇使用哪種數據來源的選項
+        data_source_choice = messagebox.askyesno(
+            "選擇數據來源", 
+            "是否使用localrawviewer處理的數據？\n選擇「是」使用localrawviewer的數據\n選擇「否」使用onoff_bed的數據"
+        )
+        
+        if data_source_choice:
+            print("使用localrawviewer處理的數據")
+            processed_data = localraw_processed_data
+        else:
+            print("使用onoff_bed處理的數據")
+            processed_data = onoff_processed_data
+        
+        # 處理選定的數據
         if processed_data:
-            print(f"資料處理完成，長度: {len(processed_data['d10'][0])}")
+            print(f"處理好的數據已讀取")
             
             # 計算位移指標
             movement_data = calculate_movement_indicators(processed_data, params)
@@ -2427,6 +2683,11 @@ def compare_with_experiment():
             
             # 檢測床上事件
             events = detect_bed_events(processed_data, params)
+
+            print(f"events: {len(events['bed_status'])}")
+            print(f"前10個events: {events}")
+            print(f"events['bed_status']: {events['bed_status']}")
+
             if events:
                 print(f"事件檢測完成")
                 print(f"翻身點數: {len(events['flip_points'])}")
@@ -2436,7 +2697,7 @@ def compare_with_experiment():
                 result_path = os.path.join(log_dir, "localrawviewer_experiment_results.csv")
                 results = {
                     'timestamp': [row['timestamp'] for row in sensor_data[:len(events['bed_status'])]],
-                    'bed_status': events['bed_status'],
+                    'bed_status': events['bed_status'],  # 使用 movement_data 中的 onbed 而不是 events 中的 bed_status
                     'rising_dist': events['rising_dist'],
                     'rising_dist_air': events['rising_dist_air']
                 }
@@ -2458,6 +2719,7 @@ def compare_with_experiment():
     except Exception as e:
         print(f"實驗資料處理時發生錯誤: {str(e)}")
         messagebox.showerror("Error", f"實驗資料處理時發生錯誤: {str(e)}")
+        traceback.print_exc()  # 印出詳細錯誤訊息
         return None
 
 def compare_results():

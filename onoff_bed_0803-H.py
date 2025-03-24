@@ -391,7 +391,7 @@ def OpenCmbFile():
     txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
     with open(txt_path, mode='r', newline='') as file:
         reader = csv.reader(file)
-        t = []
+        time_array = []
         filelen = []
         # 逐行读取数据并将其添加到列表中
         for row in reader:
@@ -400,10 +400,10 @@ def OpenCmbFile():
             gmt_dt = gmt.localize(dt)                
             tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
             tw_dt = gmt_dt.astimezone(tz)
-            t.append(tw_dt)
+            time_array.append(tw_dt)
             filelen.append(int(row[1]))
 
-        t = np.array(t)
+        time_array = np.array(time_array)
         filelen = np.array(filelen)
         bcg = np.median(filelen) == 3000
   
@@ -454,8 +454,28 @@ def OpenCmbFile():
     global data_bcg
     #data_bcg = [x, y, z]
 
-    # 將為處理的訊號存成CSV
+    # 將未處理的訊號存成CSV，並加入時間欄位
     data_csv = pd.DataFrame(data)
+
+    print(f"time_array 的長度: {len(time_array)}")
+    # print(f"time_array 的內容: {time_array}")
+    print(f"data 的長度: {len(data)}")
+    
+    # 創建適合數據行數的時間戳序列
+    # 1. 計算每個數據點之間的時間間隔
+    if len(time_array) >= 2:
+        total_duration = (time_array[-1] - time_array[0]).total_seconds()
+        time_interval = total_duration / (len(data) - 1) if len(data) > 1 else 0
+        
+        # 2. 創建新的時間序列來匹配數據的長度
+        timestamps = [time_array[0] + timedelta(seconds=i * time_interval) for i in range(len(data))]
+        
+        # 3. 添加時間欄位作為第一列
+        data_csv.insert(0, 'timestamp', timestamps)
+    else:
+        # 如果t中的時間點不足，則只保存原始數據
+        preprocess_log_file.write("警告：時間點數量不足，無法添加時間戳欄位\n")
+        
     data_csv.to_csv(f"{LOG_DIR}/{cmb_name[:-4]}_raw.csv", index=False)
 
     # 初始化日誌檔案
@@ -464,8 +484,8 @@ def OpenCmbFile():
     preprocess_log_file.write(f"檔案名稱: {cmb_name}\n")
     preprocess_log_file.write(f"資料形狀: {data.shape}\n")
     preprocess_log_file.write(f"是否為BCG資料: {bcg}\n")
-    preprocess_log_file.write(f"資料時間點數量: {len(t)}\n")
-    preprocess_log_file.write(f"資料時間範圍: {t[0]} 到 {t[-1]}\n\n")
+    preprocess_log_file.write(f"資料時間點數量: {len(time_array)}\n")
+    preprocess_log_file.write(f"資料時間範圍: {time_array[0]} 到 {time_array[-1]}\n\n")
 
     # --------------------------------------------------------------------
     lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
@@ -624,7 +644,7 @@ def OpenCmbFile():
         preprocess_log_file.write(f"  處理時間索引 {i}:\n")
         
         if i < filelen.shape[0] - 1:
-            t_diff = np.int32((t[i + 1] - t[i]).total_seconds())  # 計算相鄰時間之差（秒）
+            t_diff = np.int32((time_array[i + 1] - time_array[i]).total_seconds())  # 計算相鄰時間之差（秒）
         else:
             t_diff = 600  # 若為最後一個數據，設定時間差為 600 秒
         preprocess_log_file.write(f"    時間差: {t_diff} 秒\n")
@@ -670,14 +690,14 @@ def OpenCmbFile():
         
 
     # 計算不同取樣率對應的時間 --------------------------------------------------------    
-    st = (t[0] - t[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
+    st = (time_array[0] - time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
     global startday
-    startday = t[0].replace(hour=0, minute=0, second=0, microsecond=0)
+    startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
     preprocess_log_file.write(f"\n基準時間: {startday}, 起始秒數: {st}\n")
 
     global t10ms
     global t1sec
-    t1sec = np.array(range(np.int32((t[-1] - t[0]).total_seconds()) + 600)) + st
+    t1sec = np.array(range(np.int32((time_array[-1] - time_array[0]).total_seconds()) + 600)) + st
     idx1sec = np.int32(idx1sec)
     idx100 = np.int32(idx100)
     idx10 = np.int32(idx10)
@@ -881,7 +901,13 @@ def OpenCmbFile():
             'serial_id': serial_id,
             'start_time': startday.isoformat(),
             'end_time': (startday + timedelta(seconds=min_length)).isoformat(),
-            'data': csv_data
+            'data': csv_data,
+            # 加入處理後的資料結構，以便直接被localrawviewer1217_elastic.py使用
+            'n10': [n10_array.tolist() for n10_array in n10],
+            'd10': [d10_array.tolist() for d10_array in d10],
+            'x10': [x10_array.tolist() for x10_array in x10],
+            'rising_dist': rising_dist.tolist() if isinstance(rising_dist, np.ndarray) else rising_dist,
+            'rising_dist_air': rising_dist_air.tolist() if isinstance(rising_dist_air, np.ndarray) else rising_dist_air
         }
         
         # 儲存CSV檔案
@@ -1950,7 +1976,7 @@ yesterday = today - timedelta(days=1)
 # 在第 0 列的第 3 個位置，加入一個 QLineEdit 物件，並設置初始值為 "20220220_000000"
 
 start_time = QLineEdit()  # 建立起始時間的 QLineEdit 元件
-start_time.setText(yesterday.strftime('%Y%m%d_040000'))  # 設定起始時間為昨天，格式為 '%Y%m%d_040000'
+start_time.setText(yesterday.strftime('%Y%m%d_035000'))  # 設定起始時間為昨天，格式為 '%Y%m%d_040000'
 start_time.setFixedWidth(120)
 start_time.mouseDoubleClickEvent = start_calendar  # 設定起始時間元件的雙擊事件為 start_calendar 方法
 start_time.setToolTip('選擇開始日期')
