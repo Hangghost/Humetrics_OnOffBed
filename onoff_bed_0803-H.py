@@ -376,7 +376,7 @@ def GetParaTable():
 
 #-----------------------------------------------------------------------    
 def OpenCmbFile():
-    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, startday, cmb_name
+    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, cmb_name
     
     if data_source.currentText() == 'Elastic':
         # 從 MQTT 獲取參數
@@ -671,6 +671,7 @@ def OpenCmbFile():
                 # 如果沒有資料，使用空數組
                 int_data = np.array([])
                 time_array = []
+                bcg = False
                 status_bar.showMessage(f'未找到符合條件的資料')
                 QApplication.processEvents()
                 
@@ -682,6 +683,7 @@ def OpenCmbFile():
             # 如果發生錯誤，使用空數組
             int_data = np.array([])
             time_array = []
+            bcg = False
             
     else:
         # 原有的檔案選擇邏輯
@@ -690,56 +692,56 @@ def OpenCmbFile():
             cmb_path = txt_path.replace('.txt', '.cmb')
             if os.path.exists(cmb_path):
                 # 原有的檔案處理邏輯
-                status_bar.showMessage('Reading ' + cmb_name + ' ........')
-                QApplication.processEvents()  
+    status_bar.showMessage('Reading ' + cmb_name + ' ........')
+    QApplication.processEvents()  
 
-                global n10
-                global d10
-                global x10
-                global n10_sel
-                global d10_sel
-                global x10_sel
+    global n10
+    global d10
+    global x10
+    global n10_sel
+    global d10_sel
+    global x10_sel
 
-                #---------------------------------------------------------
-                with open(txt_path, mode='r', newline='') as file:
-                    reader = csv.reader(file)
-                    time_array = []
-                    filelen = []
-                    # 逐行读取数据并将其添加到列表中
-                    for row in reader:
-                        dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
-                        gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
-                        gmt_dt = gmt.localize(dt)                
-                        tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
-                        tw_dt = gmt_dt.astimezone(tz)
-                        time_array.append(tw_dt)
-                        filelen.append(int(row[1]))
+    #---------------------------------------------------------
+    with open(txt_path, mode='r', newline='') as file:
+        reader = csv.reader(file)
+        time_array = []
+        filelen = []
+        # 逐行读取数据并将其添加到列表中
+        for row in reader:
+            dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
+            gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
+            gmt_dt = gmt.localize(dt)                
+            tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
+            tw_dt = gmt_dt.astimezone(tz)
+            time_array.append(tw_dt)
+            filelen.append(int(row[1]))
 
-                    time_array = np.array(time_array)
-                    filelen = np.array(filelen)
-                    bcg = np.median(filelen) == 3000
-              
-                #---------------------------------------------------------
-                with open(cmb_path, "rb") as f:            
-                    iCueSN.setText(cmb_name.split('/')[-1][0:15])
-                    status_bar.showMessage('Converting to 24bit data ........')
-                    QApplication.processEvents()
+        time_array = np.array(time_array)
+        filelen = np.array(filelen)
+        bcg = np.median(filelen) == 3000
+  
+    #---------------------------------------------------------
+    with open(cmb_path, "rb") as f:            
+        iCueSN.setText(cmb_name.split('/')[-1][0:15])
+        status_bar.showMessage('Converting to 24bit data ........')
+        QApplication.processEvents()
 
-                    data = f.read() # 讀取資料
-                    data = np.frombuffer(data, dtype=np.uint8)
-                    if bcg:
-                        # 將數據重塑為每55字節一組
-                        data = data.reshape(-1, 55)
-                    else:
-                        # 將數據重塑為每24字節一組
-                        data = data.reshape(-1, 24)
-                    # 提取每組的前18字節
-                    data18 = data[:, :18].reshape(-1)
-                    # 將前18字節的數據轉換為24位整數
-                    # 每3字節為一組，將其轉換為24位整數
-                    reshaped_data = np.int32(data18.reshape(-1, 3))
-                    int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
-                    int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+        data = f.read() # 讀取資料
+        data = np.frombuffer(data, dtype=np.uint8)
+        if bcg:
+            # 將數據重塑為每55字節一組
+            data = data.reshape(-1, 55)
+        else:
+            # 將數據重塑為每24字節一組
+            data = data.reshape(-1, 24)
+        # 提取每組的前18字節
+        data18 = data[:, :18].reshape(-1)
+        # 將前18字節的數據轉換為24位整數
+        # 每3字節為一組，將其轉換為24位整數
+        reshaped_data = np.int32(data18.reshape(-1, 3))
+        int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
+        int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
     print(f"int_data 的長度: {len(int_data)}")
     print(f"time_array 的長度: {len(time_array)}")
     print(f"int_data 的內容: {int_data}")
@@ -865,7 +867,7 @@ def OpenCmbFile():
             preprocess_log_file.write(f"  通道 {ch+1} 差值除以3後前10個元素: {diff[:10]}\n")
         else:
             preprocess_log_file.write(f"  通道 {ch+1} 差值前10個元素: {diff[:10]}\n")
-        
+            
         dist_before = dist.copy()
         dist = dist + np.square(diff) # 累加平方差
         dist[dist > 8000000] = 8000000 # 限制最大值
@@ -986,12 +988,12 @@ def OpenCmbFile():
 
     # 計算不同取樣率對應的時間 --------------------------------------------------------    
     st = (time_array[0] - time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
-    global startday
+    # 不在這裡宣告global startday，而是直接使用全域變數
+    global t10ms
+    global t1sec
     startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
     preprocess_log_file.write(f"\n基準時間: {startday}, 起始秒數: {st}\n")
 
-    global t10ms
-    global t1sec
     t1sec = np.array(range(np.int32((time_array[-1] - time_array[0]).total_seconds()) + 600)) + st
     idx1sec = np.int32(idx1sec)
     idx100 = np.int32(idx100)
@@ -2234,7 +2236,6 @@ def generate_annotation():
 
 #--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
-global startday
 startday = datetime.now()
 
 radio_Normal = QRadioButton('Normal')
