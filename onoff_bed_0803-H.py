@@ -376,78 +376,373 @@ def GetParaTable():
 
 #-----------------------------------------------------------------------    
 def OpenCmbFile():
-    global cmb_name
-    status_bar.showMessage('Reading ' + cmb_name + ' ........')
-    QApplication.processEvents()  
-
-    global n10
-    global d10
-    global x10
-    global n10_sel
-    global d10_sel
-    global x10_sel
-
-    #---------------------------------------------------------
-    txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
-    with open(txt_path, mode='r', newline='') as file:
-        reader = csv.reader(file)
-        time_array = []
-        filelen = []
-        # 逐行读取数据并将其添加到列表中
-        for row in reader:
-            dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
-            gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
-            gmt_dt = gmt.localize(dt)                
-            tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
-            tw_dt = gmt_dt.astimezone(tz)
-            time_array.append(tw_dt)
-            filelen.append(int(row[1]))
-
-        time_array = np.array(time_array)
-        filelen = np.array(filelen)
-        bcg = np.median(filelen) == 3000
-  
-    #---------------------------------------------------------
-    cmb_path = os.path.join(LOG_DIR, cmb_name)
-    with open(cmb_path, "rb") as f:            
-        iCueSN.setText(cmb_name.split('/')[-1][0:15])
-        status_bar.showMessage('Converting to 24bit data ........')
-        QApplication.processEvents()
-
-        data = f.read() # 讀取資料
-        data = np.frombuffer(data, dtype=np.uint8)
-        if bcg:
-            # 將數據重塑為每55字節一組
-            data = data.reshape(-1, 55)
-        else:
-            # 將數據重塑為每24字節一組
-            data = data.reshape(-1, 24)
-        # 提取每組的前18字節
-        data18 = data[:, :18].reshape(-1)
-        # 將前18字節的數據轉換為24位整數
-        # 每3字節為一組，將其轉換為24位整數
-        reshaped_data = np.int32(data18.reshape(-1, 3))
-        int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
-        int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
-
-    #---------------------------------------------------------
-    if radio_Normal.isChecked():
-        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
-    else:
-        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
-
-    for ch in range(6):
-        para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
-        para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
-        para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
+    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, startday, cmb_name
     
-    para_table.item(0, 6).setText(str(reg_table[str(41)]))
+    if data_source.currentText() == 'Elastic':
+        # 從 MQTT 獲取參數
+        if radio_Normal.isChecked():
+            reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+        else:
+            reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
 
-    para_table.item(2, 7).setText(str(reg_table[str(54)]))
-    para_table.item(0, 7).setText(str(reg_table[str(55)]))
+        for ch in range(6):
+            para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
+            para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
+            para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
+        
+        para_table.item(0, 6).setText(str(reg_table[str(41)]))
+        para_table.item(2, 7).setText(str(reg_table[str(54)]))
+        para_table.item(0, 7).setText(str(reg_table[str(55)]))
+        para_table.item(0, 8).setText(str(reg_table[str(56)]))
+        para_table.item(2, 8).setText(str(reg_table[str(57)]))
 
-    para_table.item(0, 8).setText(str(reg_table[str(56)]))
-    para_table.item(2, 8).setText(str(reg_table[str(57)]))
+        # 從 Elastic 資料庫取得資料
+        status_bar.showMessage('從 Elastic 資料庫取得資料中...')
+        QApplication.processEvents()
+        
+        # 準備時間參數
+        start_date_str = start_time.text()
+        end_date_str = end_time.text()
+        
+        # 將時間格式從 yyyyMMdd_HHMMSS 轉為 yyyy-MM-dd HH:MM:SS
+        start_dt = datetime.strptime(start_date_str, '%Y%m%d_%H%M%S')
+        end_dt = datetime.strptime(end_date_str, '%Y%m%d_%H%M%S')
+        
+        start_iso = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+        end_iso = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 設定 cmb_name 為當前時間+序號
+        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        cmb_name = f"{iCueSN.text()}_{current_time}.cmb"
+        
+        try:
+            # 設定 Elasticsearch 連線
+            es_sensor_config = {
+                "hosts": "https://es.humetrics.ai",
+                "verify_certs": False,
+                "api_key": "RUdMcDhJc0JYdktWbjlFeEVZZGY6b1NNSUZzMUZTQkdXN1E1NFgteFZTUQ=="
+            }
+            
+            es_config = {
+                "hosts": es_sensor_config["hosts"],
+                "request_timeout": 30,
+                "retry_on_timeout": True,
+                "max_retries": 3,
+                "ssl_show_warn": False
+            }
+            
+            if es_sensor_config.get("api_key"):
+                es_config["api_key"] = es_sensor_config["api_key"]
+                
+            if es_sensor_config["hosts"].startswith("https"):
+                es_config["verify_certs"] = es_sensor_config["verify_certs"]
+                
+            from elasticsearch import Elasticsearch
+            es = Elasticsearch(**es_config)
+
+            # 轉換為 ISO 格式
+            start_iso_es = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+            end_iso_es = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+            print(f"查詢時間範圍：{start_iso_es} 到 {end_iso_es}")
+            status_bar.showMessage(f'查詢時間範圍：{start_iso_es} 到 {end_iso_es}')
+            QApplication.processEvents()
+
+            # 建立查詢條件
+            query_sensor_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": iCueSN.text()}},
+                            {"range": {"created_at": {
+                                "gte": start_iso_es,
+                                "lte": end_iso_es
+                            }}}
+                        ]
+                    }
+                },
+                "sort": [{"created_at": "asc"}],
+                "size": 500
+            }
+
+            query_notify_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": iCueSN.text()}},
+                            {"range": {"created_at": {
+                                "gte": start_iso_es,
+                                "lte": end_iso_es   
+                            }}}
+                        ]
+                    }
+                },
+                "size": 500
+            }
+            
+            # 使用 scroll API 獲取資料
+            page = es.search(
+                index="sensor_data",
+                body=query_sensor_data,
+                scroll='5m'
+            )
+            
+            scroll_id = page['_scroll_id']
+            hits = page['hits']['hits']
+
+            print(f"獲取到 {len(hits)} 筆資料")
+            status_bar.showMessage(f'獲取到 {len(hits)} 筆資料')
+            QApplication.processEvents()
+         
+            # 用於儲存所有記錄
+            all_records = []
+            limit = 90000  # 設定資料筆數限制
+            
+            # 當還有資料時，持續獲取，但不超過限制
+            while len(hits) > 0 and len(all_records) < limit:
+                # 處理當前批次的資料
+                records = []
+                for hit in hits:
+                    if len(all_records) >= limit:
+                        break
+                    source = hit['_source']
+                    records.append({
+                        'created_at': source.get('created_at'),
+                        'serial_id': source.get('serial_id'),
+                        'ch0': source.get('ch0', source.get('Channel_1_Raw')),
+                        'ch1': source.get('ch1', source.get('Channel_2_Raw')),
+                        'ch2': source.get('ch2', source.get('Channel_3_Raw')),
+                        'ch3': source.get('ch3', source.get('Channel_4_Raw')),
+                        'ch4': source.get('ch4', source.get('Channel_5_Raw')),
+                        'ch5': source.get('ch5', source.get('Channel_6_Raw')),
+                        'Angle': source.get('angle'),
+                        'timestamp': source.get('timestamp')
+                    })
+                
+                all_records.extend(records)
+                
+                # 顯示進度
+                print(f"已獲取 {len(all_records)}/{limit} 筆資料")
+                status_bar.showMessage(f'已獲取 {len(all_records)}/{limit} 筆資料')
+                QApplication.processEvents()
+                
+                # 如果已達到限制，跳出迴圈
+                if len(all_records) >= limit:
+                    break
+                    
+                # 獲取下一批資料
+                page = es.scroll(
+                    scroll_id=scroll_id,
+                    scroll='5m'
+                )
+                hits = page['hits']['hits']
+
+            # 清理 scroll
+            es.clear_scroll(scroll_id=scroll_id)
+
+            # 獲取通知資料
+            notify_page = es.search(
+                index="notify-*",
+                body=query_notify_data,
+                scroll='5m'
+            )
+
+            notify_hits = notify_page['hits']['hits']
+            notify_dict = {}
+            
+            # 處理通知資料
+            notify_scroll_id = notify_page.get('_scroll_id')
+            notify_count = 0
+            notify_limit = 90000  # 設定通知資料筆數限制
+            
+            print(f"開始獲取通知資料...")
+            status_bar.showMessage(f'開始獲取通知資料...')
+            QApplication.processEvents()
+            
+            # 當還有通知資料時，持續獲取
+            while notify_hits and notify_count < notify_limit:
+                # 處理當前批次的通知資料
+                for hit in notify_hits:
+                    if notify_count >= notify_limit:
+                        break
+                        
+                    source = hit['_source']
+                    timestamp = source.get('timestamp')
+                    if timestamp:
+                        # 確保timestamp是字符串
+                        timestamp_str = str(timestamp)
+                        notify_dict[timestamp_str] = source.get('statusType')
+                        notify_count += 1
+                
+                # 如果已達到限制，跳出迴圈
+                if notify_count >= notify_limit:
+                    break
+                    
+                # 獲取下一批通知資料
+                if notify_scroll_id:
+                    notify_page = es.scroll(
+                        scroll_id=notify_scroll_id,
+                        scroll='5m'
+                    )
+                    notify_hits = notify_page['hits']['hits']
+                else:
+                    break
+            
+            # 清理通知資料的 scroll
+            if notify_scroll_id:
+                es.clear_scroll(scroll_id=notify_scroll_id)
+            
+            print(f"成功獲取 {notify_count} 筆通知資料")
+            status_bar.showMessage(f'成功獲取 {notify_count} 筆通知資料')
+            QApplication.processEvents()
+            
+            # 將通知資料整合到感測器資料中
+            if notify_dict and all_records:
+                matched_count = 0
+                for record in all_records:
+                    timestamp = record.get('timestamp')
+                    # 轉換timestamp格式，確保匹配
+                    timestamp_str = str(timestamp)
+                    if timestamp_str in notify_dict:
+                        record['notify_status'] = notify_dict[timestamp_str]
+                        matched_count += 1
+                
+                print(f"成功將 {matched_count} 筆通知資料整合到感測器資料中")
+                status_bar.showMessage(f'成功將 {matched_count} 筆通知資料整合到感測器資料中')
+                QApplication.processEvents()
+            
+            if all_records:
+                # 解析資料並準備int_data
+                print(f"開始處理 {len(all_records)} 筆資料")
+                status_bar.showMessage(f'開始處理 {len(all_records)} 筆資料')
+                QApplication.processEvents()
+                
+                # 將資料轉換成需要的格式
+                # 1. 創建時間陣列
+                time_array = []
+                for record in all_records:
+                    timestamp_str = record['timestamp']
+                    if timestamp_str:
+                        try:
+                            dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                            tz = pytz.timezone('Asia/Taipei')
+                            tw_dt = tz.localize(dt)
+                            time_array.append(tw_dt)
+                        except:
+                            # 如果時間解析失敗，嘗試其他方式
+                            try:
+                                created_at = record['created_at']
+                                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                tz = pytz.timezone('Asia/Taipei')
+                                tw_dt = dt.astimezone(tz)
+                                time_array.append(tw_dt)
+                            except:
+                                # 如果還是失敗，使用現在時間
+                                print(f"無法解析時間: {timestamp_str}, {record.get('created_at')}")
+                                time_array.append(datetime.now(pytz.timezone('Asia/Taipei')))
+                
+                time_array = np.array(time_array)
+                
+                # 設定 startday 為第一筆資料的日期，時間為 00:00:00
+                if len(time_array) > 0:
+                    startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # 2. 創建資料陣列
+                data_list = []
+                for record in all_records:
+                    data_row = [
+                        int(record.get('ch0', 0)),
+                        int(record.get('ch1', 0)),
+                        int(record.get('ch2', 0)),
+                        int(record.get('ch3', 0)),
+                        int(record.get('ch4', 0)),
+                        int(record.get('ch5', 0))
+                    ]
+                    data_list.append(data_row)
+                
+                # 轉換為 numpy 數組
+                int_data = np.array(data_list).flatten()
+                
+                status_bar.showMessage(f'成功從 Elastic 資料庫取得 {len(all_records)} 筆資料')
+                QApplication.processEvents()
+            else:
+                # 如果沒有資料，使用空數組
+                int_data = np.array([])
+                time_array = []
+                status_bar.showMessage(f'未找到符合條件的資料')
+                QApplication.processEvents()
+                
+        except Exception as e:
+            print(f"從 Elastic 資料庫取得資料時發生錯誤: {str(e)}")
+            status_bar.showMessage(f'從 Elastic 資料庫取得資料時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            
+            # 如果發生錯誤，使用空數組
+            int_data = np.array([])
+            time_array = []
+            
+    else:
+        # 原有的檔案選擇邏輯
+        txt_path, _ = QFileDialog.getOpenFileName(None, "選擇txt檔案", "", "Text Files (*.txt)")
+        if txt_path:
+            cmb_path = txt_path.replace('.txt', '.cmb')
+            if os.path.exists(cmb_path):
+                # 原有的檔案處理邏輯
+                status_bar.showMessage('Reading ' + cmb_name + ' ........')
+                QApplication.processEvents()  
+
+                global n10
+                global d10
+                global x10
+                global n10_sel
+                global d10_sel
+                global x10_sel
+
+                #---------------------------------------------------------
+                with open(txt_path, mode='r', newline='') as file:
+                    reader = csv.reader(file)
+                    time_array = []
+                    filelen = []
+                    # 逐行读取数据并将其添加到列表中
+                    for row in reader:
+                        dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
+                        gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
+                        gmt_dt = gmt.localize(dt)                
+                        tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
+                        tw_dt = gmt_dt.astimezone(tz)
+                        time_array.append(tw_dt)
+                        filelen.append(int(row[1]))
+
+                    time_array = np.array(time_array)
+                    filelen = np.array(filelen)
+                    bcg = np.median(filelen) == 3000
+              
+                #---------------------------------------------------------
+                with open(cmb_path, "rb") as f:            
+                    iCueSN.setText(cmb_name.split('/')[-1][0:15])
+                    status_bar.showMessage('Converting to 24bit data ........')
+                    QApplication.processEvents()
+
+                    data = f.read() # 讀取資料
+                    data = np.frombuffer(data, dtype=np.uint8)
+                    if bcg:
+                        # 將數據重塑為每55字節一組
+                        data = data.reshape(-1, 55)
+                    else:
+                        # 將數據重塑為每24字節一組
+                        data = data.reshape(-1, 24)
+                    # 提取每組的前18字節
+                    data18 = data[:, :18].reshape(-1)
+                    # 將前18字節的數據轉換為24位整數
+                    # 每3字節為一組，將其轉換為24位整數
+                    reshaped_data = np.int32(data18.reshape(-1, 3))
+                    int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
+                    int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+    print(f"int_data 的長度: {len(int_data)}")
+    print(f"time_array 的長度: {len(time_array)}")
+    print(f"int_data 的內容: {int_data}")
 
     # 重新塑形數組以分開通道
     data = int_data.reshape(-1, 6)
@@ -570,7 +865,7 @@ def OpenCmbFile():
             preprocess_log_file.write(f"  通道 {ch+1} 差值除以3後前10個元素: {diff[:10]}\n")
         else:
             preprocess_log_file.write(f"  通道 {ch+1} 差值前10個元素: {diff[:10]}\n")
-            
+        
         dist_before = dist.copy()
         dist = dist + np.square(diff) # 累加平方差
         dist[dist > 8000000] = 8000000 # 限制最大值
@@ -1956,6 +2251,7 @@ data_source.addItem('FTP:\\RAW_COLLECT')
 data_source.addItem('RD_FTP:\\RAW')
 data_source.addItem('FTP:\\BCGRAW')
 data_source.addItem('RD_FTP:\\BCGRAW')
+data_source.addItem('Elastic')
 #data_source.addItem('Z:\RAW')
 #data_source.addItem('Z:\RAW_COLLECT')
 data_source.textActivated.connect(loadClicked)
