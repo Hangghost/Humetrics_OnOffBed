@@ -686,62 +686,55 @@ def OpenCmbFile():
             bcg = False
             
     else:
-        # 原有的檔案選擇邏輯
-        txt_path, _ = QFileDialog.getOpenFileName(None, "選擇txt檔案", "", "Text Files (*.txt)")
-        if txt_path:
-            cmb_path = txt_path.replace('.txt', '.cmb')
-            if os.path.exists(cmb_path):
-                # 原有的檔案處理邏輯
-    status_bar.showMessage('Reading ' + cmb_name + ' ........')
-    QApplication.processEvents()  
+        status_bar.showMessage('Reading ' + cmb_name + ' ........')
+        QApplication.processEvents()  
 
-    global n10
-    global d10
-    global x10
-    global n10_sel
-    global d10_sel
-    global x10_sel
+        global n10
+        global d10
+        global x10
 
-    #---------------------------------------------------------
-    with open(txt_path, mode='r', newline='') as file:
-        reader = csv.reader(file)
-        time_array = []
-        filelen = []
-        # 逐行读取数据并将其添加到列表中
-        for row in reader:
-            dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
-            gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
-            gmt_dt = gmt.localize(dt)                
-            tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
-            tw_dt = gmt_dt.astimezone(tz)
-            time_array.append(tw_dt)
-            filelen.append(int(row[1]))
+        #---------------------------------------------------------
+        txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
+        with open(txt_path, mode='r', newline='') as file:
+            reader = csv.reader(file)
+            time_array = []
+            filelen = []
+            # 逐行读取数据并将其添加到列表中
+            for row in reader:
+                dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
+                gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
+                gmt_dt = gmt.localize(dt)                
+                tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
+                tw_dt = gmt_dt.astimezone(tz)
+                time_array.append(tw_dt)
+                filelen.append(int(row[1]))
 
-        time_array = np.array(time_array)
-        filelen = np.array(filelen)
-        bcg = np.median(filelen) == 3000
+            time_array = np.array(time_array)
+            filelen = np.array(filelen)
+            bcg = np.median(filelen) == 3000
   
     #---------------------------------------------------------
-    with open(cmb_path, "rb") as f:            
-        iCueSN.setText(cmb_name.split('/')[-1][0:15])
-        status_bar.showMessage('Converting to 24bit data ........')
-        QApplication.processEvents()
+        with open(f'{LOG_DIR}/{cmb_name}', "rb") as f:            
+            iCueSN.setText(cmb_name.split('/')[-1][0:15])
+            status_bar.showMessage('Converting to 24bit data ........')
+            QApplication.processEvents()
 
-        data = f.read() # 讀取資料
-        data = np.frombuffer(data, dtype=np.uint8)
-        if bcg:
-            # 將數據重塑為每55字節一組
-            data = data.reshape(-1, 55)
-        else:
-            # 將數據重塑為每24字節一組
-            data = data.reshape(-1, 24)
-        # 提取每組的前18字節
-        data18 = data[:, :18].reshape(-1)
-        # 將前18字節的數據轉換為24位整數
-        # 每3字節為一組，將其轉換為24位整數
-        reshaped_data = np.int32(data18.reshape(-1, 3))
-        int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
-        int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+            data = f.read() # 讀取資料
+            data = np.frombuffer(data, dtype=np.uint8)
+            if bcg:
+                # 將數據重塑為每55字節一組
+                data = data.reshape(-1, 55)
+            else:
+                # 將數據重塑為每24字節一組
+                data = data.reshape(-1, 24)
+            # 提取每組的前18字節
+            data18 = data[:, :18].reshape(-1)
+            # 將前18字節的數據轉換為24位整數
+            # 每3字節為一組，將其轉換為24位整數
+            reshaped_data = np.int32(data18.reshape(-1, 3))
+            int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
+            int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+    
     print(f"int_data 的長度: {len(int_data)}")
     print(f"time_array 的長度: {len(time_array)}")
     print(f"int_data 的內容: {int_data}")
@@ -754,7 +747,7 @@ def OpenCmbFile():
     # 將未處理的訊號存成CSV，並加入時間欄位
     data_csv = pd.DataFrame(data)
 
-    print(f"time_array 的長度: {len(time_array)}")
+    # print(f"time_array 的長度: {len(time_array)}")
     # print(f"time_array 的內容: {time_array}")
     print(f"data 的長度: {len(data)}")
     
