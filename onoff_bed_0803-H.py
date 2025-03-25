@@ -378,23 +378,43 @@ def GetParaTable():
 def OpenCmbFile():
     global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, cmb_name
     
+    # 添加數據源記錄
+    log_file = open(f'{LOG_DIR}/data_source_log.txt', 'w', encoding='utf-8')
+    log_file.write(f"數據來源: {data_source.currentText()}\n")
+    
     if data_source.currentText() == 'Elastic':
-        # 從 MQTT 獲取參數
-        if radio_Normal.isChecked():
-            reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
-        else:
-            reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+        log_file.write("使用Elastic數據源\n")
+        # 記錄Elastic數據的基本信息
+        try:
+            log_file.write(f"設備序號: {iCueSN.text()}\n")
+            log_file.write(f"開始時間: {start_time.text()}\n")
+            log_file.write(f"結束時間: {end_time.text()}\n")
+        except Exception as e:
+            log_file.write(f"記錄Elastic參數時出錯: {str(e)}\n")
+    else:
+        log_file.write("使用CMB文件數據源\n")
+        log_file.write(f"CMB文件名: {cmb_name}\n")
+    
+    log_file.close()
 
-        for ch in range(6):
-            para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
-            para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
-            para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
-        
-        para_table.item(0, 6).setText(str(reg_table[str(41)]))
-        para_table.item(2, 7).setText(str(reg_table[str(54)]))
-        para_table.item(0, 7).setText(str(reg_table[str(55)]))
-        para_table.item(0, 8).setText(str(reg_table[str(56)]))
-        para_table.item(2, 8).setText(str(reg_table[str(57)]))
+    # 從 MQTT 獲取參數
+    if radio_Normal.isChecked():
+        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+    else:
+        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+
+    for ch in range(6):
+        para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
+        para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
+        para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
+    
+    para_table.item(0, 6).setText(str(reg_table[str(41)]))
+    para_table.item(2, 7).setText(str(reg_table[str(54)]))
+    para_table.item(0, 7).setText(str(reg_table[str(55)]))
+    para_table.item(0, 8).setText(str(reg_table[str(56)]))
+    para_table.item(2, 8).setText(str(reg_table[str(57)]))
+    
+    if data_source.currentText() == 'Elastic':
 
         # 從 Elastic 資料庫取得資料
         status_bar.showMessage('從 Elastic 資料庫取得資料中...')
@@ -737,9 +757,22 @@ def OpenCmbFile():
     
     print(f"int_data 的長度: {len(int_data)}")
     print(f"time_array 的長度: {len(time_array)}")
-    print(f"int_data 的內容: {int_data}")
-
-    # 重新塑形數組以分開通道
+    
+    # # 添加數據一致性檢查
+    # if len(int_data) % 6 != 0:
+    #     error_msg = f"數據長度不是6的倍數: {len(int_data)}"
+    #     print(error_msg)
+    #     status_bar.showMessage(error_msg)
+    #     QApplication.processEvents()
+    #     return
+    
+    # if len(int_data) // 6 != len(time_array):
+    #     error_msg = f"數據點數({len(int_data) // 6})與時間點數({len(time_array)})不匹配"
+    #     print(error_msg)
+    #     status_bar.showMessage(error_msg)
+    #     QApplication.processEvents()
+    #     return
+    
     data = int_data.reshape(-1, 6)
     global data_bcg
     #data_bcg = [x, y, z]
@@ -747,25 +780,11 @@ def OpenCmbFile():
     # 將未處理的訊號存成CSV，並加入時間欄位
     data_csv = pd.DataFrame(data)
 
-    # print(f"time_array 的長度: {len(time_array)}")
-    # print(f"time_array 的內容: {time_array}")
-    print(f"data 的長度: {len(data)}")
+    # 移除時間插值邏輯，使用原始時間點
+    if len(time_array) > 0:
+        # 使用原始時間點，不進行插值
+        data_csv.insert(0, 'timestamp', np.repeat(time_array, len(data) // len(time_array)))
     
-    # 創建適合數據行數的時間戳序列
-    # 1. 計算每個數據點之間的時間間隔
-    if len(time_array) >= 2:
-        total_duration = (time_array[-1] - time_array[0]).total_seconds()
-        time_interval = total_duration / (len(data) - 1) if len(data) > 1 else 0
-        
-        # 2. 創建新的時間序列來匹配數據的長度
-        timestamps = [time_array[0] + timedelta(seconds=i * time_interval) for i in range(len(data))]
-        
-        # 3. 添加時間欄位作為第一列
-        data_csv.insert(0, 'timestamp', timestamps)
-    else:
-        # 如果t中的時間點不足，則只保存原始數據
-        preprocess_log_file.write("警告：時間點數量不足，無法添加時間戳欄位\n")
-        
     data_csv.to_csv(f"{LOG_DIR}/{cmb_name[:-4]}_raw.csv", index=False)
 
     # 初始化日誌檔案
@@ -1453,6 +1472,10 @@ def EvalParameters():
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
         approach = max10 - (th1 + th2)           # 計算接近度
+        # # 加入防護機制，避免除以零
+        # if noise_onbed == 0:
+        #     speed = np.ones_like(n)  # 如果noise_onbed為0，則將速度設為1
+        # else:
         speed = n // (noise_onbed * 4)           # 計算速度
         np.clip(speed, 1, 16, out=speed)         # 限制速度範圍
         app_sp = approach * speed                # 接近度與速度的乘積
