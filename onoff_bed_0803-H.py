@@ -49,7 +49,7 @@ from scipy.signal import savgol_filter, lfilter
 from PyQt5 import QtWidgets
 from pyqtgraph.Qt import QtCore
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QRadioButton, QCheckBox, qApp, QHeaderView
+from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QRadioButton, QCheckBox, qApp, QHeaderView, QLabel
 import pyqtgraph as pg
 from PyQt5.QtCore import Qt, QSizeF
 from PyQt5.QtGui import QPainter, QPdfWriter, QImage, QIcon, QColor
@@ -1263,6 +1263,11 @@ def OpenCmbFile():
                 writer.writerow([f'{58+ch}', f'Channel {ch+1} threshold_2', str(th2_edit[ch])])
         
         status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}，實驗用降採樣資料已保存至 {downsampled_csv_path}')
+
+
+        # 測試計算值顯示
+        update_calculated_value(122)
+
         QApplication.processEvents()
         
     except Exception as e:
@@ -1858,6 +1863,20 @@ def calculate_rising_dist(dist, log_file=None):
     
     return rising_dist
 
+#----------------------------------------------------------------------- 
+
+# 需要在業務邏輯處理的部分添加更新數值顯示的函數
+def update_calculated_value(value):
+    """
+    更新界面上顯示的計算值
+    
+    Args:
+        value (float): 要顯示的計算值
+    """
+    value_display.setText(f"{value:.2f}")  # 顯示兩位小數
+    QApplication.processEvents()  # 立即更新界面
+    return f"{value:.2f}"  # 同時返回格式化的值，以便在其他地方使用
+
 #-----------------------------------------------------------------------   
 class CalendarDialog(QDialog):
     def __init__(self, parent=None):
@@ -2329,6 +2348,15 @@ save_marker_btn = QPushButton('儲存標記')
 save_marker_btn.clicked.connect(save_marker)
 save_marker_btn.setToolTip('儲存目前標記線位置')
 
+# 新增數值顯示欄位
+value_display_label = QLabel("計算值: ")
+value_display_label.setStyleSheet("font-weight: bold; color: black;")
+value_display = QLabel("0.00")
+value_display.setFixedWidth(100)  # 加大寬度
+value_display.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+value_display.setStyleSheet("background-color: white; color: black; border: 2px solid #666; border-radius: 4px; padding: 3px; font-weight: bold; font-size: 14px;")
+value_display.setToolTip('演算法計算的數值')
+
 # 更新 MQTT 參數
 Mqtt_set = QPushButton('MQTT_SET_PARA')
 # Mqtt_set.clicked.connect(MqttSetDialog)
@@ -2428,6 +2456,10 @@ marker_row_layout.addWidget(marker_btn)
 marker_row_layout.addWidget(marker_type_combo)
 marker_row_layout.addWidget(save_marker_btn)
 
+# 添加數值顯示欄位
+marker_row_layout.addWidget(value_display_label)
+marker_row_layout.addWidget(value_display)
+
 # 添加彈性空間，吸收多餘空間
 marker_row_layout.addStretch(1)
 
@@ -2458,7 +2490,12 @@ script_name = script_path.split('\\')[-1]
 mw.setWindowTitle(f'OnOFF Bed   ({script_name})')  # 設置視窗標題為'OnOFF Bed'
 mw.setWindowIcon(QIcon('Humetrics.ico'))  # 設置視窗圖標為'Humetrics.ico'
 
+# 顯示窗口
 mw.show()
-#mw.setGeometry(1, 50, 1920, 1080)
+
+# # 使用定時器在窗口顯示後設置計算值
+# timer = QtCore.QTimer()
+# timer.singleShot(500, lambda: update_calculated_value(123.45))
+
 app.exec_()
 
