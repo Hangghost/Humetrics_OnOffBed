@@ -2308,6 +2308,27 @@ check_NightMode.setChecked(True)
 check_NightMode.stateChanged.connect(change_NightMode)
 check_NightMode.setChecked(False)
 
+# 在 UI 元件初始化部分新增
+check_get_para = QCheckBox('Get Parameters First')
+check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
+
+# 在主視窗的初始化程式碼中新增：
+json_button = QtWidgets.QPushButton("開啟 JSON")
+json_button.clicked.connect(OpenJsonFile)
+
+# 標記相關按鈕
+marker_btn = QPushButton('開始標記')
+marker_btn.clicked.connect(toggle_marker)
+marker_btn.setToolTip('顯示/隱藏標記線')
+
+marker_type_combo = QComboBox()
+marker_type_combo.addItems(['離床', '上床', '翻身'])
+marker_type_combo.setToolTip('選擇要標記的事件類型')
+
+save_marker_btn = QPushButton('儲存標記')
+save_marker_btn.clicked.connect(save_marker)
+save_marker_btn.setToolTip('儲存目前標記線位置')
+
 # 更新 MQTT 參數
 Mqtt_set = QPushButton('MQTT_SET_PARA')
 # Mqtt_set.clicked.connect(MqttSetDialog)
@@ -2378,18 +2399,7 @@ para_table.cellClicked.connect(cell_clicked)
 layout = QtWidgets.QGridLayout(cw)
 cw.setLayout(layout)
 
-#row_layout.addWidget(self.wav_gain)  # 在佈局中添加self.data_source下拉選單，位置為(0, 0)
-layout.addWidget(raw_plot,   1, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
-layout.addWidget(para_table, 3, 0, 1, 10)
-layout.addWidget(bit_plot,   2, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
-layout.setColumnStretch(0,10)
-
-layout.setRowStretch(0,1)
-layout.setRowStretch(1,20)
-layout.setRowStretch(2,20)
-layout.setRowStretch(3,8)
-bit_plot.setXLink(raw_plot) 
-
+# 第一行按鈕布局
 row_widget = QtWidgets.QWidget()
 row_layout = QtWidgets.QHBoxLayout(row_widget)
 row_layout.setContentsMargins(0, 0, 0, 0)
@@ -2397,8 +2407,6 @@ row_layout.addWidget(iCueSN)
 row_layout.addWidget(start_time)
 row_layout.addWidget(end_time)
 row_layout.addWidget(data_source)
-#row_layout.addWidget(Ftp_raw)
-
 row_layout.addWidget(radio_Normal)
 row_layout.addWidget(radio_Test)
 row_layout.addWidget(Read_cmb)
@@ -2406,27 +2414,42 @@ row_layout.addWidget(check_96DPI)
 row_layout.addWidget(check_NightMode)
 row_layout.addWidget(Mqtt_set)
 row_layout.addWidget(Mqtt_get)
+# 第二行按鈕布局
+marker_row_widget = QtWidgets.QWidget()
+marker_row_layout = QtWidgets.QHBoxLayout(marker_row_widget)
+marker_row_layout.setContentsMargins(0, 0, 0, 0)
+marker_row_layout.setAlignment(QtCore.Qt.AlignLeft)  # 設置按鈕靠左對齊
 
-# 在這裡加入新按鈕
-marker_btn = QPushButton('開始標記')
-marker_btn.clicked.connect(toggle_marker)
-marker_btn.setToolTip('顯示/隱藏標記線')
+# 移除這些行，看起來重複的按鈕
+marker_row_layout.addWidget(check_get_para)
+marker_row_layout.addWidget(json_button)
 
-marker_type_combo = QComboBox()
-marker_type_combo.addItems(['離床', '上床', '翻身'])
-marker_type_combo.setToolTip('選擇要標記的事件類型')
+marker_row_layout.addWidget(marker_btn)
+marker_row_layout.addWidget(marker_type_combo)
+marker_row_layout.addWidget(save_marker_btn)
 
-save_marker_btn = QPushButton('儲存標記')
-save_marker_btn.clicked.connect(save_marker)
-save_marker_btn.setToolTip('儲存目前標記線位置')
+# 添加彈性空間，吸收多餘空間
+marker_row_layout.addStretch(1)
 
-# 將按鈕加入layout
-row_layout.addWidget(marker_btn)
-row_layout.addWidget(marker_type_combo)  # 新增的下拉選單
-row_layout.addWidget(save_marker_btn)
+# 將兩個行布局加入到主布局
+layout.addWidget(row_widget, 0, 0, 1, 3)
+layout.addWidget(marker_row_widget, 1, 0, 1, 3)
+layout.addWidget(status_bar, 5, 0, 1, 9)
 
-layout.addWidget(row_widget,0,0,1,3)
-layout.addWidget(status_bar,5,0,1,9)
+#row_layout.addWidget(self.wav_gain)  # 在佈局中添加self.data_source下拉選單，位置為(0, 0)
+layout.addWidget(raw_plot,   2, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
+layout.addWidget(para_table, 4, 0, 1, 10)
+layout.addWidget(bit_plot,   3, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
+layout.setColumnStretch(0,10)
+
+layout.setRowStretch(0,1)  # 第一行按鈕
+layout.setRowStretch(1,1)  # 第二行標記按鈕
+layout.setRowStretch(2,20) # 原始數據圖表
+layout.setRowStretch(3,20) # 位元圖表
+layout.setRowStretch(4,8)  # 參數表格
+layout.setRowStretch(5,1)  # 狀態欄
+bit_plot.setXLink(raw_plot) 
+
 
 # 獲取當前腳本檔案的絕對路徑
 script_path = os.path.abspath(__file__)
@@ -2434,18 +2457,6 @@ script_path = os.path.abspath(__file__)
 script_name = script_path.split('\\')[-1]
 mw.setWindowTitle(f'OnOFF Bed   ({script_name})')  # 設置視窗標題為'OnOFF Bed'
 mw.setWindowIcon(QIcon('Humetrics.ico'))  # 設置視窗圖標為'Humetrics.ico'
-
-# 在 UI 元件初始化部分新增
-check_get_para = QCheckBox('Get Parameters First')
-check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
-
-# 在 row_layout 中加入這個新的 checkbox
-row_layout.addWidget(check_get_para)
-
-# 在主視窗的初始化程式碼中新增：
-json_button = QtWidgets.QPushButton("開啟 JSON")
-json_button.clicked.connect(OpenJsonFile)
-row_layout.addWidget(json_button)  # 使用已存在的 row_layout 而不是 toolbar
 
 mw.show()
 #mw.setGeometry(1, 50, 1920, 1080)
