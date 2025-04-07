@@ -431,23 +431,31 @@ def OpenCmbFile():
         int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
 
     #---------------------------------------------------------
-    if radio_Normal.isChecked():
-        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
-    else:
-        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
-
-    for ch in range(6):
-        para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
-        para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
-        para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
-    
-    para_table.item(0, 6).setText(str(reg_table[str(41)]))
-
-    para_table.item(2, 7).setText(str(reg_table[str(54)]))
-    para_table.item(0, 7).setText(str(reg_table[str(55)]))
-
-    para_table.item(0, 8).setText(str(reg_table[str(56)]))
-    para_table.item(2, 8).setText(str(reg_table[str(57)]))
+    try:
+        if radio_Normal.isChecked():
+            reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+        else:
+            reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+        
+        # 檢查 reg_table 是否為空或不包含必要的鍵值
+        if reg_table and all(str(ch+42) in reg_table for ch in range(6)):
+            # 如果 reg_table 有效，則更新參數表
+            for ch in range(6):
+                para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
+                para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
+                para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
+            
+            para_table.item(0, 6).setText(str(reg_table[str(41)]))
+            para_table.item(2, 7).setText(str(reg_table[str(54)]))
+            para_table.item(0, 7).setText(str(reg_table[str(55)]))
+            para_table.item(0, 8).setText(str(reg_table[str(56)]))
+            para_table.item(2, 8).setText(str(reg_table[str(57)]))
+        else:
+            status_bar.showMessage('MQTT 伺服器返回的資料不完整，使用預設參數')
+            QApplication.processEvents()
+    except Exception as e:
+        status_bar.showMessage(f'MQTT 連接錯誤: {str(e)}，使用預設參數')
+        QApplication.processEvents()
 
     # 重新塑形數組以分開通道
     data = int_data.reshape(-1, 6)
@@ -455,8 +463,62 @@ def OpenCmbFile():
     #data_bcg = [x, y, z]
 
     # 將為處理的訊號存成CSV
+    raw_filename = f"{cmb_name[:-4]}_raw.csv"
+    raw_filepath = os.path.join(DATA_DIR, raw_filename)
+    
     data_csv = pd.DataFrame(data)
-    data_csv.to_csv(f"{cmb_name[:-4]}_raw.csv", index=False)
+    data_csv.to_csv(raw_filepath, index=False)
+
+    json_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        None, 
+        "選擇 JSON 檔案", 
+        DATA_DIR,
+        "JSON files (*.json)"
+    )
+
+    if json_path != '':
+        timestamps, load_json_data_test = load_json_data(json_path)
+
+        # 檢查原始資料的形狀和類型
+        print("原始 data 的形狀:", data.shape)
+        print("原始 data 的類型:", data.dtype)
+        print("原始 data 的前5行:")
+        print(data[:5])
+
+        # 將 JSON 資料轉換為與原始資料相同的格式
+        json_data = np.array(load_json_data_test).T
+        
+        # 確保資料類型一致
+        json_data = json_data.astype(data.dtype)
+        
+        # 檢查轉換後的 JSON 資料
+        print("轉換後的 JSON 資料形狀:", json_data.shape)
+        print("轉換後的 JSON 資料類型:", json_data.dtype)
+        print("轉換後的 JSON 資料前5行:")
+        print(json_data[:5])
+
+        # 比較兩個資料集的差異
+        if json_data.shape == data.shape:
+            print("資料形狀一致")
+            # 計算差異統計
+            diff = np.abs(json_data - data)
+            print("最大差異:", np.max(diff))
+            print("平均差異:", np.mean(diff))
+            print("標準差:", np.std(diff))
+        else:
+            print(f"資料形狀不一致: json_data {json_data.shape} vs data {data.shape}")
+
+        # 儲存 JSON 資料為 CSV 以便進一步分析
+        json_data_df = pd.DataFrame(json_data)
+        json_data_df.to_csv(os.path.join(DATA_DIR, f"{cmb_name[:-4]}_json_data.csv"), index=False)
+
+        # 建立一個備份用於比較
+        original_data = data.copy()
+        
+        # 如果需要使用 JSON 資料進行驗證，可以取消下面的註解
+        # data = json_data
+
+    
 
     # --------------------------------------------------------------------
     lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
@@ -990,7 +1052,7 @@ def load_json_data(json_path):
     # 轉換資料
     for item in data:
         # 轉換時間戳記
-        timestamp = datetime.strptime(item['created_at'], '%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.strptime(item['timestamp'], '%Y%m%d%H%M%S')
         timestamps.append(timestamp)
         
         # 收集各通道資料
@@ -1518,7 +1580,7 @@ data_source.setToolTip('選擇FTP下載目錄')
 
 # 在第 0 列的第 1 個位置，加入一個 QLineEdit 物件，並設置初始值為 "SPS2021PA000000"
 iCueSN = QLineEdit()
-iCueSN.setText('SPS2021PA000329')
+iCueSN.setText('SPS2025PA000146')
 iCueSN.setFixedWidth(120)
 iCueSN.setToolTip('輸入iCue編號')
 # Get the current datetime in GMT
