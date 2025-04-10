@@ -15,18 +15,21 @@ import tensorflow as tf
 np.random.seed(1337)
 
 # 設定參數
-WINDOW_SIZE = 15  # 15秒的窗口
-OVERLAP = 0.8    # 80% 重疊
+WINDOW_SIZE = 5  # 15秒的窗口
+OVERLAP = 0.5    # 80% 重疊
 STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
 # 修改預警時間設定
 WARNING_TIME = 15  # 設定單一預警時間（秒）
 
-INPUT_DATA_PATH = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
+INPUT_DATA_PATH = "./_data/odd/SPS2021PA000329_20250201_04_20250202_04_data.csv"
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
 LOG_DIR = "./_logs/bed_monitor_test_sum"
+
+# 確保日誌目錄存在
+os.makedirs(LOG_DIR, exist_ok=True)
 
 FIND_BEST_THRESHOLD = False
 SUM_ONLY = True
@@ -59,8 +62,8 @@ def get_cleaned_data_path(raw_data_path):
     raw_filename = os.path.basename(raw_data_path)
     # 在檔名前加上 'cleaned_' 前綴
     cleaned_filename = f"cleaned_{raw_filename}"
-    # 組合完整路徑
-    return os.path.join("./_data/training", cleaned_filename)
+    # 組合完整路徑，使用與原始數據相同的目錄
+    return os.path.join("./_data/odd", cleaned_filename)
 
 def save_processed_sequences(sequences, labels, cleaned_data_path):
     """保存處理後的序列資料"""

@@ -18,7 +18,15 @@ STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 # 修改預警時間設定
 WARNING_TIME = 10  # 設定單一預警時間（秒）
 
+# 設定路徑
 LOG_DIR = "./_logs/bed_monitor_test_sum"
+PREDICTIONS_DIR = "./_data/predictions"
+DATA_DIR = "./_data/odd"
+
+# 確保必要的目錄存在
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 FIND_BEST_THRESHOLD = False
 SUM_ONLY = True
@@ -137,8 +145,9 @@ def visualize_predictions(results):
     plt.tight_layout()
     
     # 保存圖片（注意：保存的圖片不會包含互動控制項）
-    plt.savefig('_data/predictions/prediction_visualization.png', dpi=300, bbox_inches='tight')
-    print("Prediction visualization saved to: _data/predictions/prediction_visualization.png")
+    visualization_path = os.path.join(PREDICTIONS_DIR, 'prediction_visualization.png')
+    plt.savefig(visualization_path, dpi=300, bbox_inches='tight')
+    print(f"Prediction visualization saved to: {visualization_path}")
     
     # 顯示圖表
     plt.show()
@@ -321,7 +330,7 @@ def predict_bed_status(data_file, use_sum_only=SUM_ONLY):
         print(f"預測結果形狀: {raw_predictions.shape}")
         
         # 根據訓練結果調整預設閾值
-        DEFAULT_THRESHOLD = 0.5  # 因為訓練結果顯示 0.5 是較好的閾值
+        DEFAULT_THRESHOLD = 0.8  # 因為訓練結果顯示 0.5 是較好的閾值
         
         # 使用預設閾值進行初始預測
         initial_predictions = (raw_predictions > DEFAULT_THRESHOLD).astype(int)
@@ -385,7 +394,7 @@ def predict_bed_status(data_file, use_sum_only=SUM_ONLY):
 
 if __name__ == "__main__":
     # 示例使用
-    data_file = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
+    data_file = os.path.join(DATA_DIR, "SPS2021PA000329_20250201_04_20250202_04_data.csv")
     # 設置是否使用總和值
     use_sum_only = SUM_ONLY
     results, metrics, best_threshold = predict_bed_status(data_file, use_sum_only=use_sum_only)
