@@ -10,7 +10,7 @@ from sklearn.preprocessing import Normalizer
 import matplotlib.pyplot as plt
 import os
 import tensorflow as tf
-
+import sys
 # 設定隨機種子
 np.random.seed(1337)
 
@@ -22,14 +22,15 @@ STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 # 修改預警時間設定
 WARNING_TIME = 15  # 設定單一預警時間（秒）
 
-INPUT_DATA_PATH = "./_data/SPS2021PA000329_20241215_04_20241216_04_data.csv"
+INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
 LOG_DIR = "./_logs/bed_monitor_test_sum"
 
 FIND_BEST_THRESHOLD = False
-SUM_ONLY = True
+SUM_ONLY = False
+SILENCE_TIME = 180 
 
 
 # 自定義的評估回調
@@ -60,7 +61,12 @@ def get_cleaned_data_path(raw_data_path):
     # 在檔名前加上 'cleaned_' 前綴
     cleaned_filename = f"cleaned_{raw_filename}"
     # 組合完整路徑
-    return os.path.join("./_data/training", cleaned_filename)
+    cleaned_data_path = os.path.join("./_data/training", cleaned_filename)
+    
+    # 確保目錄存在
+    os.makedirs(os.path.dirname(cleaned_data_path), exist_ok=True)
+    
+    return cleaned_data_path
 
 def save_processed_sequences(sequences, labels, cleaned_data_path):
     """保存處理後的序列資料"""
@@ -74,24 +80,28 @@ def save_processed_sequences(sequences, labels, cleaned_data_path):
     print(f"序列資料已保存至: {sequences_path}")
 
 def detect_bed_events(df):
-    """檢測離床和上床事件"""
+    """檢測離床事件，並在事件發生後的靜默時間內不檢測新事件"""
     events = []
     status_changes = df['OnBed_Status'].diff()
+    last_event_time = -SILENCE_TIME  # 初始化為負值，確保第一個事件可以被檢測
     
-    # 找出所有狀態變化的時間點
+    # 找出所有離床事件
     for idx in range(1, len(df)):
+        # 檢查是否在靜默時間內
+        if idx - last_event_time < SILENCE_TIME:
+            continue
+            
+        # 只檢測 1->0 的離床事件
         if status_changes.iloc[idx] == -1:  # 1->0 離床
             events.append({
                 'time': idx,
                 'type': 'leaving',
                 'original_status': 1
             })
-        elif status_changes.iloc[idx] == 1:  # 0->1 上床
-            events.append({
-                'time': idx,
-                'type': 'entering',
-                'original_status': 0
-            })
+            last_event_time = idx  # 更新最後事件時間
+
+    print(f"檢測到 {len(events)} 個離床事件")
+    sys.exit()
     
     return events
 
@@ -431,7 +441,7 @@ callbacks = [
 # 調整batch size和epochs
 history = model.fit(
     X_train, y_train,
-    epochs=50,          # 增加epochs
+    epochs=5,          # 增加epochs
     batch_size=48,      # 調整batch size
     validation_split=0.2,
     class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
