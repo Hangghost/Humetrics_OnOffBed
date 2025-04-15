@@ -241,8 +241,8 @@ def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY):
     df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()
     df['pressure_acceleration'] = df['pressure_change'].diff()
     
-    # 填充NaN值
-    df = df.fillna(method='ffill').fillna(method='bfill')
+    # 填充NaN值 - 修正棄用警告
+    df = df.ffill().bfill()
     
     # 檢測事件
     events = detect_bed_events(df)
@@ -792,6 +792,9 @@ try:
     y = np.array(labels)
     print(f"特徵形狀: {X.shape}")
     print(f"標籤形狀: {y.shape}")
+
+    print(f"X: {X}")
+    print(f"y: {y}")
 except Exception as e:
     print(f"數據處理錯誤: {e}")
     raise
