@@ -11,6 +11,28 @@ import matplotlib.pyplot as plt
 import os
 import tensorflow as tf
 import sys
+import matplotlib as mpl
+import matplotlib.font_manager as fm
+
+# 查找系統上支援中文的字型
+# 以下是一些常見的中文字型名稱，您可以根據自己的系統進行調整
+chinese_fonts = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'SimSun', 'Heiti TC', 'STHeiti', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB']
+
+# 嘗試設定字型
+font_found = False
+for font in chinese_fonts:
+    try:
+        mpl.rcParams['font.family'] = font
+        plt.rcParams['axes.unicode_minus'] = False  # 正確顯示負號
+        font_found = True
+        print(f"使用字型: {font}")
+        break
+    except:
+        continue
+
+if not font_found:
+    print("警告: 未找到支援中文的字型，圖表中的中文可能無法正確顯示")
+
 # 設定隨機種子
 np.random.seed(1337)
 
@@ -820,7 +842,7 @@ callbacks = [
 # 調整batch size和epochs
 history = model.fit(
     X_train, y_train,
-    epochs=50,          # 增加epochs
+    epochs=3,          # 增加epochs
     batch_size=48,      # 調整batch size
     validation_split=0.2,
     class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
@@ -832,11 +854,11 @@ history = model.fit(
 test_metrics, best_threshold, target_lead = evaluate_predictions(y_test, model.predict(X_test), test_timestamps, find_best_threshold=FIND_BEST_THRESHOLD)
 
 print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
-print(f"總檢測成功: {test_metrics['detections']} / {test_metrics['detections'] + test_metrics['missed_events']}")
-print(f"提前檢測: {test_metrics['early_detections']}")
-print(f"延遲檢測: {test_metrics['late_detections']}")
-print(f"漏報: {test_metrics['missed_events']}")
-print(f"誤報: {test_metrics['false_alarms']}")
+print(f"detections: {test_metrics['detections']} / {test_metrics['detections'] + test_metrics['missed_events']}")
+print(f"early_detections: {test_metrics['early_detections']}")
+print(f"late_detections: {test_metrics['late_detections']}")
+print(f"missed_events: {test_metrics['missed_events']}")
+print(f"false_alarms: {test_metrics['false_alarms']}")
 
 # 計算並顯示時間差異統計
 if test_metrics['early_time_diffs']:
