@@ -1477,10 +1477,6 @@ def EvalParameters():
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
         approach = max10 - (th1 + th2)           # 計算接近度
-        # # 加入防護機制，避免除以零
-        # if noise_onbed == 0:
-        #     speed = np.ones_like(n)  # 如果noise_onbed為0，則將速度設為1
-        # else:
         speed = n // (noise_onbed * 4)           # 計算速度
         np.clip(speed, 1, 16, out=speed)         # 限制速度範圍
         app_sp = approach * speed                # 接近度與速度的乘積
