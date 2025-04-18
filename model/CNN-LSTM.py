@@ -50,6 +50,10 @@ FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
 LOG_DIR = "./_logs/bed_monitor_test_sum"
 
+# 確保LOG_DIR和其他必要目錄存在
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs("./_data/training", exist_ok=True)
+
 FIND_BEST_THRESHOLD = False
 SUM_ONLY = False
 SILENCE_TIME = 180 
@@ -166,9 +170,10 @@ def get_cleaned_data_path(raw_data_path):
 
 def save_processed_sequences(sequences, labels, cleaned_data_path):
     """保存處理後的序列資料"""
-    # # 先存一份CSV
-    # df = pd.DataFrame(sequences)
-    # df.to_csv(cleaned_data_path, index=False)
+    # 將sequences和labels合併成一個DataFrame
+    df = pd.DataFrame({'sequences': sequences, 'labels': labels})
+    
+    df.to_csv(cleaned_data_path, index=False)
 
     # 將 .csv 副檔名改為 .npz
     sequences_path = cleaned_data_path.replace('.csv', '.npz')
@@ -233,7 +238,7 @@ def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY):
     sequences = []
     labels = []
     
-    # 增強特徵工程
+    # 增強特徵工程 TODO: 考慮刪減
     df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
     df['pressure_std'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].std(axis=1)
     df['pressure_change'] = df['pressure_sum'].diff()
@@ -845,7 +850,7 @@ callbacks = [
 # 調整batch size和epochs
 history = model.fit(
     X_train, y_train,
-    epochs=3,          # 增加epochs
+    epochs=15,          # 增加epochs
     batch_size=48,      # 調整batch size
     validation_split=0.2,
     class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
@@ -888,6 +893,699 @@ if test_metrics['late_time_diffs']:
 
 # 保存最終模型
 model.save(final_model_path)
+
+# 繪製時間軸上的事件對比圖
+def plot_event_timeline(y_true, y_pred, timestamps, threshold=0.9):
+    """
+    繪製時間軸上的事件對比圖，顯示實際事件與預測事件
+    
+    參數:
+    - y_true: 實際標籤
+    - y_pred: 預測概率
+    - timestamps: 時間戳列表
+    - threshold: 預測閾值，用於轉換概率為二進制預測
+    """
+    # 創建二值預測
+    predictions = (y_pred >= threshold).astype(int)
+    
+    # 找出所有預測事件 - 連續的預測為1的段落被視為一個事件
+    predicted_events = []
+    i = 0
+    while i < len(predictions):
+        if predictions[i] == 1:
+            start_idx = i
+            while i < len(predictions) and predictions[i] == 1:
+                i += 1
+            end_idx = i - 1
+            
+            # 儲存事件開始和結束時間
+            predicted_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx]
+            })
+        else:
+            i += 1
+    
+    # 找出所有實際事件 - 標籤超過閾值（對於漸進式標籤，通常是0.7）被視為離床事件
+    actual_events = []
+    i = 0
+    high_threshold = 0.7  # 用於識別實際離床事件的閾值
+    while i < len(y_true):
+        if y_true[i] >= high_threshold:
+            start_idx = i
+            # 找出這個事件的最高標籤點（事件發生時刻）
+            max_label_idx = start_idx
+            max_label = y_true[start_idx]
+            
+            while i < len(y_true) and y_true[i] >= 0.5:  # 尋找連續的事件區域
+                if y_true[i] > max_label:
+                    max_label = y_true[i]
+                    max_label_idx = i
+                i += 1
+            end_idx = i - 1
+            
+            # 儲存事件信息
+            actual_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'peak_idx': max_label_idx,  # 事件最高點（通常是離床時刻）
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx],
+                'peak_time': timestamps[max_label_idx]
+            })
+        else:
+            i += 1
+    
+    # 繪製時間軸圖
+    plt.figure(figsize=(20, 6))
+    
+    # 設定X軸範圍
+    min_time = min(timestamps)
+    max_time = max(timestamps)
+    plt.xlim(min_time, max_time)
+    
+    # 繪製標籤值曲線（灰色背景參考）
+    plt.plot(timestamps, y_true, 'gray', alpha=0.3, label='真實標籤值')
+    
+    # 繪製預測值曲線（灰色背景參考）
+    plt.plot(timestamps, y_pred, 'lightblue', alpha=0.3, label='預測概率值')
+    
+    # 繪製實際事件（紅色區塊）
+    for event in actual_events:
+        # 繪製事件區間
+        plt.axvspan(event['start_time'], event['end_time'], alpha=0.3, color='red')
+        # 繪製事件峰值點（實際離床時刻）
+        plt.axvline(x=event['peak_time'], color='darkred', linestyle='-', linewidth=2)
+    
+    # 繪製預測事件（綠色區塊）
+    for event in predicted_events:
+        plt.axvspan(event['start_time'], event['end_time'], alpha=0.3, color='green')
+    
+    # 添加圖例和標籤
+    plt.hlines(y=threshold, xmin=min_time, xmax=max_time, 
+              colors='blue', linestyles='dashed', label=f'預測閾值 ({threshold})')
+    plt.hlines(y=high_threshold, xmin=min_time, xmax=max_time, 
+              colors='red', linestyles='dashed', label=f'實際事件閾值 ({high_threshold})')
+    
+    # 設定圖表標題和軸標籤
+    plt.title('離床事件與AI預測的時間對比圖')
+    plt.xlabel('時間點')
+    plt.ylabel('事件概率值')
+    plt.legend(loc='upper right')
+    
+    # 添加說明文字
+    plt.figtext(0.5, 0.01, 
+                '紅色區塊: 實際離床事件區間 | 深紅色線: 實際離床時刻 | 綠色區塊: AI預測事件區間', 
+                ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 保存圖表
+    plt.tight_layout()
+    event_timeline_path = os.path.join(LOG_DIR, 'event_timeline_comparison.png')
+    plt.savefig(event_timeline_path)
+    print(f"事件時間軸對比圖已保存至: {event_timeline_path}")
+    plt.close()
+
+# 繪製測試集上的事件時間軸對比圖
+plot_event_timeline(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+
+# 繪製詳細的事件時間差異對比圖
+def plot_event_time_differences(y_true, y_pred, timestamps, threshold=0.9):
+    """
+    繪製詳細的事件時間差異對比圖，展示每個事件的預測時間與實際時間的差異
+    
+    參數:
+    - y_true: 實際標籤
+    - y_pred: 預測概率
+    - timestamps: 時間戳列表
+    - threshold: 預測閾值
+    """
+    # 創建二值預測
+    predictions = (y_pred >= threshold).astype(int)
+    
+    # 找出所有預測事件
+    predicted_events = []
+    i = 0
+    while i < len(predictions):
+        if predictions[i] == 1:
+            start_idx = i
+            while i < len(predictions) and predictions[i] == 1:
+                i += 1
+            end_idx = i - 1
+            
+            predicted_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx]
+            })
+        else:
+            i += 1
+    
+    # 找出所有實際事件
+    actual_events = []
+    i = 0
+    high_threshold = 0.7
+    while i < len(y_true):
+        if y_true[i] >= high_threshold:
+            start_idx = i
+            max_label_idx = start_idx
+            max_label = y_true[start_idx]
+            
+            while i < len(y_true) and y_true[i] >= 0.5:
+                if y_true[i] > max_label:
+                    max_label = y_true[i]
+                    max_label_idx = i
+                i += 1
+            end_idx = i - 1
+            
+            actual_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'peak_idx': max_label_idx,
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx],
+                'peak_time': timestamps[max_label_idx]
+            })
+        else:
+            i += 1
+    
+    # 匹配實際事件與預測事件
+    matched_events = []
+    for actual_event in actual_events:
+        best_pred_event = None
+        best_time_diff = float('inf')
+        
+        for pred_event in predicted_events:
+            # 計算預測開始時間與實際事件發生時間的差距
+            time_diff = pred_event['start_time'] - actual_event['peak_time']
+            
+            # 我們認為以下情況是有效的檢測
+            if -WARNING_TIME <= time_diff <= 5:
+                if abs(time_diff) < abs(best_time_diff):
+                    best_time_diff = time_diff
+                    best_pred_event = pred_event
+        
+        if best_pred_event is not None:
+            matched_events.append({
+                'actual_event': actual_event,
+                'pred_event': best_pred_event,
+                'time_diff': best_time_diff
+            })
+            # 標記已匹配
+            best_pred_event['matched'] = True
+        else:
+            # 漏報
+            matched_events.append({
+                'actual_event': actual_event,
+                'pred_event': None,
+                'time_diff': None
+            })
+    
+    # 找出誤報（未匹配的預測事件）
+    false_alarms = [e for e in predicted_events if not e.get('matched', False)]
+    
+    # 繪製詳細的事件時間差異圖
+    fig, ax = plt.subplots(figsize=(15, 10))
+    
+    # 設置Y軸為事件序號
+    event_ids = range(1, len(matched_events) + 1)
+    
+    # 繪製實際事件時間點（藍色點）
+    actual_times = [event['actual_event']['peak_time'] for event in matched_events]
+    ax.scatter(actual_times, event_ids, color='blue', s=100, label='實際離床時間')
+    
+    # 分別繪製提前預測和延遲預測
+    early_diffs = []
+    early_ids = []
+    late_diffs = []
+    late_ids = []
+    missed_ids = []
+    
+    for i, match in enumerate(matched_events, 1):
+        if match['pred_event'] is not None:
+            pred_time = match['pred_event']['start_time']
+            # 繪製預測時間點與實際時間點之間的連線
+            ax.plot([actual_times[i-1], pred_time], [i, i], 'gray', linewidth=1.5, linestyle='--')
+            
+            # 分類為提前或延遲預測
+            if match['time_diff'] <= 0:  # 提前預測
+                early_diffs.append(pred_time)
+                early_ids.append(i)
+            else:  # 延遲預測
+                late_diffs.append(pred_time)
+                late_ids.append(i)
+        else:
+            missed_ids.append(i)
+    
+    # 繪製提前預測、延遲預測和漏報
+    if early_diffs:
+        ax.scatter(early_diffs, early_ids, color='green', s=100, label='提前預測')
+    if late_diffs:
+        ax.scatter(late_diffs, late_ids, color='orange', s=100, label='延遲預測')
+    if missed_ids:
+        ax.scatter([actual_times[i-1] for i in missed_ids], missed_ids, marker='x', color='red', s=100, label='漏報')
+    
+    # 繪製誤報
+    if false_alarms:
+        false_alarm_times = [event['start_time'] for event in false_alarms]
+        # 使用較低的Y值來顯示誤報
+        false_alarm_y = [0.5] * len(false_alarms)
+        ax.scatter(false_alarm_times, false_alarm_y, marker='^', color='red', s=100, label='誤報')
+    
+    # 添加時間差異標籤
+    for i, match in enumerate(matched_events, 1):
+        if match['time_diff'] is not None:
+            diff_text = f"{abs(match['time_diff']):.1f}秒"
+            if match['time_diff'] <= 0:
+                diff_text += "(提前)"
+                text_color = 'green'
+            else:
+                diff_text += "(延遲)"
+                text_color = 'orange'
+            
+            # 計算標籤位置
+            actual_time = actual_times[i-1]
+            pred_time = match['pred_event']['start_time']
+            text_x = (actual_time + pred_time) / 2
+            
+            ax.text(text_x, i+0.2, diff_text, fontsize=8, color=text_color,
+                    ha='center', va='bottom', bbox=dict(facecolor='white', alpha=0.7))
+    
+    # 設置圖表標題和軸標籤
+    ax.set_title('離床事件預測時間差異對比')
+    ax.set_xlabel('時間點')
+    ax.set_ylabel('事件編號')
+    
+    # 添加網格線
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # 調整Y軸範圍
+    ax.set_ylim(0, len(matched_events) + 1)
+    
+    # 添加圖例
+    ax.legend(loc='upper right')
+    
+    # 添加說明文字
+    plt.figtext(0.5, 0.01, 
+                '藍點: 實際離床時間 | 綠點: 提前預測 | 橙點: 延遲預測 | 紅X: 漏報 | 紅三角: 誤報', 
+                ha='center', fontsize=11, bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 添加統計信息
+    early_count = len(early_ids)
+    late_count = len(late_ids)
+    missed_count = len(missed_ids)
+    false_count = len(false_alarms)
+    
+    avg_early_time = np.mean([abs(matched_events[i-1]['time_diff']) for i in early_ids]) if early_ids else 0
+    avg_late_time = np.mean([matched_events[i-1]['time_diff'] for i in late_ids]) if late_ids else 0
+    
+    stats_text = f"統計資訊:\n"
+    stats_text += f"總事件數: {len(matched_events)}\n"
+    stats_text += f"提前預測: {early_count} (平均提前 {avg_early_time:.2f}秒)\n"
+    stats_text += f"延遲預測: {late_count} (平均延遲 {avg_late_time:.2f}秒)\n"
+    stats_text += f"漏報: {missed_count}\n"
+    stats_text += f"誤報: {false_count}"
+    
+    plt.figtext(0.02, 0.97, stats_text, fontsize=10, va='top', 
+                bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 保存圖表
+    plt.tight_layout()
+    time_diff_path = os.path.join(LOG_DIR, 'event_time_differences.png')
+    plt.savefig(time_diff_path)
+    print(f"事件時間差異對比圖已保存至: {time_diff_path}")
+    plt.close()
+
+# 繪製詳細的事件時間差異對比圖
+y_test_pred = model.predict(X_test)
+plot_event_time_differences(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
+
+# 繪製預測準確度隨時間變化的趨勢圖
+def plot_prediction_accuracy_trend(y_true, y_pred, timestamps, threshold=0.9, window_size=50):
+    """
+    繪製預測準確度隨時間變化的趨勢圖
+    
+    參數:
+    - y_true: 實際標籤
+    - y_pred: 預測概率
+    - timestamps: 時間戳列表
+    - threshold: 預測閾值
+    - window_size: 滑動窗口大小，用於計算移動平均準確度
+    """
+    # 創建二值預測
+    y_pred_binary = (y_pred >= threshold).astype(int)
+    
+    # 計算逐點準確度 (0表示錯誤預測，1表示正確預測)
+    point_accuracy = np.zeros(len(y_true))
+    
+    # 定義正確預測的條件:
+    # 1. 真正例：實際標籤>=0.7且預測為1
+    # 2. 真負例：實際標籤<0.5且預測為0
+    # 對於預警區域(0.5<=標籤<0.7)，我們視為中間狀態，若預測為1也算正確
+    for i in range(len(y_true)):
+        if (y_true[i] >= 0.7 and y_pred_binary[i] == 1) or \
+           (0.5 <= y_true[i] < 0.7 and y_pred_binary[i] == 1) or \
+           (y_true[i] < 0.5 and y_pred_binary[i] == 0):
+            point_accuracy[i] = 1
+    
+    # 計算累積準確度
+    cumulative_accuracy = np.cumsum(point_accuracy) / np.arange(1, len(point_accuracy) + 1)
+    
+    # 計算滑動窗口準確度
+    moving_accuracy = np.zeros(len(point_accuracy))
+    for i in range(len(point_accuracy)):
+        start_idx = max(0, i - window_size + 1)
+        window_points = point_accuracy[start_idx:i+1]
+        moving_accuracy[i] = np.mean(window_points)
+    
+    # 繪製準確度趨勢圖
+    plt.figure(figsize=(15, 8))
+    
+    # 繪製原始標籤和預測值作為參考背景
+    plt.plot(timestamps, y_true, 'gray', alpha=0.2, label='真實標籤')
+    plt.plot(timestamps, y_pred, 'lightblue', alpha=0.2, label='預測概率')
+    
+    # 繪製累積和滑動準確度
+    plt.plot(timestamps, cumulative_accuracy, 'blue', linewidth=2, label=f'累積準確度')
+    plt.plot(timestamps, moving_accuracy, 'red', linewidth=2, label=f'滑動窗口準確度 (窗口大小={window_size})')
+    
+    # 標記實際離床事件發生的時間點
+    event_times = []
+    for i in range(1, len(y_true)):
+        if y_true[i] >= 0.9 and y_true[i-1] < 0.9:  # 離床事件閾值設為0.9
+            event_times.append(timestamps[i])
+    
+    for t in event_times:
+        plt.axvline(x=t, color='red', linestyle='--', alpha=0.5)
+    
+    # 添加預測閾值參考線
+    plt.axhline(y=threshold, color='green', linestyle='--', alpha=0.5, label=f'預測閾值 ({threshold})')
+    
+    # 設置圖表標題和軸標籤
+    plt.title('預測準確度隨時間變化趨勢')
+    plt.xlabel('時間點')
+    plt.ylabel('準確度 / 預測值')
+    
+    # 設置Y軸範圍
+    plt.ylim(-0.05, 1.05)
+    
+    # 添加網格線
+    plt.grid(True, linestyle='--', alpha=0.3)
+    
+    # 添加圖例
+    plt.legend(loc='lower right')
+    
+    # 添加說明文字
+    plt.figtext(0.5, 0.01, 
+                '藍線: 累積準確度 | 紅線: 滑動窗口準確度 | 紅色虛線: 離床事件發生時間', 
+                ha='center', fontsize=11, bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 添加窗口大小選擇器的說明
+    plt.figtext(0.02, 0.97, 
+                f"窗口大小: {window_size}\n"
+                f"累積準確度: {cumulative_accuracy[-1]:.4f}\n"
+                f"最終窗口準確度: {moving_accuracy[-1]:.4f}", 
+                fontsize=10, va='top', 
+                bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 保存圖表
+    plt.tight_layout()
+    accuracy_trend_path = os.path.join(LOG_DIR, f'prediction_accuracy_trend_w{window_size}.png')
+    plt.savefig(accuracy_trend_path)
+    print(f"預測準確度趨勢圖已保存至: {accuracy_trend_path}")
+    plt.close()
+
+# 使用不同窗口大小繪製準確度趨勢圖
+for window_size in [20, 50, 100]:
+    plot_prediction_accuracy_trend(y_test, y_test_pred, test_timestamps, threshold=best_threshold, window_size=window_size)
+
+# 繪製預測時間差異分布圖
+def plot_prediction_time_diff_distribution(y_true, y_pred, timestamps, threshold=0.9):
+    """
+    繪製預測時間差異的分布圖，包括直方圖和箱型圖
+    
+    參數:
+    - y_true: 實際標籤
+    - y_pred: 預測概率
+    - timestamps: 時間戳列表
+    - threshold: 預測閾值
+    """
+    # 創建二值預測
+    predictions = (y_pred >= threshold).astype(int)
+    
+    # 找出所有預測事件
+    predicted_events = []
+    i = 0
+    while i < len(predictions):
+        if predictions[i] == 1:
+            start_idx = i
+            while i < len(predictions) and predictions[i] == 1:
+                i += 1
+            end_idx = i - 1
+            
+            predicted_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx]
+            })
+        else:
+            i += 1
+    
+    # 找出所有實際事件
+    actual_events = []
+    i = 0
+    high_threshold = 0.7
+    while i < len(y_true):
+        if y_true[i] >= high_threshold:
+            start_idx = i
+            max_label_idx = start_idx
+            max_label = y_true[start_idx]
+            
+            while i < len(y_true) and y_true[i] >= 0.5:
+                if y_true[i] > max_label:
+                    max_label = y_true[i]
+                    max_label_idx = i
+                i += 1
+            end_idx = i - 1
+            
+            actual_events.append({
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'peak_idx': max_label_idx,
+                'start_time': timestamps[start_idx],
+                'end_time': timestamps[end_idx],
+                'peak_time': timestamps[max_label_idx]
+            })
+        else:
+            i += 1
+    
+    # 收集所有時間差異
+    time_diffs = []
+    early_diffs = []  # 提前預測時間差
+    late_diffs = []   # 延遲預測時間差
+    
+    # 匹配實際事件與預測事件
+    for actual_event in actual_events:
+        best_pred_event = None
+        best_time_diff = float('inf')
+        
+        for pred_event in predicted_events:
+            # 計算預測開始時間與實際事件發生時間的差距
+            time_diff = pred_event['start_time'] - actual_event['peak_time']
+            
+            # 我們認為以下情況是有效的檢測
+            if -WARNING_TIME <= time_diff <= 5:
+                if abs(time_diff) < abs(best_time_diff):
+                    best_time_diff = time_diff
+                    best_pred_event = pred_event
+        
+        if best_pred_event is not None:
+            time_diffs.append(best_time_diff)
+            if best_time_diff <= 0:
+                early_diffs.append(best_time_diff)  # 提前預測（負值）
+            else:
+                late_diffs.append(best_time_diff)   # 延遲預測（正值）
+            
+            # 標記已匹配
+            best_pred_event['matched'] = True
+    
+    # 繪製時間差異分布圖
+    plt.figure(figsize=(15, 10))
+    
+    # 1. 所有時間差異的直方圖和KDE
+    plt.subplot(2, 2, 1)
+    if time_diffs:
+        plt.hist(time_diffs, bins=15, alpha=0.7, color='blue', edgecolor='black')
+        plt.axvline(x=0, color='red', linestyle='--', linewidth=2)
+        plt.axvline(x=np.mean(time_diffs), color='green', linestyle='-', linewidth=2, 
+                    label=f'平均值: {np.mean(time_diffs):.2f}秒')
+    plt.title('所有檢測的時間差異分布')
+    plt.xlabel('時間差異（秒）- 負值表示提前，正值表示延遲')
+    plt.ylabel('頻率')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend()
+    
+    # 2. 提前預測和延遲預測的分開直方圖
+    plt.subplot(2, 2, 2)
+    if early_diffs:
+        plt.hist(early_diffs, bins=10, alpha=0.7, color='green', edgecolor='black', label='提前預測')
+    if late_diffs:
+        plt.hist(late_diffs, bins=5, alpha=0.7, color='orange', edgecolor='black', label='延遲預測')
+    plt.axvline(x=0, color='red', linestyle='--', linewidth=2)
+    if early_diffs:
+        plt.axvline(x=np.mean(early_diffs), color='green', linestyle='-', linewidth=2, 
+                    label=f'平均提前: {abs(np.mean(early_diffs)):.2f}秒')
+    if late_diffs:
+        plt.axvline(x=np.mean(late_diffs), color='orange', linestyle='-', linewidth=2, 
+                    label=f'平均延遲: {np.mean(late_diffs):.2f}秒')
+    plt.title('提前預測和延遲預測的時間差異分布')
+    plt.xlabel('時間差異（秒）')
+    plt.ylabel('頻率')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.legend()
+    
+    # 3. 箱型圖比較提前預測和延遲預測
+    plt.subplot(2, 2, 3)
+    box_data = []
+    labels = []
+    
+    if early_diffs:
+        # 轉換為絕對值以便比較
+        box_data.append([abs(diff) for diff in early_diffs])
+        labels.append('提前預測')
+    
+    if late_diffs:
+        box_data.append(late_diffs)
+        labels.append('延遲預測')
+    
+    if box_data:
+        plt.boxplot(box_data, tick_labels=labels, patch_artist=True, 
+                    boxprops=dict(facecolor='lightblue'),
+                    medianprops=dict(color='red'))
+    plt.title('提前預測和延遲預測的時間差異箱型圖')
+    plt.ylabel('時間差異（秒）- 絕對值')
+    plt.grid(True, linestyle='--', alpha=0.5)
+    
+    # 4. 目標時間差異比較
+    plt.subplot(2, 2, 4)
+    target_lead_time = 7  # 目標提前時間（秒）
+    
+    if early_diffs:
+        # 計算與目標時間的偏差
+        target_diffs = [abs(abs(diff) - target_lead_time) for diff in early_diffs]
+        plt.hist(target_diffs, bins=10, alpha=0.7, color='purple', edgecolor='black')
+        plt.axvline(x=np.mean(target_diffs), color='red', linestyle='-', linewidth=2, 
+                    label=f'平均偏差: {np.mean(target_diffs):.2f}秒')
+        
+        # 3秒內算準確
+        accurate_count = sum(1 for diff in target_diffs if diff <= 3)
+        accuracy_rate = (accurate_count / len(target_diffs)) * 100 if target_diffs else 0
+        
+        plt.title(f'與目標提前時間的偏差分布\n({accuracy_rate:.1f}%在±3秒範圍內)')
+        plt.xlabel('與目標時間的偏差（秒）')
+        plt.ylabel('頻率')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.legend()
+    else:
+        plt.text(0.5, 0.5, '沒有提前預測數據', 
+                 horizontalalignment='center', verticalalignment='center',
+                 transform=plt.gca().transAxes, fontsize=12)
+        plt.title('與目標提前時間的偏差分布')
+    
+    # 添加統計信息
+    early_count = len(early_diffs)
+    late_count = len(late_diffs)
+    total_count = len(time_diffs)
+    
+    avg_early_time = abs(np.mean(early_diffs)) if early_diffs else 0
+    avg_late_time = np.mean(late_diffs) if late_diffs else 0
+    avg_total_time = np.mean(time_diffs) if time_diffs else 0
+    
+    stats_text = f"統計資訊:\n"
+    stats_text += f"總檢測數: {total_count}\n"
+    stats_text += f"提前預測: {early_count} ({(early_count/total_count*100):.1f}%), 平均提前 {avg_early_time:.2f}秒\n"
+    stats_text += f"延遲預測: {late_count} ({(late_count/total_count*100):.1f}%), 平均延遲 {avg_late_time:.2f}秒\n"
+    
+    if early_diffs:
+        target_diffs = [abs(abs(diff) - target_lead_time) for diff in early_diffs]
+        accurate_count = sum(1 for diff in target_diffs if diff <= 3)
+        accuracy_rate = (accurate_count / len(target_diffs)) * 100 if target_diffs else 0
+        stats_text += f"目標時間準確率: {accuracy_rate:.1f}% (±3秒內)"
+    
+    plt.figtext(0.5, 0.01, stats_text, fontsize=10, ha='center', 
+                bbox=dict(facecolor='white', alpha=0.8))
+    
+    # 保存圖表
+    plt.tight_layout(rect=[0, 0.04, 1, 0.96])
+    time_diff_dist_path = os.path.join(LOG_DIR, 'prediction_time_diff_distribution.png')
+    plt.savefig(time_diff_dist_path)
+    print(f"預測時間差異分布圖已保存至: {time_diff_dist_path}")
+    plt.close()
+
+# 繪製預測時間差異分布圖
+plot_prediction_time_diff_distribution(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
+
+# 生成簡潔的評估報告
+def generate_evaluation_summary(y_true, y_pred, timestamps, threshold=0.9):
+    """生成簡潔的評估摘要報告"""
+    # 直接使用與評估函數相同的二值化邏輯
+    # 創建二值預測結果
+    predictions = (y_pred >= threshold).astype(int)
+    
+    # 評估預測結果 - 不傳入閾值，因為該函數內部已固定使用0.9
+    metrics, _, target_lead = evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=False)
+    
+    # 計算關鍵指標
+    total_actual = metrics['detections'] + metrics['missed_events']
+    detection_rate = metrics['detections'] / max(total_actual, 1) * 100
+    early_rate = metrics['early_detections'] / max(metrics['detections'], 1) * 100
+    late_rate = metrics['late_detections'] / max(metrics['detections'], 1) * 100
+    
+    avg_early_time = np.mean(metrics['early_time_diffs']) if metrics['early_time_diffs'] else 0
+    avg_late_time = np.mean(metrics['late_time_diffs']) if metrics['late_time_diffs'] else 0
+    
+    # 計算時間準確率
+    if metrics['early_time_diffs']:
+        time_diff_seconds = abs(avg_early_time - target_lead)
+        if time_diff_seconds <= 3:
+            time_accuracy = 100.0
+        else:
+            time_accuracy = max(0, 100.0 * (1.0 - (time_diff_seconds - 3) / 7))
+    else:
+        time_accuracy = 0.0
+    
+    # 構建報告文本
+    report = f"""
+====== 離床預測模型評估摘要 ======
+
+【基本統計】
+- 閾值設定: {threshold:.2f} (注意: 評估函數固定使用0.9)
+- 實際事件總數: {total_actual}
+- 成功檢測數: {metrics['detections']} ({detection_rate:.2f}%)
+- 漏報數: {metrics['missed_events']}
+- 誤報數: {metrics['false_alarms']}
+
+【時間預測】
+- 提前預測: {metrics['early_detections']} ({early_rate:.2f}%)
+- 延遲預測: {metrics['late_detections']} ({late_rate:.2f}%)
+- 平均提前時間: {avg_early_time:.2f}秒 (目標: {target_lead:.1f}秒)
+- 平均延遲時間: {avg_late_time:.2f}秒
+- 時間準確率: {time_accuracy:.2f}% (±3秒內為100%)
+"""
+    
+    # 保存報告
+    report_path = os.path.join(LOG_DIR, 'evaluation_summary.txt')
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(report)
+    
+    print(f"評估摘要已保存至: {report_path}")
+    return metrics
+
+# 生成評估報告
+evaluation_summary = generate_evaluation_summary(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
 
 # 可視化訓練過程
 plt.figure(figsize=(12, 4))
