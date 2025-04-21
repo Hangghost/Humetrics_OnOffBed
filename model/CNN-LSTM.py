@@ -57,6 +57,8 @@ os.makedirs("./_data/training", exist_ok=True)
 FIND_BEST_THRESHOLD = False
 SUM_ONLY = False
 SILENCE_TIME = 180 
+APPLY_BALANCING = False
+POS_TO_NEG_RATIO = float('inf') # 設為無限大表示不進行下採樣
 
 
 # 自定義的評估回調
@@ -173,10 +175,10 @@ def save_processed_sequences(sequences, labels, cleaned_data_path):
     # 將sequences和labels合併成一個DataFrame
     df = pd.DataFrame({'sequences': sequences, 'labels': labels})
     
-    df.to_csv(cleaned_data_path, index=False)
+    df.to_csv(cleaned_data_path.replace('.csv', '_processed.csv'), index=False)
 
     # 將 .csv 副檔名改為 .npz
-    sequences_path = cleaned_data_path.replace('.csv', '.npz')
+    sequences_path = cleaned_data_path.replace('.csv', '_processed.npz')
     np.savez(sequences_path, sequences=sequences, labels=labels)
     print(f"序列資料已保存至: {sequences_path}")
 
@@ -233,48 +235,29 @@ def create_event_labels(df, events):
             
     return labels
 
-def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY):
-    """修改後的序列創建函數，使用漸進式標籤"""
-    sequences = []
-    labels = []
+def balance_samples(df_features, event_labels, window_size=WINDOW_SIZE, step_size=STEP_SIZE, pos_to_neg_ratio=2):
+    """
+    收集和平衡正負樣本的比例
     
-    # 增強特徵工程 TODO: 考慮刪減
-    df['pressure_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
-    df['pressure_std'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].std(axis=1)
-    df['pressure_change'] = df['pressure_sum'].diff()
-    df['pressure_rolling_mean'] = df['pressure_sum'].rolling(window=5).mean()
-    df['pressure_rolling_std'] = df['pressure_sum'].rolling(window=5).std()
-    df['pressure_acceleration'] = df['pressure_change'].diff()
+    參數:
+    - df_features: 特徵資料框
+    - event_labels: 事件標籤列表
+    - window_size: 滑動窗口大小
+    - step_size: 滑動步長
+    - pos_to_neg_ratio: 負樣本數量與正樣本數量的比例，默認為2
     
-    # 填充NaN值 - 修正棄用警告
-    df = df.ffill().bfill()
-    
-    # 檢測事件
-    events = detect_bed_events(df)
-    # 創建漸進式標籤
-    event_labels = create_event_labels(df, events)
-    
-    # 根據use_sum_only參數選擇使用的特徵
-    if use_sum_only:
-        df_features = pd.DataFrame({'pressure_sum': df['pressure_sum']})
-    else:
-        required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
-        if not all(col in df.columns for col in required_columns):
-            raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
-        df_features = df[required_columns].copy()
-    
-    # 存一份CSV
-    df_features.to_csv(cleaned_data_path, index=False)
-    
+    返回:
+    - 平衡後的特徵序列列表和標籤列表
+    """
     # 分別收集正負樣本（正樣本包括所有標籤 >= 0.5 的樣本）
     positive_sequences = []
     positive_labels = []
     negative_sequences = []
     negative_labels = []
     
-    for i in range(0, len(df) - WINDOW_SIZE + 1, STEP_SIZE):
-        window = df_features.iloc[i:(i + WINDOW_SIZE)]
-        label = event_labels[i + WINDOW_SIZE - 1]
+    for i in range(0, len(df_features) - window_size + 1, step_size):
+        window = df_features.iloc[i:(i + window_size)]
+        label = event_labels[i + window_size - 1]
         
         if label >= 0.5:  # 所有標籤 >= 0.5 都視為正樣本
             positive_sequences.append(window.values.astype('float64'))
@@ -283,12 +266,17 @@ def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY):
             negative_sequences.append(window.values.astype('float64'))
             negative_labels.append(label)
     
+    print(f"收集到正樣本: {len(positive_sequences)}個, 負樣本: {len(negative_sequences)}個")
+    
     # 對負樣本進行下採樣
-    neg_sample_size = len(positive_sequences) * 2  # 降低負樣本比例，更重視正樣本
+    neg_sample_size = len(positive_sequences) * pos_to_neg_ratio
+    
+    # 只有當負樣本數量超過所需數量時才進行下採樣
     if len(negative_sequences) > neg_sample_size:
         indices = np.random.choice(len(negative_sequences), neg_sample_size, replace=False)
         negative_sequences = [negative_sequences[i] for i in indices]
         negative_labels = [negative_labels[i] for i in indices]
+        print(f"下採樣後的負樣本數量: {len(negative_sequences)}個")
     
     # 合併正負樣本
     sequences = positive_sequences + negative_sequences
@@ -299,13 +287,79 @@ def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY):
     np.random.shuffle(combined)
     sequences, labels = zip(*combined)
     
+    print(f"最終樣本數量: {len(sequences)}個")
+    return sequences, labels
+
+def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY, apply_balancing=False, pos_to_neg_ratio=2):
+    """修改後的序列創建函數，使用漸進式標籤"""
+    sequences = []
+    labels = []
+    
+    # 增強特徵工程 TODO: 考慮刪減
+    df['Raw_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
+    df['Noise_max'] = df[[f'Channel_{i}_Noise' for i in range(1, 7)]].max(axis=1)
+    
+    # 移除不需要的欄位
+    noise_columns = [col for col in df.columns if col.startswith('Channel_') and col.endswith('_Noise')]
+    max_columns = [col for col in df.columns if col.startswith('Channel_') and col.endswith('_Max')]
+    columns_to_drop = noise_columns + max_columns
+    
+    if columns_to_drop:
+        print(f"正在移除以下欄位: {columns_to_drop}")
+        df = df.drop(columns=columns_to_drop)
+    
+    # 填充NaN值
+    df = df.ffill().bfill()
+
+    print(f'df.columns: {df.columns}')
+    
+    # 檢測事件
+    events = detect_bed_events(df)
+    # 創建漸進式標籤
+    event_labels = create_event_labels(df, events)
+    
+    # 根據use_sum_only參數選擇使用的特徵
+    if use_sum_only:
+        df_features = pd.DataFrame({
+            'Raw_sum': df['Raw_sum'],
+            'Noise_max': df['Noise_max']
+        })
+    else:
+        required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+        required_columns.append('Noise_max')
+        if not all(col in df.columns for col in required_columns):
+            raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
+        df_features = df[required_columns].copy()
+    
+    # 存一份CSV
+    df_features.to_csv(cleaned_data_path, index=False)
+    print(f"已保存CSV: {cleaned_data_path}")
+    
+    # 使用統一的收集和平衡樣本函數
+    if apply_balancing:
+        sequences, labels = balance_samples(
+            df_features, 
+            event_labels,
+            window_size=WINDOW_SIZE, 
+            step_size=STEP_SIZE,
+            pos_to_neg_ratio=pos_to_neg_ratio
+        )
+    else:
+        # 不平衡樣本，收集全部樣本但不進行下採樣
+        sequences, labels = balance_samples(
+            df_features,
+            event_labels,
+            window_size=WINDOW_SIZE,
+            step_size=STEP_SIZE,
+            pos_to_neg_ratio=float('inf')
+        )
+    
     # 保存處理後的數據
     save_processed_sequences(sequences, labels, cleaned_data_path)
     
     return sequences, labels
 
-def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY):
-    """載入並處理數據，增加use_sum_only參數"""
+def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY, apply_balancing=True, pos_to_neg_ratio=2):
     # 獲取對應的清理後數據路徑
     cleaned_data_path = get_cleaned_data_path(raw_data_path)
     # 根據use_sum_only參數修改檔案名
@@ -326,11 +380,13 @@ def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY):
             print(f"讀取序列資料時發生錯誤: {e}")
             print("將重新處理原始數據...")
     
+    # 讀取原始數據
     try:
         dataset = pd.read_csv(raw_data_path)
         print(f"數據集形狀: {dataset.shape}")
         print(f"數據集列: {dataset.columns.tolist()}")
-        return create_sequences(dataset, cleaned_data_path, use_sum_only=SUM_ONLY)
+        return create_sequences(dataset, cleaned_data_path, use_sum_only=use_sum_only, 
+                               apply_balancing=apply_balancing, pos_to_neg_ratio=pos_to_neg_ratio)
     except Exception as e:
         print(f"數據處理錯誤: {e}")
         raise
@@ -791,8 +847,12 @@ try:
     # 使用總和值進行訓練 
     sequences, labels = load_and_process_data(
         INPUT_DATA_PATH,
-        use_sum_only=SUM_ONLY
+        use_sum_only=SUM_ONLY,
+        apply_balancing=APPLY_BALANCING,
+        pos_to_neg_ratio=POS_TO_NEG_RATIO
     )
+
+    sys.exit()
     X = np.array(sequences)
     y = np.array(labels)
     print(f"特徵形狀: {X.shape}")
