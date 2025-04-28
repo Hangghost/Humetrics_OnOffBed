@@ -15,7 +15,6 @@ import matplotlib as mpl
 import matplotlib.font_manager as fm
 
 # 查找系統上支援中文的字型
-# 以下是一些常見的中文字型名稱，您可以根據自己的系統進行調整
 chinese_fonts = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'SimSun', 'Heiti TC', 'STHeiti', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB']
 
 # 嘗試設定字型
@@ -44,7 +43,8 @@ STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 # 修改預警時間設定
 WARNING_TIME = 15  # 設定單一預警時間（秒）
 
-INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
+# INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
+INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2024PA000329_20250420_03_20250421_04_data.csv"
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
@@ -55,7 +55,6 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs("./_data/training", exist_ok=True)
 
 FIND_BEST_THRESHOLD = False
-SUM_ONLY = False
 SILENCE_TIME = 180 
 APPLY_BALANCING = False
 POS_TO_NEG_RATIO = float('inf') # 設為無限大表示不進行下採樣
@@ -170,21 +169,42 @@ def get_cleaned_data_path(raw_data_path):
     
     return cleaned_data_path
 
-def save_processed_sequences(sequences, labels, cleaned_data_path):
-    """保存處理後的序列資料"""
-    # 將sequences和labels合併成一個DataFrame
-    df = pd.DataFrame({'sequences': sequences, 'labels': labels})
+def save_processed_sequences(sequences, labels, cleaned_data_path, feature_names, event_binary=None):
+    """保存處理後的序列資料，使用完整時間序列格式"""
+    # 將sequences轉換回DataFrame，使用原始欄位名稱
+    df = pd.DataFrame(sequences, columns=feature_names)
     
+    # 保存CSV格式，使用原始欄位名稱
     df.to_csv(cleaned_data_path.replace('.csv', '_processed.csv'), index=False)
 
     # 將 .csv 副檔名改為 .npz
     sequences_path = cleaned_data_path.replace('.csv', '_processed.npz')
-    np.savez(sequences_path, sequences=sequences, labels=labels)
+    
+    # 檢查是否提供了 event_binary
+    if event_binary is not None:
+        np.savez(sequences_path, 
+                sequences=sequences, 
+                labels=event_binary,  # 直接使用 event_binary 作為標籤
+                event_binary=event_binary,
+                feature_names=feature_names)  # 使用保存的欄位名稱
+    else:
+        np.savez(sequences_path, 
+                sequences=sequences, 
+                labels=labels,
+                feature_names=feature_names)  # 使用保存的欄位名稱
+        
     print(f"序列資料已保存至: {sequences_path}")
 
 def detect_bed_events(df):
-    """檢測離床事件，並在事件發生後的靜默時間內不檢測新事件"""
+    """
+    檢測離床事件，並在事件發生後的靜默時間內不檢測新事件。
+    在原始 DataFrame 中添加 event_binary 欄位，值為 0 或 1
+    
+    返回:
+    - 新增了 event_binary 欄位的 DataFrame
+    """
     events = []
+    event_binary = np.zeros(len(df))  # 創建一個全0陣列，長度與原始資料相同
     status_changes = df['OnBed_Status'].diff()
     last_event_time = -SILENCE_TIME  # 初始化為負值，確保第一個事件可以被檢測
     
@@ -201,39 +221,16 @@ def detect_bed_events(df):
                 'type': 'leaving',
                 'original_status': 1
             })
+            # 只在離床事件的確切時間點標記為1
+            event_binary[idx] = 1
             last_event_time = idx  # 更新最後事件時間
 
     print(f"檢測到 {len(events)} 個離床事件")
     
-    return events
-
-def create_event_labels(df, events):
-    """為每個時間點創建漸進式標籤，使模型學會提前預測"""
-    labels = np.zeros(len(df))
+    # 將 event_binary 添加到原始 DataFrame
+    df['event_binary'] = event_binary
     
-    for event in events:
-        event_time = event['time']
-        
-        # 預警時間範圍
-        start_idx = max(0, event_time - WARNING_TIME)
-        end_idx = event_time
-        
-        # 創建漸進式標籤：越接近實際事件，標籤值越高
-        # 這將鼓勵模型在接近事件時預測概率更高
-        for i in range(start_idx, end_idx):
-            # 計算到事件的時間距離
-            time_to_event = end_idx - i
-            
-            # 標籤值從0.5漸進到1.0
-            # 離事件越近，標籤值越接近1.0
-            # 這使得模型學習在接近事件時提高預測概率
-            normalized_distance = 1.0 - (time_to_event / WARNING_TIME)
-            labels[i] = 0.5 + (0.5 * normalized_distance)
-        
-        # 事件發生時刻設為1.0
-        labels[end_idx] = 1.0
-            
-    return labels
+    return df
 
 def balance_samples(df_features, event_labels, window_size=WINDOW_SIZE, step_size=STEP_SIZE, pos_to_neg_ratio=2):
     """
@@ -290,12 +287,9 @@ def balance_samples(df_features, event_labels, window_size=WINDOW_SIZE, step_siz
     print(f"最終樣本數量: {len(sequences)}個")
     return sequences, labels
 
-def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY, apply_balancing=False, pos_to_neg_ratio=2):
-    """修改後的序列創建函數，使用漸進式標籤"""
-    sequences = []
-    labels = []
-    
-    # 增強特徵工程 TODO: 考慮刪減
+def create_sequences(df, cleaned_data_path, apply_balancing=APPLY_BALANCING, pos_to_neg_ratio=POS_TO_NEG_RATIO):
+    """修改後的序列創建函數，使用完整時間序列"""
+    # 增強特徵工程
     df['Raw_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
     df['Noise_max'] = df[[f'Channel_{i}_Noise' for i in range(1, 7)]].max(axis=1)
     
@@ -313,60 +307,39 @@ def create_sequences(df, cleaned_data_path, use_sum_only=SUM_ONLY, apply_balanci
 
     print(f'df.columns: {df.columns}')
     
-    # 檢測事件
-    events = detect_bed_events(df)
-    # 創建漸進式標籤
-    event_labels = create_event_labels(df, events)
-    
-    # 根據use_sum_only參數選擇使用的特徵
-    if use_sum_only:
-        df_features = pd.DataFrame({
-            'Raw_sum': df['Raw_sum'],
-            'Noise_max': df['Noise_max']
-        })
-    else:
-        required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
-        required_columns.append('Noise_max')
-        if not all(col in df.columns for col in required_columns):
-            raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
-        df_features = df[required_columns].copy()
+    # 檢測事件並添加 event_binary 欄位
+    df = detect_bed_events(df)
+
+    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+    required_columns.append('Raw_sum')
+    required_columns.append('Noise_max')
+    required_columns.append('OnBed_Status')
+    required_columns.append('event_binary')  # 添加新的 event_binary 欄位
+    if not all(col in df.columns for col in required_columns):
+        raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
+    df_features = df[required_columns].copy()
     
     # 存一份CSV
     df_features.to_csv(cleaned_data_path, index=False)
     print(f"已保存CSV: {cleaned_data_path}")
     
-    # 使用統一的收集和平衡樣本函數
-    if apply_balancing:
-        sequences, labels = balance_samples(
-            df_features, 
-            event_labels,
-            window_size=WINDOW_SIZE, 
-            step_size=STEP_SIZE,
-            pos_to_neg_ratio=pos_to_neg_ratio
-        )
-    else:
-        # 不平衡樣本，收集全部樣本但不進行下採樣
-        sequences, labels = balance_samples(
-            df_features,
-            event_labels,
-            window_size=WINDOW_SIZE,
-            step_size=STEP_SIZE,
-            pos_to_neg_ratio=float('inf')
-        )
+    # 保存原始欄位名稱
+    feature_names = df_features.columns.tolist()
+    
+    # 轉換為數組時保留欄位名稱資訊
+    sequences = df_features.values.astype('float64')
+    labels = df['event_binary'].values
     
     # 保存處理後的數據
-    save_processed_sequences(sequences, labels, cleaned_data_path)
+    save_processed_sequences(sequences, labels, cleaned_data_path, feature_names, df['event_binary'].values)
     
-    return sequences, labels
+    return sequences, labels, df['event_binary'].values, feature_names
 
-def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY, apply_balancing=True, pos_to_neg_ratio=2):
+def load_and_process_data(raw_data_path, apply_balancing=APPLY_BALANCING, pos_to_neg_ratio=POS_TO_NEG_RATIO):
     # 獲取對應的清理後數據路徑
     cleaned_data_path = get_cleaned_data_path(raw_data_path)
-    # 根據use_sum_only參數修改檔案名
-    if use_sum_only:
-        sequences_path = cleaned_data_path.replace('.csv', '_sum_only.npz')
-    else:
-        sequences_path = cleaned_data_path.replace('.csv', '.npz')
+
+    sequences_path = cleaned_data_path.replace('.csv', '_processed.npz')
     
     # 檢查是否存在已處理的序列資料
     if os.path.exists(sequences_path):
@@ -374,8 +347,11 @@ def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY, apply_balancing=
             data = np.load(sequences_path)
             sequences = data['sequences']
             labels = data['labels']
+            event_binary = data['event_binary']
+            feature_names = data['feature_names']
             print(f"發現已處理的序列資料，直接讀取: {sequences_path}")
-            return sequences, labels
+            print(f"特徵名稱: {feature_names}")
+            return sequences, labels, event_binary, feature_names
         except Exception as e:
             print(f"讀取序列資料時發生錯誤: {e}")
             print("將重新處理原始數據...")
@@ -385,8 +361,13 @@ def load_and_process_data(raw_data_path, use_sum_only=SUM_ONLY, apply_balancing=
         dataset = pd.read_csv(raw_data_path)
         print(f"數據集形狀: {dataset.shape}")
         print(f"數據集列: {dataset.columns.tolist()}")
-        return create_sequences(dataset, cleaned_data_path, use_sum_only=use_sum_only, 
-                               apply_balancing=apply_balancing, pos_to_neg_ratio=pos_to_neg_ratio)
+        sequences, labels, event_binary, feature_names = create_sequences(
+            dataset, 
+            cleaned_data_path, 
+            apply_balancing=apply_balancing, 
+            pos_to_neg_ratio=pos_to_neg_ratio
+        )
+        return sequences, labels, event_binary, feature_names
     except Exception as e:
         print(f"數據處理錯誤: {e}")
         raise
@@ -795,20 +776,15 @@ def pure_time_difference_loss(y_true, y_pred, target_lead_time=WARNING_TIME/2):
 def build_model(input_shape):
     input_layer = Input(shape=input_shape)
     
-    # 確保所有要相加的層具有相同的通道數
-    conv1 = Conv1D(64, kernel_size=5, padding='same', activation='relu')(input_layer)  # 改為64
+    # 修改 CNN 層的配置
+    conv1 = Conv1D(64, kernel_size=1, padding='same', activation='relu')(input_layer)
     conv1 = BatchNormalization()(conv1)
-    conv2 = Conv1D(64, kernel_size=3, padding='same', activation='relu')(conv1)  # 保持64
+    conv2 = Conv1D(64, kernel_size=1, padding='same', activation='relu')(conv1)
     conv2 = BatchNormalization()(conv2)
-    conv2 = Add()([conv1, conv2])  # 現在兩者都是64通道
+    conv2 = Add()([conv1, conv2])
     
-    # 第二個殘差塊
-    conv3 = Conv1D(64, kernel_size=3, padding='same', activation='relu')(conv2)  # 保持64
-    conv3 = BatchNormalization()(conv3)
-    conv3 = Add()([conv2, conv3])  # 現在都是64通道
-    
-    x = MaxPooling1D(pool_size=2)(conv3)
-    x = Dropout(0.25)(x)
+    # 移除 MaxPooling1D 層，因為我們只有一個時間步長
+    x = Dropout(0.25)(conv2)
     
     # LSTM層保持不變
     x = Bidirectional(LSTM(320, return_sequences=True))(x)
@@ -820,11 +796,11 @@ def build_model(input_shape):
     x = Dropout(0.25)(x)
     
     # 確保密集層的維度匹配
-    dense1 = Dense(64, activation='relu')(x)  # 改為64
+    dense1 = Dense(64, activation='relu')(x)
     dense1 = BatchNormalization()(dense1)
-    dense2 = Dense(64, activation='relu')(dense1)  # 保持64
+    dense2 = Dense(64, activation='relu')(dense1)
     dense2 = BatchNormalization()(dense2)
-    dense2 = Add()([dense1, dense2])  # 現在都是64維
+    dense2 = Add()([dense1, dense2])
     
     output_layer = Dense(1, activation='sigmoid')(dense2)
     
@@ -836,125 +812,12 @@ def build_model(input_shape):
     
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.00025),
-        loss=loss_wrapper,  # 使用時間差異損失
+        loss=loss_wrapper,
         metrics=['accuracy', 'recall', 'precision']
     )
     
     return model
 
-# 修改原本的數據載入部分
-try:
-    # 使用總和值進行訓練 
-    sequences, labels = load_and_process_data(
-        INPUT_DATA_PATH,
-        use_sum_only=SUM_ONLY,
-        apply_balancing=APPLY_BALANCING,
-        pos_to_neg_ratio=POS_TO_NEG_RATIO
-    )
-
-    sys.exit()
-    X = np.array(sequences)
-    y = np.array(labels)
-    print(f"特徵形狀: {X.shape}")
-    print(f"標籤形狀: {y.shape}")
-
-    print(f"X: {X}")
-    print(f"y: {y}")
-except Exception as e:
-    print(f"數據處理錯誤: {e}")
-    raise
-
-# 分割訓練和測試集
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
-
-# 創建日誌目錄
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# 定義檔案路徑
-model_checkpoint_path = os.path.join(LOG_DIR, 'model-{epoch:02d}-{val_accuracy:.4f}.keras')
-training_log_path = os.path.join(LOG_DIR, TRAINING_LOG_PATH)
-final_model_path = os.path.join(LOG_DIR, FINAL_MODEL_PATH)
-training_history_path = os.path.join(LOG_DIR, TRAINING_HISTORY_PATH)
-
-# 建立模型
-model = build_model((WINDOW_SIZE, X_train.shape[2]))
-
-# 生成完整的時間戳序列
-timestamps = np.arange(len(X))  # 使用完整數據集的長度
-
-# 分割訓練集和測試集的時間戳
-train_timestamps = timestamps[:len(X_train)]
-test_timestamps = timestamps[len(X_train):]
-
-# 設置回調
-callbacks = [
-    EarlyStopping(
-        monitor='val_loss',  # 改為監控val_loss
-        patience=25,         # 增加耐心值
-        restore_best_weights=True,
-        mode='min'
-    ),
-    ModelCheckpoint(
-        filepath=model_checkpoint_path,
-        monitor='val_accuracy',
-        save_best_only=True,
-        mode='max'
-    ),
-    CSVLogger(training_log_path),
-    EventEvaluationCallback(
-        validation_data=(X_test, y_test),
-        timestamps=test_timestamps  # 使用測試集的時間戳
-    )
-]
-
-# 調整batch size和epochs
-history = model.fit(
-    X_train, y_train,
-    epochs=15,          # 增加epochs
-    batch_size=48,      # 調整batch size
-    validation_split=0.2,
-    class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
-    callbacks=callbacks,
-    verbose=1
-)
-
-# 評估模型
-test_metrics, best_threshold, target_lead = evaluate_predictions(y_test, model.predict(X_test), test_timestamps, find_best_threshold=FIND_BEST_THRESHOLD)
-
-print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
-print(f"detections: {test_metrics['detections']} / {test_metrics['detections'] + test_metrics['missed_events']}")
-print(f"early_detections: {test_metrics['early_detections']}")
-print(f"late_detections: {test_metrics['late_detections']}")
-print(f"missed_events: {test_metrics['missed_events']}")
-print(f"false_alarms: {test_metrics['false_alarms']}")
-
-# 計算並顯示時間差異統計
-if test_metrics['early_time_diffs']:
-    avg_early_time = np.mean(test_metrics['early_time_diffs'])
-    print(f"平均提前時間: {avg_early_time:.2f} 秒 (目標: {target_lead:.1f} 秒)")
-    print(f"提前檢測率: {(test_metrics['early_detections'] / max(test_metrics['detections'], 1)) * 100:.2f}%")
-    
-    # 計算時間準確率（使用秒數範圍）
-    time_diff_seconds = abs(avg_early_time - target_lead)
-    if time_diff_seconds <= 3:  # 在目標時間±3秒範圍內
-        time_accuracy = 100.0
-    else:
-        # 超出範圍，根據秒數差距計算準確性（百分比）
-        time_accuracy = max(0, 100.0 * (1.0 - (time_diff_seconds - 3) / 7))
-    
-    print(f"時間準確率: {time_accuracy:.2f}% (±3秒內為100%)")
-else:
-    print("沒有提前檢測記錄")
-
-if test_metrics['late_time_diffs']:
-    avg_late_time = np.mean(test_metrics['late_time_diffs'])
-    print(f"平均延遲時間: {avg_late_time:.2f} 秒")
-    print(f"延遲檢測率: {(test_metrics['late_detections'] / max(test_metrics['detections'], 1)) * 100:.2f}%")
-
-# 保存最終模型
-model.save(final_model_path)
-
-# 繪製時間軸上的事件對比圖
 def plot_event_timeline(y_true, y_pred, timestamps, threshold=0.9):
     """
     繪製時間軸上的事件對比圖，顯示實際事件與預測事件
@@ -1067,10 +930,6 @@ def plot_event_timeline(y_true, y_pred, timestamps, threshold=0.9):
     print(f"事件時間軸對比圖已保存至: {event_timeline_path}")
     plt.close()
 
-# 繪製測試集上的事件時間軸對比圖
-plot_event_timeline(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
-
-# 繪製詳細的事件時間差異對比圖
 def plot_event_time_differences(y_true, y_pred, timestamps, threshold=0.9):
     """
     繪製詳細的事件時間差異對比圖，展示每個事件的預測時間與實際時間的差異
@@ -1265,10 +1124,14 @@ def plot_event_time_differences(y_true, y_pred, timestamps, threshold=0.9):
     stats_text += f"總事件數: {len(matched_events)}\n"
     stats_text += f"提前預測: {early_count} (平均提前 {avg_early_time:.2f}秒)\n"
     stats_text += f"延遲預測: {late_count} (平均延遲 {avg_late_time:.2f}秒)\n"
-    stats_text += f"漏報: {missed_count}\n"
-    stats_text += f"誤報: {false_count}"
     
-    plt.figtext(0.02, 0.97, stats_text, fontsize=10, va='top', 
+    if early_diffs:
+        target_diffs = [abs(abs(diff) - target_lead_time) for diff in early_diffs]
+        accurate_count = sum(1 for diff in target_diffs if diff <= 3)
+        accuracy_rate = (accurate_count / len(target_diffs)) * 100 if target_diffs else 0
+        stats_text += f"目標時間準確率: {accuracy_rate:.1f}% (±3秒內)"
+    
+    plt.figtext(0.5, 0.01, stats_text, fontsize=10, ha='center', 
                 bbox=dict(facecolor='white', alpha=0.8))
     
     # 保存圖表
@@ -1278,11 +1141,6 @@ def plot_event_time_differences(y_true, y_pred, timestamps, threshold=0.9):
     print(f"事件時間差異對比圖已保存至: {time_diff_path}")
     plt.close()
 
-# 繪製詳細的事件時間差異對比圖
-y_test_pred = model.predict(X_test)
-plot_event_time_differences(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
-
-# 繪製預測準確度隨時間變化的趨勢圖
 def plot_prediction_accuracy_trend(y_true, y_pred, timestamps, threshold=0.9, window_size=50):
     """
     繪製預測準確度隨時間變化的趨勢圖
@@ -1377,11 +1235,6 @@ def plot_prediction_accuracy_trend(y_true, y_pred, timestamps, threshold=0.9, wi
     print(f"預測準確度趨勢圖已保存至: {accuracy_trend_path}")
     plt.close()
 
-# 使用不同窗口大小繪製準確度趨勢圖
-for window_size in [20, 50, 100]:
-    plot_prediction_accuracy_trend(y_test, y_test_pred, test_timestamps, threshold=best_threshold, window_size=window_size)
-
-# 繪製預測時間差異分布圖
 def plot_prediction_time_diff_distribution(y_true, y_pred, timestamps, threshold=0.9):
     """
     繪製預測時間差異的分布圖，包括直方圖和箱型圖
@@ -1566,8 +1419,8 @@ def plot_prediction_time_diff_distribution(y_true, y_pred, timestamps, threshold
     
     stats_text = f"統計資訊:\n"
     stats_text += f"總檢測數: {total_count}\n"
-    stats_text += f"提前預測: {early_count} ({(early_count/total_count*100):.1f}%), 平均提前 {avg_early_time:.2f}秒\n"
-    stats_text += f"延遲預測: {late_count} ({(late_count/total_count*100):.1f}%), 平均延遲 {avg_late_time:.2f}秒\n"
+    stats_text += f"提前預測: {early_count} (平均提前 {avg_early_time:.2f}秒)\n"
+    stats_text += f"延遲預測: {late_count} (平均延遲 {avg_late_time:.2f}秒)\n"
     
     if early_diffs:
         target_diffs = [abs(abs(diff) - target_lead_time) for diff in early_diffs]
@@ -1585,10 +1438,6 @@ def plot_prediction_time_diff_distribution(y_true, y_pred, timestamps, threshold
     print(f"預測時間差異分布圖已保存至: {time_diff_dist_path}")
     plt.close()
 
-# 繪製預測時間差異分布圖
-plot_prediction_time_diff_distribution(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
-
-# 生成簡潔的評估報告
 def generate_evaluation_summary(y_true, y_pred, timestamps, threshold=0.9):
     """生成簡潔的評估摘要報告"""
     # 直接使用與評估函數相同的二值化邏輯
@@ -1644,33 +1493,168 @@ def generate_evaluation_summary(y_true, y_pred, timestamps, threshold=0.9):
     print(f"評估摘要已保存至: {report_path}")
     return metrics
 
-# 生成評估報告
-evaluation_summary = generate_evaluation_summary(y_test, y_test_pred, test_timestamps, threshold=best_threshold)
+# 修改原本的數據載入部分
+try:
+    # 使用總和值進行訓練 
+    sequences, labels, event_binary, feature_names = load_and_process_data(
+        INPUT_DATA_PATH,
+        apply_balancing=APPLY_BALANCING,
+        pos_to_neg_ratio=POS_TO_NEG_RATIO
+    )
 
-# 可視化訓練過程
-plt.figure(figsize=(12, 4))
+    print(f"sequences shape: {np.shape(sequences)}")
+    print(f"labels shape: {np.shape(labels)}")
+    print(f"event_binary shape: {np.shape(event_binary)}")
+    print(f"feature_names: {feature_names}")   
+    print(f"總共有 {np.sum(event_binary)} 個離床事件") 
 
-# 繪製準確率
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Training Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.title('Model Accuracy')
-plt.xlabel('Epoch')
-plt.ylabel('Accuracy')
-plt.legend()
+    sys.exit()
 
-# 繪製損失
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.title('Model Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
+    X = np.array(sequences)
+    y = np.array(labels)
+    print(f"特徵形狀: {X.shape}")
+    print(f"標籤形狀: {y.shape}")
+    print(f"特徵名稱: {feature_names}")
 
-plt.tight_layout()
-plt.savefig(training_history_path)
-plt.close()
+    # 分割訓練和測試集
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
+
+    # 重塑數據為 (samples, timesteps, features) 格式
+    # 使用 WINDOW_SIZE 作為時間步長
+    X_train = X_train.reshape((X_train.shape[0], 1, X_train.shape[1]))
+    X_test = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+
+    # 創建日誌目錄
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # 定義檔案路徑
+    model_checkpoint_path = os.path.join(LOG_DIR, 'model-{epoch:02d}-{val_accuracy:.4f}.keras')
+    training_log_path = os.path.join(LOG_DIR, TRAINING_LOG_PATH)
+    final_model_path = os.path.join(LOG_DIR, FINAL_MODEL_PATH)
+    training_history_path = os.path.join(LOG_DIR, TRAINING_HISTORY_PATH)
+
+    # 建立模型
+    model = build_model((X_train.shape[1], X_train.shape[2]))
+
+    # 生成完整的時間戳序列
+    timestamps = np.arange(len(X))  # 使用完整數據集的長度
+
+    # 分割訓練集和測試集的時間戳
+    train_timestamps = timestamps[:len(X_train)]
+    test_timestamps = timestamps[len(X_train):]
+
+    # 設置回調
+    callbacks = [
+        EarlyStopping(
+            monitor='val_loss',  # 改為監控val_loss
+            patience=25,         # 增加耐心值
+            restore_best_weights=True,
+            mode='min'
+        ),
+        ModelCheckpoint(
+            filepath=model_checkpoint_path,
+            monitor='val_accuracy',
+            save_best_only=True,
+            mode='max'
+        ),
+        CSVLogger(training_log_path),
+        EventEvaluationCallback(
+            validation_data=(X_test, y_test),
+            timestamps=test_timestamps  # 使用測試集的時間戳
+        )
+    ]
+
+    # 調整batch size和epochs
+    history = model.fit(
+        X_train, y_train,
+        epochs=15,          # 增加epochs
+        batch_size=48,      # 調整batch size
+        validation_split=0.2,
+        class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
+        callbacks=callbacks,
+        verbose=1
+    )
+
+    # 評估模型
+    test_metrics, best_threshold, target_lead = evaluate_predictions(y_test, model.predict(X_test), test_timestamps, find_best_threshold=FIND_BEST_THRESHOLD)
+
+    print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
+    print(f"detections: {test_metrics['detections']} / {test_metrics['detections'] + test_metrics['missed_events']}")
+    print(f"early_detections: {test_metrics['early_detections']}")
+    print(f"late_detections: {test_metrics['late_detections']}")
+    print(f"missed_events: {test_metrics['missed_events']}")
+    print(f"false_alarms: {test_metrics['false_alarms']}")
+
+    # 計算並顯示時間差異統計
+    if test_metrics['early_time_diffs']:
+        avg_early_time = np.mean(test_metrics['early_time_diffs'])
+        print(f"平均提前時間: {avg_early_time:.2f} 秒 (目標: {target_lead:.1f} 秒)")
+        print(f"提前檢測率: {(test_metrics['early_detections'] / max(test_metrics['detections'], 1)) * 100:.2f}%")
+        
+        # 計算時間準確率（使用秒數範圍）
+        time_diff_seconds = abs(avg_early_time - target_lead)
+        if time_diff_seconds <= 3:  # 在目標時間±3秒範圍內
+            time_accuracy = 100.0
+        else:
+            # 超出範圍，根據秒數差距計算準確性（百分比）
+            time_accuracy = max(0, 100.0 * (1.0 - (time_diff_seconds - 3) / 7))
+        
+        print(f"時間準確率: {time_accuracy:.2f}% (±3秒內為100%)")
+    else:
+        print("沒有提前檢測記錄")
+
+    if test_metrics['late_time_diffs']:
+        avg_late_time = np.mean(test_metrics['late_time_diffs'])
+        print(f"平均延遲時間: {avg_late_time:.2f} 秒")
+        print(f"延遲檢測率: {(test_metrics['late_detections'] / max(test_metrics['detections'], 1)) * 100:.2f}%")
+
+    # 保存最終模型
+    model.save(final_model_path)
+
+    # 繪製時間軸上的事件對比圖
+    plot_event_timeline(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+
+    # 繪製詳細的事件時間差異對比圖
+    plot_event_time_differences(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+
+    # 使用不同窗口大小繪製準確度趨勢圖
+    for window_size in [20, 50, 100]:
+        plot_prediction_accuracy_trend(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold, window_size=window_size)
+
+    # 繪製預測時間差異分布圖
+    plot_prediction_time_diff_distribution(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+
+    # 生成評估報告
+    evaluation_summary = generate_evaluation_summary(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+
+    # 可視化訓練過程
+    plt.figure(figsize=(12, 4))
+
+    # 繪製準確率
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title('Model Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # 繪製損失
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Model Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(training_history_path)
+    plt.close()
+
+except Exception as e:
+    print(f"數據處理錯誤: {e}")
+    raise
 
 
 
