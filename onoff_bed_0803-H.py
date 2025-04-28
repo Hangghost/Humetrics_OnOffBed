@@ -1117,8 +1117,17 @@ def OpenCmbFile():
         data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
         data_dict['OnBed_Status'] = onbed
         
-        # 轉換為DataFrame並保存
+        # 轉換為DataFrame
         df = pd.DataFrame(data_dict)
+        
+        # 設定時間範圍
+        start_time = pd.Timestamp('2025-04-27 12:00:00+08:00')
+        end_time = pd.Timestamp('2025-04-28 12:00:00+08:00')
+        
+        # 過濾時間範圍內的資料
+        df = df[(df['DateTime'] >= start_time) & (df['DateTime'] <= end_time)]
+        
+        # 保存過濾後的資料
         df.to_csv(csv_filepath, index=False)
         
         # 儲存參數設定
@@ -1398,6 +1407,14 @@ def update_bit_plot():
     onload_avg = np.sum(onbed * onload_sum) / np.sum(onbed)
     bit_plot_sum = bit_plot.plot(t1sec, onload_sum-7.5, fillLevel=-7.5, brush=pg.mkBrush(color=(100,100,100)), pen=None, name='SUM')
     bit_plot_onff = bit_plot.plot(t1sec, onbed - 8.5, fillLevel=-7.5, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[0])), pen=None, name='OFFBED')
+    
+    # 添加「預測離床」顯示選項（使用假數據）
+    # 創建與onbed相似但稍有偏差的假預測數據
+    predicted_offbed = np.copy(onbed)
+    # 在某些區間添加偏差以模擬預測誤差
+    predicted_offbed[::50] = 1 - predicted_offbed[::50]  # 每50個數據點反轉一次，製造預測與實際的差異
+    bit_plot_pred_offbed = bit_plot.plot(t1sec, predicted_offbed - 9.5, fillLevel=-7.5, 
+                                        brush=pg.mkBrush(color=(255,150,0,150)), pen=None, name='PREDICT OFFBED')
 
     bit_plot_ch = []
     for ch in range(6):
