@@ -75,6 +75,10 @@ DATA_DIR = "./_data/pyqt_viewer"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
+TRAIN_DATA_DIR = "./_data/pyqt_viewer/training"
+if not os.path.exists(TRAIN_DATA_DIR):
+    os.makedirs(TRAIN_DATA_DIR)
+
 #--------------------------------------------------------------------------
 class CustomViewBox(pg.ViewBox):
     def __init__(self, *args, **kwargs):
@@ -1370,16 +1374,16 @@ def update_raw_plot():
 
 #-----------------------------------------------------------------------
 def update_bit_plot():
+    global bit_plot_sum
+    global bit_plot_ch
+    global bit_plot_onff
+    global bit_plot_pred_offbed
+    global predicted_offbed
     global onload
     global onbed
-    #global bit_plot_label
     global t1sec
     global idx1sec
-
-    global bit_plot_ch
-    global bit_plot_sum
-    global bit_plot_onff
-
+    
     try:
         t1sec
     except NameError:
@@ -1392,7 +1396,9 @@ def update_bit_plot():
     for ch in range(6):
         onload[ch] = onload[ch][idx1sec]
     onbed = onbed[idx1sec]
+
     # --------------------------------------------------------------------
+    
     # Save show / hide settings
     isVisible = []
     try:
@@ -1408,13 +1414,10 @@ def update_bit_plot():
     bit_plot_sum = bit_plot.plot(t1sec, onload_sum-7.5, fillLevel=-7.5, brush=pg.mkBrush(color=(100,100,100)), pen=None, name='SUM')
     bit_plot_onff = bit_plot.plot(t1sec, onbed - 8.5, fillLevel=-7.5, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[0])), pen=None, name='OFFBED')
     
-    # 添加「預測離床」顯示選項（使用假數據）
-    # 創建與onbed相似但稍有偏差的假預測數據
-    predicted_offbed = np.copy(onbed)
-    # 在某些區間添加偏差以模擬預測誤差
-    predicted_offbed[::50] = 1 - predicted_offbed[::50]  # 每50個數據點反轉一次，製造預測與實際的差異
-    bit_plot_pred_offbed = bit_plot.plot(t1sec, predicted_offbed - 9.5, fillLevel=-7.5, 
-                                        brush=pg.mkBrush(color=(255,150,0,150)), pen=None, name='PREDICT OFFBED')
+    # 初始化預測離床變數，但不產生模擬數據，之後由OpenCsvFile讀取實際資料
+    predicted_offbed = np.zeros_like(onbed)
+    # 初始化繪圖對象，但暫不繪製，等待真實數據載入
+    bit_plot_pred_offbed = None
 
     bit_plot_ch = []
     for ch in range(6):
@@ -1819,6 +1822,85 @@ def OpenJsonFile():
         status_bar.showMessage(f"載入 JSON 檔案時發生錯誤: {str(e)}")
         QApplication.processEvents()
 
+def OpenCsvFile():
+    global csv_path, predicted_offbed, bit_plot_pred_offbed, onbed
+    
+    # 獲取SN和時間範圍
+    sn = iCueSN.text()
+    start_time_str = start_time.text()
+    end_time_str = end_time.text()
+    
+    # 解析時間字符串
+    start_date = start_time_str[:8]  # 取得 YYYYMMDD
+    start_time_value = start_time_str[9:15]  # 取得 HHMMSS
+    end_date = end_time_str[:8]  # 取得 YYYYMMDD
+    end_time_value = end_time_str[9:15]  # 取得 HHMMSS
+    
+    # 構建CSV檔案名稱
+    csv_filename = f"cleaned_{sn}_{start_date}_{start_time_value[:2]}_{end_date}_{end_time_value[:2]}_data_processed.csv"
+    csv_path = os.path.join(TRAIN_DATA_DIR, csv_filename)
+    
+    # 檢查檔案是否存在
+    if not os.path.exists(csv_path):
+        csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, 
+            "選擇 CSV 檔案", 
+            TRAIN_DATA_DIR,
+            "CSV files (*.csv)"
+        )
+        
+    if not csv_path:
+        return
+    
+    try:
+        # 讀取 CSV 檔案
+        df = pd.read_csv(csv_path)
+        
+        # 檢查是否有event_binary欄位
+        if 'event_binary' not in df.columns:
+            status_bar.showMessage(f"CSV 檔案中找不到 event_binary 欄位")
+            QApplication.processEvents()
+            return
+        
+        # 獲取event_binary數據
+        event_binary = df['event_binary'].values
+        
+        # 更新predicted_offbed數據
+        if 'bit_plot_pred_offbed' in globals() and bit_plot_pred_offbed is not None:
+            bit_plot_pred_offbed.clear()
+        
+        # 對齊數據到正確的時間位置 - 處理時間偏移問題
+        # 計算時間偏移量 - 假設第一個數據點對應於原始數據的第一天的12:00:00
+        first_day_timestamp = startday + timedelta(hours=12)  # 第一天的12:00:00
+        
+        # 計算第一個CSV數據點對應到原始時間向量t1sec中的索引
+        csv_start_time_seconds = (first_day_timestamp - startday).total_seconds()
+        start_index = np.searchsorted(t1sec, csv_start_time_seconds)
+        
+        # 創建與t1sec相同長度的臨時陣列
+        aligned_data = np.zeros_like(t1sec)
+        
+        # 將event_binary數據填充到正確的位置
+        if start_index < len(t1sec):
+            # 計算可以放入的數據長度
+            data_length = min(len(event_binary), len(t1sec) - start_index)
+            aligned_data[start_index:start_index + data_length] = event_binary[:data_length]
+        
+        # 替換預測離床數據
+        predicted_offbed = aligned_data
+        
+        # 使用線條繪製，而非填充區域
+        pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
+        bit_plot_pred_offbed = bit_plot.plot(t1sec, predicted_offbed - 9.5, 
+                                           pen=pen, name='PREDICT OFFBED')
+        
+        status_bar.showMessage(f"已成功載入CSV檔案: {os.path.basename(csv_path)}")
+        QApplication.processEvents()
+    except Exception as e:
+        status_bar.showMessage(f"載入 CSV 檔案時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+
+        
 def calculate_rising_dist(dist, log_file=None):
     """計算翻身指標的輔助函數
     
@@ -2348,6 +2430,9 @@ check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
 json_button = QtWidgets.QPushButton("開啟 JSON")
 json_button.clicked.connect(OpenJsonFile)
 
+csv_button = QtWidgets.QPushButton("開啟 CSV")
+csv_button.clicked.connect(OpenCsvFile)
+
 # 標記相關按鈕
 marker_btn = QPushButton('開始標記')
 marker_btn.clicked.connect(toggle_marker)
@@ -2464,6 +2549,7 @@ marker_row_layout.setAlignment(QtCore.Qt.AlignLeft)  # 設置按鈕靠左對齊
 # 移除這些行，看起來重複的按鈕
 marker_row_layout.addWidget(check_get_para)
 marker_row_layout.addWidget(json_button)
+marker_row_layout.addWidget(csv_button)
 
 marker_row_layout.addWidget(marker_btn)
 marker_row_layout.addWidget(marker_type_combo)

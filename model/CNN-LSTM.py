@@ -44,7 +44,8 @@ STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 WARNING_TIME = 15  # 設定單一預警時間（秒）
 
 # INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
-INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2024PA000329_20250420_03_20250421_04_data.csv"
+# INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2024PA000329_20250420_03_20250421_04_data.csv"
+INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250427_03_20250428_04_data.csv"
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
@@ -288,7 +289,7 @@ def balance_samples(df_features, event_labels, window_size=WINDOW_SIZE, step_siz
     return sequences, labels
 
 def create_sequences(df, cleaned_data_path, apply_balancing=APPLY_BALANCING, pos_to_neg_ratio=POS_TO_NEG_RATIO):
-    """修改後的序列創建函數，使用完整時間序列"""
+    """修改後的序列創建函數，使用固定長度的時間序列"""
     # 增強特徵工程
     df['Raw_sum'] = df[[f'Channel_{i}_Raw' for i in range(1, 7)]].sum(axis=1)
     df['Noise_max'] = df[[f'Channel_{i}_Noise' for i in range(1, 7)]].max(axis=1)
@@ -329,6 +330,24 @@ def create_sequences(df, cleaned_data_path, apply_balancing=APPLY_BALANCING, pos
     # 轉換為數組時保留欄位名稱資訊
     sequences = df_features.values.astype('float64')
     labels = df['event_binary'].values
+    
+    print(f"============序列長度: {len(sequences)}")
+
+    # 確保序列長度為86400
+    if len(sequences) < 86401:
+        # 使用零填充
+        padding = np.zeros((86401 - len(sequences), sequences.shape[1]))
+        sequences = np.vstack([sequences, padding])
+        labels = np.pad(labels, (0, 86401 - len(labels)), 'constant')
+        print(f"已填充序列長度: {len(sequences)}")
+
+    elif len(sequences) > 86401:
+        # 直接截斷超過的部分
+        print(f"序列長度超過86400，直接截斷多餘部分")
+        sequences = sequences[:86401]
+        labels = labels[:86401]
+        print(f"已截斷序列長度: {len(sequences)}")
+        print(f"已截斷序列標籤長度: {len(labels)}")
     
     # 保存處理後的數據
     save_processed_sequences(sequences, labels, cleaned_data_path, feature_names, df['event_binary'].values)
