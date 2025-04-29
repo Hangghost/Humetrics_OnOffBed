@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization, Multiply, Bidirectional, Add, Concatenate
+from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D, LSTM, BatchNormalization, Multiply, Bidirectional, Add, Concatenate, UpSampling1D
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping
 from tensorflow.keras.layers import Input
 from sklearn.model_selection import train_test_split
@@ -34,11 +34,6 @@ if not font_found:
 
 # 設定隨機種子
 np.random.seed(1337)
-
-# 設定參數
-WINDOW_SIZE = 15  # 15秒的窗口
-OVERLAP = 0.8    # 80% 重疊
-STEP_SIZE = int(WINDOW_SIZE * (1 - OVERLAP))  # 滑動步長
 
 # 修改預警時間設定
 WARNING_TIME = 15  # 設定單一預警時間（秒）
@@ -78,7 +73,11 @@ class EventEvaluationCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         x_val, y_val = self.validation_data
         y_pred = self.model.predict(x_val)
-        metrics, threshold, target_lead = evaluate_predictions(y_val, y_pred, self.timestamps, find_best_threshold=False)
+        
+        # 調整預測的形狀，將(samples, 1)壓平為(samples,)
+        y_pred_flat = y_pred.flatten()
+        
+        metrics, threshold, target_lead = evaluate_predictions(y_val, y_pred_flat, self.timestamps, find_best_threshold=False)
         
         if metrics is not None:
             # 計算平均提前時間
@@ -232,61 +231,6 @@ def detect_bed_events(df):
     df['event_binary'] = event_binary
     
     return df
-
-def balance_samples(df_features, event_labels, window_size=WINDOW_SIZE, step_size=STEP_SIZE, pos_to_neg_ratio=2):
-    """
-    收集和平衡正負樣本的比例
-    
-    參數:
-    - df_features: 特徵資料框
-    - event_labels: 事件標籤列表
-    - window_size: 滑動窗口大小
-    - step_size: 滑動步長
-    - pos_to_neg_ratio: 負樣本數量與正樣本數量的比例，默認為2
-    
-    返回:
-    - 平衡後的特徵序列列表和標籤列表
-    """
-    # 分別收集正負樣本（正樣本包括所有標籤 >= 0.5 的樣本）
-    positive_sequences = []
-    positive_labels = []
-    negative_sequences = []
-    negative_labels = []
-    
-    for i in range(0, len(df_features) - window_size + 1, step_size):
-        window = df_features.iloc[i:(i + window_size)]
-        label = event_labels[i + window_size - 1]
-        
-        if label >= 0.5:  # 所有標籤 >= 0.5 都視為正樣本
-            positive_sequences.append(window.values.astype('float64'))
-            positive_labels.append(label)
-        else:
-            negative_sequences.append(window.values.astype('float64'))
-            negative_labels.append(label)
-    
-    print(f"收集到正樣本: {len(positive_sequences)}個, 負樣本: {len(negative_sequences)}個")
-    
-    # 對負樣本進行下採樣
-    neg_sample_size = len(positive_sequences) * pos_to_neg_ratio
-    
-    # 只有當負樣本數量超過所需數量時才進行下採樣
-    if len(negative_sequences) > neg_sample_size:
-        indices = np.random.choice(len(negative_sequences), neg_sample_size, replace=False)
-        negative_sequences = [negative_sequences[i] for i in indices]
-        negative_labels = [negative_labels[i] for i in indices]
-        print(f"下採樣後的負樣本數量: {len(negative_sequences)}個")
-    
-    # 合併正負樣本
-    sequences = positive_sequences + negative_sequences
-    labels = positive_labels + negative_labels
-    
-    # 打亂順序
-    combined = list(zip(sequences, labels))
-    np.random.shuffle(combined)
-    sequences, labels = zip(*combined)
-    
-    print(f"最終樣本數量: {len(sequences)}個")
-    return sequences, labels
 
 def create_sequences(df, cleaned_data_path, apply_balancing=APPLY_BALANCING, pos_to_neg_ratio=POS_TO_NEG_RATIO):
     """修改後的序列創建函數，使用固定長度的時間序列"""
@@ -793,46 +737,67 @@ def pure_time_difference_loss(y_true, y_pred, target_lead_time=WARNING_TIME/2):
     return tf.reduce_mean(weighted_loss)
 
 def build_model(input_shape):
+    """
+    構建用於處理完整時間序列的模型
+    
+    參數:
+    - input_shape: 輸入數據的形狀，例如 (time_steps, features)
+    
+    返回:
+    - 構建好的模型
+    """
     input_layer = Input(shape=input_shape)
     
-    # 修改 CNN 層的配置
-    conv1 = Conv1D(64, kernel_size=1, padding='same', activation='relu')(input_layer)
+    # CNN層用於特徵提取
+    conv1 = Conv1D(64, kernel_size=5, padding='same', activation='relu')(input_layer)
     conv1 = BatchNormalization()(conv1)
-    conv2 = Conv1D(64, kernel_size=1, padding='same', activation='relu')(conv1)
+    
+    # 二級CNN層
+    conv2 = Conv1D(64, kernel_size=5, padding='same', activation='relu')(conv1)
     conv2 = BatchNormalization()(conv2)
     conv2 = Add()([conv1, conv2])
     
-    # 移除 MaxPooling1D 層，因為我們只有一個時間步長
-    x = Dropout(0.25)(conv2)
+    # 使用MaxPooling減少序列長度，提高計算效率
+    # 檢查輸入維度，確保池化大小不會太大
+    # 根據輸入形狀動態調整池化大小
+    pool_size = min(4, input_shape[0] // 2)  # 確保池化大小不超過序列長度的一半
+    if pool_size > 0:
+        x = MaxPooling1D(pool_size=pool_size)(conv2)
+    else:
+        x = conv2  # 如果無法池化，直接使用卷積輸出
+    x = Dropout(0.25)(x)
     
-    # LSTM層保持不變
-    x = Bidirectional(LSTM(320, return_sequences=True))(x)
+    # 多層雙向LSTM用於捕獲時間依賴關係
+    x = Bidirectional(LSTM(128, return_sequences=True))(x)
     x = BatchNormalization()(x)
     x = Dropout(0.25)(x)
     
-    x = Bidirectional(LSTM(160))(x)
+    # 第二層LSTM
+    x = Bidirectional(LSTM(64, return_sequences=True))(x)
     x = BatchNormalization()(x)
     x = Dropout(0.25)(x)
     
-    # 確保密集層的維度匹配
-    dense1 = Dense(64, activation='relu')(x)
-    dense1 = BatchNormalization()(dense1)
-    dense2 = Dense(64, activation='relu')(dense1)
-    dense2 = BatchNormalization()(dense2)
-    dense2 = Add()([dense1, dense2])
+    # 第三層LSTM
+    x = Bidirectional(LSTM(32, return_sequences=False))(x)  # 設置為False，不返回序列
+    x = BatchNormalization()(x)
+    x = Dropout(0.25)(x)
     
-    output_layer = Dense(1, activation='sigmoid')(dense2)
+    # 使用Dense層將特徵壓縮到單一輸出
+    x = Dense(16, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.1)(x)
+    
+    # 輸出層
+    output_layer = Dense(1, activation='sigmoid')(x)
     
     model = Model(inputs=input_layer, outputs=output_layer)
     
-    # 使用純時間差異損失函數
-    def loss_wrapper(y_true, y_pred):
-        return pure_time_difference_loss(y_true, y_pred, target_lead_time=WARNING_TIME/2)
-    
+    # 編譯模型，使用二元交叉熵損失函數
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.00025),
-        loss=loss_wrapper,
-        metrics=['accuracy', 'recall', 'precision']
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        loss='binary_crossentropy',
+        metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
+                 tf.keras.metrics.AUC()]
     )
     
     return model
@@ -1527,8 +1492,6 @@ try:
     print(f"feature_names: {feature_names}")   
     print(f"總共有 {np.sum(event_binary)} 個離床事件") 
 
-    sys.exit()
-
     X = np.array(sequences)
     y = np.array(labels)
     print(f"特徵形狀: {X.shape}")
@@ -1539,9 +1502,14 @@ try:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=80)
 
     # 重塑數據為 (samples, timesteps, features) 格式
-    # 使用 WINDOW_SIZE 作為時間步長
-    X_train = X_train.reshape((X_train.shape[0], 1, X_train.shape[1]))
-    X_test = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+    # 原來的方式會導致timesteps只有1，改為使用原始特徵作為時間序列
+    X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+    X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+
+    # 標籤已經是扁平的形狀 (samples,)，無需重塑
+    # 移除之前的重塑代碼
+    # y_train = y_train.reshape((y_train.shape[0], 1, 1))
+    # y_test = y_test.reshape((y_test.shape[0], 1, 1))
 
     # 創建日誌目錄
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -1586,7 +1554,7 @@ try:
     # 調整batch size和epochs
     history = model.fit(
         X_train, y_train,
-        epochs=15,          # 增加epochs
+        epochs=1,          # 增加epochs
         batch_size=48,      # 調整batch size
         validation_split=0.2,
         class_weight={0: 1.0, 1: 2.5},  # 微調類別權重
@@ -1595,7 +1563,14 @@ try:
     )
 
     # 評估模型
-    test_metrics, best_threshold, target_lead = evaluate_predictions(y_test, model.predict(X_test), test_timestamps, find_best_threshold=FIND_BEST_THRESHOLD)
+    test_pred = model.predict(X_test)
+
+    print(f"test_pred shape: {np.shape(test_pred)}")
+
+
+    # 預測結果已經是扁平的 (samples, 1)，僅需將其進一步壓平
+    test_pred_flat = test_pred.flatten()
+    test_metrics, best_threshold, target_lead = evaluate_predictions(y_test, test_pred_flat, test_timestamps, find_best_threshold=FIND_BEST_THRESHOLD)
 
     print(f"\n使用最佳閾值 {best_threshold:.2f} 的測試指標:")
     print(f"detections: {test_metrics['detections']} / {test_metrics['detections'] + test_metrics['missed_events']}")
@@ -1631,20 +1606,20 @@ try:
     model.save(final_model_path)
 
     # 繪製時間軸上的事件對比圖
-    plot_event_timeline(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+    plot_event_timeline(y_test, test_pred_flat, test_timestamps, threshold=best_threshold)
 
     # 繪製詳細的事件時間差異對比圖
-    plot_event_time_differences(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+    plot_event_time_differences(y_test, test_pred_flat, test_timestamps, threshold=best_threshold)
 
     # 使用不同窗口大小繪製準確度趨勢圖
     for window_size in [20, 50, 100]:
-        plot_prediction_accuracy_trend(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold, window_size=window_size)
+        plot_prediction_accuracy_trend(y_test, test_pred_flat, test_timestamps, threshold=best_threshold, window_size=window_size)
 
     # 繪製預測時間差異分布圖
-    plot_prediction_time_diff_distribution(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+    plot_prediction_time_diff_distribution(y_test, test_pred_flat, test_timestamps, threshold=best_threshold)
 
     # 生成評估報告
-    evaluation_summary = generate_evaluation_summary(y_test, model.predict(X_test), test_timestamps, threshold=best_threshold)
+    evaluation_summary = generate_evaluation_summary(y_test, test_pred_flat, test_timestamps, threshold=best_threshold)
 
     # 可視化訓練過程
     plt.figure(figsize=(12, 4))
