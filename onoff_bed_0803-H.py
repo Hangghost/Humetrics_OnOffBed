@@ -1378,6 +1378,7 @@ def update_bit_plot():
     global bit_plot_ch
     global bit_plot_onff
     global bit_plot_pred_offbed
+    global bit_plot_predicted
     global predicted_offbed
     global onload
     global onbed
@@ -1418,6 +1419,7 @@ def update_bit_plot():
     predicted_offbed = np.zeros_like(onbed)
     # 初始化繪圖對象，但暫不繪製，等待真實數據載入
     bit_plot_pred_offbed = None
+    bit_plot_predicted = None
 
     bit_plot_ch = []
     for ch in range(6):
@@ -1862,12 +1864,23 @@ def OpenCsvFile():
             QApplication.processEvents()
             return
         
+        # 檢查是否有Predicted欄位
+        if 'Predicted' not in df.columns:
+            status_bar.showMessage(f"CSV 檔案中找不到 Predicted 欄位")
+            QApplication.processEvents()
+            return
+        
         # 獲取event_binary數據
         event_binary = df['event_binary'].values
+        predicted_binary = df['Predicted'].values
         
         # 更新predicted_offbed數據
         if 'bit_plot_pred_offbed' in globals() and bit_plot_pred_offbed is not None:
             bit_plot_pred_offbed.clear()
+        
+        global bit_plot_predicted
+        if 'bit_plot_predicted' in globals() and bit_plot_predicted is not None:
+            bit_plot_predicted.clear()
         
         # 對齊數據到正確的時間位置 - 處理時間偏移問題
         # 計算時間偏移量 - 假設第一個數據點對應於原始數據的第一天的12:00:00
@@ -1879,12 +1892,17 @@ def OpenCsvFile():
         
         # 創建與t1sec相同長度的臨時陣列
         aligned_data = np.zeros_like(t1sec)
+        aligned_pred_data = np.zeros_like(t1sec)
         
         # 將event_binary數據填充到正確的位置
         if start_index < len(t1sec):
             # 計算可以放入的數據長度
             data_length = min(len(event_binary), len(t1sec) - start_index)
             aligned_data[start_index:start_index + data_length] = event_binary[:data_length]
+            
+            # 將predicted_binary數據填充到正確的位置
+            pred_length = min(len(predicted_binary), len(t1sec) - start_index)
+            aligned_pred_data[start_index:start_index + pred_length] = predicted_binary[:pred_length]
         
         # 替換預測離床數據
         predicted_offbed = aligned_data
@@ -1893,6 +1911,11 @@ def OpenCsvFile():
         pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
         bit_plot_pred_offbed = bit_plot.plot(t1sec, predicted_offbed - 9.5, 
                                            pen=pen, name='PREDICT OFFBED')
+        
+        # 繪製predicted_binary數據 - 使用藍色線條
+        pen_pred = pg.mkPen(color=(70, 130, 255), width=2)  # 使用藍色粗線條
+        bit_plot_predicted = bit_plot.plot(t1sec, aligned_pred_data - 10.5,
+                                          pen=pen_pred, name='PREDICTED DATA')
         
         status_bar.showMessage(f"已成功載入CSV檔案: {os.path.basename(csv_path)}")
         QApplication.processEvents()
