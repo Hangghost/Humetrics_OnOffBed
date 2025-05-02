@@ -14,6 +14,7 @@ import sys
 import matplotlib as mpl
 import matplotlib.font_manager as fm
 import argparse
+import glob
 
 # 查找系統上支援中文的字型
 chinese_fonts = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'SimSun', 'Heiti TC', 'STHeiti', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB']
@@ -39,9 +40,12 @@ np.random.seed(1337)
 # 修改預警時間設定
 WARNING_TIME = 15  # 設定單一預警時間（秒）
 
-# INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
-# INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2024PA000329_20250420_03_20250421_04_data.csv"
-INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250423_03_20250424_04_data.csv"
+# 修改INPUT_DATA_PATH的定義和相關導入
+INPUT_DATA_DIR = "./_data/pyqt_viewer/training"
+INPUT_DATA_PATTERN = "*_data.csv"
+# 待實際執行時才獲取檔案清單
+INPUT_DATA_PATHS = []  # 先設為空，執行時填入
+
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
@@ -1499,25 +1503,61 @@ parser.add_argument('--threshold', type=float, default=0.8, help='預測閾值�
 parser.add_argument('--predict-new', action='store_true', help='只處理新資料並使用現有模型進行預測')
 args = parser.parse_args()
 
-# 修改原本的數據載入部分
+# 在主程式中，修改資料載入部分
 try:
-    # 使用總和值進行訓練 
-    sequences, labels, event_binary, feature_names = load_and_process_data(
-        INPUT_DATA_PATH,
-        apply_balancing=APPLY_BALANCING,
-        pos_to_neg_ratio=POS_TO_NEG_RATIO
-    )
-
-    print(f"sequences shape: {np.shape(sequences)}")
-    print(f"labels shape: {np.shape(labels)}")
-    print(f"event_binary shape: {np.shape(event_binary)}")
-    print(f"feature_names: {feature_names}")   
-    print(f"總共有 {np.sum(event_binary)} 個離床事件") 
-
-    X = np.array(sequences)
-    y = np.array(labels)
-    print(f"特徵形狀: {X.shape}")
-    print(f"標籤形狀: {y.shape}")
+    # 獲取所有符合條件的檔案
+    INPUT_DATA_PATHS = glob.glob(os.path.join(INPUT_DATA_DIR, INPUT_DATA_PATTERN))
+    if not INPUT_DATA_PATHS:
+        print(f"錯誤: 在 {INPUT_DATA_DIR} 目錄下未找到任何符合 {INPUT_DATA_PATTERN} 的檔案")
+        sys.exit(1)
+    
+    print(f"找到 {len(INPUT_DATA_PATHS)} 個資料檔案:")
+    for i, path in enumerate(INPUT_DATA_PATHS):
+        print(f"  {i+1}. {os.path.basename(path)}")
+    
+    # 初始化存儲所有資料的陣列
+    all_sequences = []
+    all_labels = []
+    all_event_binary = []
+    feature_names = None
+    
+    # 逐一處理每個檔案
+    for i, file_path in enumerate(INPUT_DATA_PATHS):
+        print(f"\n處理檔案 {i+1}/{len(INPUT_DATA_PATHS)}: {os.path.basename(file_path)}")
+        
+        # 使用總和值進行訓練 
+        sequences, labels, event_binary, current_feature_names = load_and_process_data(
+            file_path,
+            apply_balancing=APPLY_BALANCING,
+            pos_to_neg_ratio=POS_TO_NEG_RATIO
+        )
+        
+        # 第一個檔案時設定feature_names
+        if feature_names is None:
+            feature_names = current_feature_names
+        # 驗證各檔案的feature_names一致性
+        elif feature_names != current_feature_names:
+            print(f"警告: 檔案 {os.path.basename(file_path)} 的特徵名稱與之前的不一致")
+            print(f"預期: {feature_names}")
+            print(f"實際: {current_feature_names}")
+            # 繼續處理，但可能會導致問題
+        
+        # 將當前檔案的資料添加到總資料集中
+        all_sequences.append(sequences)
+        all_labels.append(labels)
+        all_event_binary.append(event_binary)
+        
+        print(f"檔案 {os.path.basename(file_path)} 中包含 {np.sum(event_binary)} 個離床事件")
+    
+    # 合併所有檔案的資料
+    X = np.vstack(all_sequences)
+    y = np.concatenate(all_labels)
+    event_binary_all = np.concatenate(all_event_binary)
+    
+    print(f"\n合併後資料統計:")
+    print(f"總序列形狀: {X.shape}")
+    print(f"總標籤形狀: {y.shape}")
+    print(f"總共有 {np.sum(event_binary_all)} 個離床事件")
     print(f"特徵名稱: {feature_names}")
 
     # 不再分割訓練和測試集，直接使用所有資料
@@ -1571,7 +1611,7 @@ try:
         # 訓練模型
         history = model.fit(
             X_all, y_all,
-            epochs=5,
+            epochs=1,
             batch_size=32,
             callbacks=callbacks,
             class_weight={0: 1, 1: 300},  # 使用更高的權重比例，專注於離床事件
@@ -1584,9 +1624,17 @@ try:
         model.save(final_model_path)
         print(f"模型已儲存至: {final_model_path}")
 
-    # 預測所有資料
-    print("開始預測所有資料...")
-    all_pred = model.predict(X_all)
+    # 預測所有資料 - 修改為僅使用最後一個檔案進行預測展示
+    print("\n使用最後一個檔案進行預測示範...")
+    last_file_sequences = all_sequences[-1]
+    last_file_labels = all_labels[-1]
+    
+    # 將最後一個檔案的資料重新整理為模型輸入格式
+    X_last = np.array(last_file_sequences).reshape((last_file_sequences.shape[0], last_file_sequences.shape[1], 1))
+    y_last = np.array(last_file_labels)
+    
+    # 使用訓練後的模型對最後一個檔案進行預測
+    all_pred = model.predict(X_last)
     print(f"預測結果形狀: {np.shape(all_pred)}")
 
     # 將預測結果壓平
@@ -1594,7 +1642,7 @@ try:
     
     # 添加調試信息來檢查數組長度不一致問題
     print(f"all_pred_flat 長度: {len(all_pred_flat)}")
-    print(f"y_all 長度: {len(y_all)}")
+    print(f"y_last 長度: {len(y_last)}")
     print(f"range(len(all_pred_flat)) 長度: {len(range(len(all_pred_flat)))}")
     
     # 將原始標籤和預測結果保存到CSV - 修正數組長度不一致問題
@@ -1604,22 +1652,22 @@ try:
         'Predicted': all_pred_flat
     })
     
-    # 如果y_all長度與all_pred_flat不同，使用NaN填充或只使用可用部分
-    if len(y_all) < len(all_pred_flat):
-        print(f"警告: 實際標籤數量({len(y_all)})少於預測結果數量({len(all_pred_flat)})")
-        # 創建與all_pred_flat相同長度的數組，前len(y_all)個值使用y_all，其餘為NaN
+    # 如果y_last長度與all_pred_flat不同，使用NaN填充或只使用可用部分
+    if len(y_last) < len(all_pred_flat):
+        print(f"警告: 實際標籤數量({len(y_last)})少於預測結果數量({len(all_pred_flat)})")
+        # 創建與all_pred_flat相同長度的數組，前len(y_last)個值使用y_last，其餘為NaN
         actual_values = np.full(len(all_pred_flat), np.nan)
-        actual_values[:len(y_all)] = y_all
+        actual_values[:len(y_last)] = y_last
         results_df['Actual'] = actual_values
     else:
-        # 如果y_all更長或長度相同，只使用前len(all_pred_flat)個值
-        results_df['Actual'] = y_all[:len(all_pred_flat)]
+        # 如果y_last更長或長度相同，只使用前len(all_pred_flat)個值
+        results_df['Actual'] = y_last[:len(all_pred_flat)]
     
     output_file = os.path.join(LOG_DIR, "all_predictions.csv")
     results_df.to_csv(output_file, index=False)
     print(f"預測結果已保存至: {output_file}")
 
-    cleaned_data_path = get_cleaned_data_path(INPUT_DATA_PATH)
+    cleaned_data_path = get_cleaned_data_path(INPUT_DATA_PATHS[-1])
     PROCESSED_DATA_PATH = cleaned_data_path.replace('.csv', '_processed.csv')
 
     print(f"PROCESSED_DATA_PATH: {PROCESSED_DATA_PATH}")
