@@ -401,6 +401,8 @@ def OpenCmbFile():
     
     log_file.close()
 
+    # TODO: 新增讀取現有參數功能
+
     # 從 MQTT 獲取參數
     if radio_Normal.isChecked():
         reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
@@ -1124,15 +1126,34 @@ def OpenCmbFile():
         # 轉換為DataFrame
         df = pd.DataFrame(data_dict)
         
-        # 設定時間範圍
-        start_time = pd.Timestamp('2025-04-27 12:00:00+08:00')
-        end_time = pd.Timestamp('2025-04-28 12:00:00+08:00')
-        
-        # 過濾時間範圍內的資料
-        df = df[(df['DateTime'] >= start_time) & (df['DateTime'] <= end_time)]
+        # 過濾DataFrame，只保留12:00:00到隔天12:00:00的資料
+        try:
+            # 設定過濾時間
+            noon_today = startday.replace(hour=12, minute=0, second=0)
+            noon_tomorrow = noon_today + timedelta(days=1)
+            
+            # 使用 DateTime 欄位進行過濾
+            filtered_df = df[(df['DateTime'] >= noon_today) & (df['DateTime'] <= noon_tomorrow)]
+            
+            # 檢查過濾後的資料是否為空
+            if len(filtered_df) == 0:
+                status_bar.showMessage('警告：過濾後的資料為空，將使用全部資料')
+                QApplication.processEvents()
+                filtered_df = df
+            else:
+                status_bar.showMessage(f'已過濾資料為 {noon_today.strftime("%Y-%m-%d %H:%M:%S")} 到 {noon_tomorrow.strftime("%Y-%m-%d %H:%M:%S")}')
+                QApplication.processEvents()
+        except Exception as e:
+            status_bar.showMessage(f'過濾時間範圍時發生錯誤: {str(e)}，將使用全部資料')
+            QApplication.processEvents()
+            filtered_df = df
         
         # 保存過濾後的資料
-        df.to_csv(csv_filepath, index=False)
+        filtered_df.to_csv(csv_filepath, index=False)
+        
+        # 同時儲存原始完整資料（如有需要）
+        full_csv_filepath = os.path.join(DATA_DIR, f"{cmb_name[:-4]}_full_data.csv")
+        df.to_csv(full_csv_filepath, index=False)
         
         # 儲存參數設定
         param_filename = f"{cmb_name[:-4]}_parameters.csv"
@@ -1175,7 +1196,7 @@ def OpenCmbFile():
         df_param = pd.DataFrame(param_dict)
         df_param.to_csv(param_filepath, index=False)
         
-        status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}')
+        status_bar.showMessage(f'已儲存參數至 {param_filename}')
         QApplication.processEvents()
         
         # 儲存實驗用的降採樣資料
@@ -1190,6 +1211,10 @@ def OpenCmbFile():
         downsampled_csv_path = os.path.join(output_dir, f'{serial_id}_downsampled_{timestamp_str}.csv')
         downsampled_json_path = os.path.join(output_dir, f'{serial_id}_downsampled_{timestamp_str}.json')
         
+        # 準備過濾時間條件
+        noon_today = startday.replace(hour=12, minute=0, second=0)
+        noon_tomorrow = noon_today + timedelta(days=1)
+        
         # 準備CSV資料
         csv_data = []
         timestamps = []
@@ -1202,27 +1227,55 @@ def OpenCmbFile():
         for i in range(min_length):
             # 建立與localrawviewer1217_elastic.py相容的時間戳格式
             iso_timestamp = startday + timedelta(seconds=i)
-            timestamp = iso_timestamp.strftime('%Y%m%d%H%M%S')
-            timestamps.append(timestamp)
             
-            # 建立一筆資料
-            row = {
-                'created_at': iso_timestamp.isoformat(),
-                'timestamp': timestamp,
-                'ch0': int(d10[0][i]),
-                'ch1': int(d10[1][i]),
-                'ch2': int(d10[2][i]),
-                'ch3': int(d10[3][i]),
-                'ch4': int(d10[4][i]),
-                'ch5': int(d10[5][i])
-            }
-            csv_data.append(row)
+            # 過濾時間範圍 - 只包含中午12點到隔天中午12點的資料
+            if noon_today <= iso_timestamp <= noon_tomorrow:
+                timestamp = iso_timestamp.strftime('%Y%m%d%H%M%S')
+                timestamps.append(timestamp)
+                
+                # 建立一筆資料
+                row = {
+                    'created_at': iso_timestamp.isoformat(),
+                    'timestamp': timestamp,
+                    'ch0': int(d10[0][i]),
+                    'ch1': int(d10[1][i]),
+                    'ch2': int(d10[2][i]),
+                    'ch3': int(d10[3][i]),
+                    'ch4': int(d10[4][i]),
+                    'ch5': int(d10[5][i])
+                }
+                csv_data.append(row)
         
+        # 檢查過濾後的資料是否為空
+        if len(csv_data) == 0:
+            status_bar.showMessage('警告：降採樣資料過濾後為空，將使用原始資料')
+            QApplication.processEvents()
+            
+            # 重新準備不過濾的資料
+            csv_data = []
+            timestamps = []
+            for i in range(min_length):
+                iso_timestamp = startday + timedelta(seconds=i)
+                timestamp = iso_timestamp.strftime('%Y%m%d%H%M%S')
+                timestamps.append(timestamp)
+                
+                row = {
+                    'created_at': iso_timestamp.isoformat(),
+                    'timestamp': timestamp,
+                    'ch0': int(d10[0][i]),
+                    'ch1': int(d10[1][i]),
+                    'ch2': int(d10[2][i]),
+                    'ch3': int(d10[3][i]),
+                    'ch4': int(d10[4][i]),
+                    'ch5': int(d10[5][i])
+                }
+                csv_data.append(row)
+            
         # 準備JSON資料
         json_data = {
             'serial_id': serial_id,
-            'start_time': startday.isoformat(),
-            'end_time': (startday + timedelta(seconds=min_length)).isoformat(),
+            'start_time': noon_today.isoformat() if csv_data else startday.isoformat(),
+            'end_time': noon_tomorrow.isoformat() if csv_data else (startday + timedelta(seconds=min_length)).isoformat(),
             'data': csv_data,
             # 加入處理後的資料結構，以便直接被localrawviewer1217_elastic.py使用
             'n10': [n10_array.tolist() for n10_array in n10],
@@ -1250,6 +1303,10 @@ def OpenCmbFile():
             writer = csv.writer(csvfile)
             writer.writerow(['Parameter ID', 'Description', 'Value'])
             
+            # 儲存時間範圍信息
+            writer.writerow(['Time_Range', 'Time Filter Start', noon_today.strftime('%Y-%m-%d %H:%M:%S')])
+            writer.writerow(['Time_Range', 'Time Filter End', noon_tomorrow.strftime('%Y-%m-%d %H:%M:%S')])
+            
             # 儲存總和閾值
             writer.writerow(['41', 'Total Sum', str(bed_threshold)])
             
@@ -1275,12 +1332,100 @@ def OpenCmbFile():
             for ch in range(6):
                 writer.writerow([f'{58+ch}', f'Channel {ch+1} threshold_2', str(th2_edit[ch])])
         
+        # 顯示狀態訊息
+        status_bar.showMessage(f'檔案處理中，準備進行時間過濾...')
+        QApplication.processEvents()
+        
         status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}，實驗用降採樣資料已保存至 {downsampled_csv_path}')
-
+        QApplication.processEvents()
+        
+        # 限制顯示的時間範圍為12:00:00到隔天的12:00:00
+        try:
+            # 創建時間範圍過濾掩碼 - 使用相對於startday的時間
+            noon_today = startday.replace(hour=12, minute=0, second=0)
+            noon_tomorrow = noon_today + timedelta(days=1)
+            
+            start_time_seconds = (noon_today - startday).total_seconds()
+            end_time_seconds = (noon_tomorrow - startday).total_seconds()
+            
+            # 確保時間範圍不超出實際數據範圍
+            start_time_seconds = max(start_time_seconds, t1sec[0])
+            end_time_seconds = min(end_time_seconds, t1sec[-1])
+            
+            # 創建一個掩碼，只保留在指定時間範圍內的數據點
+            time_mask = (t1sec >= start_time_seconds) & (t1sec <= end_time_seconds)
+            
+            # 確保掩碼至少有一個True值
+            if np.sum(time_mask) == 0:
+                status_bar.showMessage('警告：指定的時間範圍內沒有數據點，顯示全部數據')
+                QApplication.processEvents()
+            else:
+                # 使用掩碼過濾時間軸和相應的數據點
+                t1sec_filtered = t1sec[time_mask]
+                
+                # 先備份原來的idx1sec
+                original_idx1sec = idx1sec.copy()
+                
+                # 創建與過濾後的t1sec長度相同的新idx1sec
+                filtered_indices = np.where(time_mask)[0]  # 獲取True值的索引
+                idx1sec = original_idx1sec[filtered_indices]  # 使用這些索引來過濾idx1sec
+                
+                # 將過濾後的數據替換原來的數據
+                t1sec = t1sec_filtered
+                
+                # 同時調整其他相關時間向量
+                t100ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*10)
+                t10ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*100)
+                t100ms = np.around(t100ms, decimals=1)
+                t10ms = np.around(t10ms, decimals=2)
+                
+                # 調整onbed變量，如果已計算
+                if 'onbed' in globals() and isinstance(globals()['onbed'], np.ndarray) and len(globals()['onbed']) >= len(filtered_indices):
+                    try:
+                        globals()['onbed'] = globals()['onbed'][filtered_indices]
+                    except Exception as e:
+                        status_bar.showMessage(f'調整onbed時發生錯誤: {str(e)}')
+                        QApplication.processEvents()
+                
+                # 也調整rising_dist和rising_dist_air
+                try:
+                    # 確保rising_dist存在並是一個數組
+                    if 'rising_dist' in globals() and isinstance(globals()['rising_dist'], (np.ndarray, pd.Series)):
+                        # 確保索引在有效範圍內
+                        valid_indices = idx1sec[idx1sec < len(globals()['rising_dist'])]
+                        if len(valid_indices) > 0:
+                            globals()['rising_dist'] = globals()['rising_dist'][valid_indices]
+                except Exception as e:
+                    status_bar.showMessage(f'調整rising_dist時發生錯誤: {str(e)}')
+                    QApplication.processEvents()
+                
+                try:
+                    # 確保rising_dist_air存在並是一個數組
+                    if 'rising_dist_air' in globals() and isinstance(globals()['rising_dist_air'], (np.ndarray, pd.Series)):
+                        # 確保索引在有效範圍內
+                        valid_indices = idx1sec[idx1sec < len(globals()['rising_dist_air'])]
+                        if len(valid_indices) > 0:
+                            globals()['rising_dist_air'] = globals()['rising_dist_air'][valid_indices]
+                except Exception as e:
+                    status_bar.showMessage(f'調整rising_dist_air時發生錯誤: {str(e)}')
+                    QApplication.processEvents()
+                
+                status_bar.showMessage(f'已過濾顯示時間範圍為 12:00:00 到隔天 12:00:00')
+                QApplication.processEvents()
+                
+                # 確保使用過濾後的數據更新圖表
+                update_raw_plot()
+                update_bit_plot()
+                
+        except Exception as e:
+            status_bar.showMessage(f'限制時間範圍時發生錯誤: {str(e)}')
+            QApplication.processEvents()
 
         # 測試計算值顯示
         update_calculated_value(122)
-
+        
+        # 最終的狀態欄訊息 - 只保留一個
+        status_bar.showMessage(f'資料處理完成：已過濾顯示(12:00-12:00)並儲存過濾資料={os.path.basename(csv_filepath)}，完整資料={os.path.basename(full_csv_filepath)}')
         QApplication.processEvents()
         
     except Exception as e:
@@ -1296,7 +1441,25 @@ def update_raw_plot():
     data_max = []
     data_noise = []
     for ch in range(6):
-        data_median.append(d10[ch][idx1sec] + offset_edit[ch])
+        try:
+            # 確保索引不會越界
+            valid_indices = idx1sec[idx1sec < len(d10[ch])]
+            if len(valid_indices) > 0:
+                # 使用有效索引
+                values = d10[ch][valid_indices] + offset_edit[ch]
+                # 填充到原始長度
+                if len(values) < len(idx1sec):
+                    padding = np.full(len(idx1sec) - len(values), values[-1] if len(values) > 0 else 0)
+                    values = np.concatenate([values, padding])
+                data_median.append(values)
+            else:
+                # 如果沒有有效索引，使用默認值
+                data_median.append(np.zeros(len(idx1sec)) + offset_edit[ch])
+        except Exception as e:
+            status_bar.showMessage(f'處理通道 {ch+1} 數據時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            # 使用默認值
+            data_median.append(np.zeros(len(idx1sec)) + offset_edit[ch])
     # Save show / hide settings
     isVisible = []
     try:
@@ -1327,7 +1490,9 @@ def update_raw_plot():
     # 繪製一般床墊的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[6]))
     x = t1sec[::flip_interval]
-    y = rising_dist[idx1sec[::flip_interval]] * -100
+    # 確保索引不會越界，使用最小值來限制
+    valid_indices = np.minimum(idx1sec[::flip_interval], len(rising_dist)-1)
+    y = rising_dist[valid_indices] * -100
     raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Normal'))
 
     raw_plot_ch[6].hide()
@@ -1335,8 +1500,10 @@ def update_raw_plot():
     # 繪製氣墊床的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[7]))
     x = t1sec[::flip_interval]
-    y = rising_dist_air[idx1sec[::flip_interval]] * -100
-    raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Air'))    
+    # 確保索引不會越界，使用最小值來限制
+    valid_indices = np.minimum(idx1sec[::flip_interval], len(rising_dist_air)-1)
+    y = rising_dist_air[valid_indices] * -100
+    raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Air'))
 
     raw_plot_ch[7].hide()
 
@@ -1347,14 +1514,25 @@ def update_raw_plot():
     raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Threshold'))  
 
     if air_mattress == 0:
-        flip = (rising_dist > dist_thr) * dist_thr
+        # 確保索引不會越界
+        valid_rising_dist = rising_dist[:len(t1sec)] if len(rising_dist) > len(t1sec) else rising_dist
+        flip = (valid_rising_dist > dist_thr) * dist_thr
     else:
-        flip = (rising_dist_air > dist_thr) * dist_thr
+        # 確保索引不會越界
+        valid_rising_dist_air = rising_dist_air[:len(t1sec)] if len(rising_dist_air) > len(t1sec) else rising_dist_air
+        flip = (valid_rising_dist_air > dist_thr) * dist_thr
 
     # 繪製翻身數據
     x = t1sec[::flip_interval]
-    y = flip[idx1sec[::flip_interval]] * -100
-    raw_plot_ch.append(raw_plot.plot(x, y, fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
+    # 確保索引和數據長度一致
+    max_idx = min(len(flip), len(idx1sec))
+    if max_idx > 0:
+        valid_indices = np.minimum(idx1sec[::flip_interval], max_idx-1)
+        y = flip[valid_indices] * -100
+        raw_plot_ch.append(raw_plot.plot(x, y, fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
+    else:
+        # 如果沒有有效數據，添加一個空的繪圖對象
+        raw_plot_ch.append(raw_plot.plot([], [], fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
 
     # Restore original Y range
     y_range[0] = dist_thr * -200
@@ -1394,9 +1572,37 @@ def update_bit_plot():
     # --------------------------------------------------------------------    
     onload, onbed = EvalParameters()
     # --------------------------------------------------------------------
-    for ch in range(6):
-        onload[ch] = onload[ch][idx1sec]
-    onbed = onbed[idx1sec]
+    # 確保 idx1sec 的索引在有效範圍內
+    try:
+        for ch in range(6):
+            if len(onload[ch]) > 0:  # 確保有數據
+                # 創建有效索引掩碼
+                valid_indices = idx1sec[idx1sec < len(onload[ch])]
+                if len(valid_indices) > 0:
+                    onload[ch] = onload[ch][valid_indices]
+                else:
+                    # 如果沒有有效索引，使用默認值
+                    onload[ch] = np.zeros(len(idx1sec))
+            else:
+                # 如果沒有數據，使用默認值
+                onload[ch] = np.zeros(len(idx1sec))
+                
+        # 同樣處理 onbed 變數
+        if len(onbed) > 0:
+            valid_indices = idx1sec[idx1sec < len(onbed)]
+            if len(valid_indices) > 0:
+                onbed = onbed[valid_indices]
+            else:
+                onbed = np.zeros(len(idx1sec))
+        else:
+            onbed = np.zeros(len(idx1sec))
+    except Exception as e:
+        status_bar.showMessage(f'處理數據索引時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        # 使用默認值
+        for ch in range(6):
+            onload[ch] = np.zeros(len(idx1sec))
+        onbed = np.zeros(len(idx1sec))
 
     # --------------------------------------------------------------------
     
@@ -1904,12 +2110,12 @@ def OpenCsvFile():
             pred_length = min(len(predicted_binary), len(t1sec) - start_index)
             aligned_pred_data[start_index:start_index + pred_length] = predicted_binary[:pred_length]
         
-        # 替換預測離床數據
-        predicted_offbed = aligned_data
+        # 替換離床事件數據
+        event_offbed = aligned_data
         
         # 使用線條繪製，而非填充區域
         pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
-        bit_plot_pred_offbed = bit_plot.plot(t1sec, predicted_offbed - 9.5, 
+        bit_plot_pred_offbed = bit_plot.plot(t1sec, event_offbed - 9.5, 
                                            pen=pen, name='PREDICT OFFBED')
         
         # 繪製predicted_binary數據 - 使用藍色線條

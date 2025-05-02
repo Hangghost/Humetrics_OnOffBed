@@ -41,7 +41,7 @@ WARNING_TIME = 15  # 設定單一預警時間（秒）
 
 # INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250406_04_20250407_04_data.csv"
 # INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2024PA000329_20250420_03_20250421_04_data.csv"
-INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250427_03_20250428_04_data.csv"
+INPUT_DATA_PATH = "./_data/pyqt_viewer/SPS2025PA000146_20250423_03_20250424_04_data.csv"
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
@@ -57,7 +57,7 @@ FIND_BEST_THRESHOLD = False
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs("./_data/training", exist_ok=True)
 
-SILENCE_TIME = 180 
+SILENCE_TIME = 180
 
 
 # 自定義的評估回調
