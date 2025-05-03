@@ -46,6 +46,11 @@ INPUT_DATA_PATTERN = "*_data.csv"
 # 待實際執行時才獲取檔案清單
 INPUT_DATA_PATHS = []  # 先設為空，執行時填入
 
+# 新增預測資料夾路徑
+PREDICTION_DATA_DIR = "./_data/training/prediction"
+PREDICTION_DATA_PATTERN = "*_data.csv"
+PREDICTION_DATA_PATHS = []  # 預測檔案清單
+
 TRAINING_LOG_PATH = "training_test_sum.csv"
 FINAL_MODEL_PATH = "final_model_test_sum.keras"
 TRAINING_HISTORY_PATH = "training_history_test_sum.png"
@@ -61,7 +66,7 @@ FIND_BEST_THRESHOLD = False
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs("./_data/training", exist_ok=True)
 
-SILENCE_TIME = 180
+SILENCE_TIME = 0
 
 
 # 自定義的評估回調
@@ -211,6 +216,9 @@ def detect_bed_events(df):
     檢測離床事件，並在事件發生後的靜默時間內不檢測新事件。
     在原始 DataFrame 中添加 event_binary 欄位，值為 0 或 1
     
+    當SILENCE_TIME=0時，將檢測所有1->0的離床事件
+    當SILENCE_TIME>0時，在事件發生後的靜默時間內不檢測新事件
+    
     返回:
     - 新增了 event_binary 欄位的 DataFrame
     """
@@ -221,8 +229,8 @@ def detect_bed_events(df):
     
     # 找出所有離床事件
     for idx in range(1, len(df)):
-        # 檢查是否在靜默時間內
-        if idx - last_event_time < SILENCE_TIME:
+        # 檢查是否在靜默時間內（只有當SILENCE_TIME>0時才進行檢查）
+        if SILENCE_TIME > 0 and idx - last_event_time < SILENCE_TIME:
             continue
             
         # 只檢測 1->0 的離床事件
@@ -335,13 +343,65 @@ def load_and_process_data(raw_data_path, apply_balancing=APPLY_BALANCING, pos_to
         dataset = pd.read_csv(raw_data_path)
         print(f"數據集形狀: {dataset.shape}")
         print(f"數據集列: {dataset.columns.tolist()}")
-        sequences, labels, event_binary, feature_names = create_sequences(
-            dataset, 
-            cleaned_data_path, 
-            apply_balancing=apply_balancing, 
-            pos_to_neg_ratio=pos_to_neg_ratio
-        )
-        return sequences, labels, event_binary, feature_names
+        
+        # 檢查是否已經是處理過的數據（已經有Noise_max和Raw_sum欄位）
+        if 'Noise_max' in dataset.columns and 'Raw_sum' in dataset.columns:
+            print("檢測到已處理過的數據檔案，跳過特徵工程步驟")
+            
+            # 確保有必要的列
+            required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+            required_columns.extend(['Raw_sum', 'Noise_max', 'OnBed_Status'])
+            
+            # 檢查是否有event_binary欄位，沒有則添加
+            if 'event_binary' not in dataset.columns:
+                print("未找到event_binary欄位，將生成該欄位")
+                dataset = detect_bed_events(dataset)
+            
+            required_columns.append('event_binary')
+            
+            if not all(col in dataset.columns for col in required_columns):
+                missing_cols = [col for col in required_columns if col not in dataset.columns]
+                raise ValueError(f"缺少必要的列: {missing_cols}")
+            
+            # 選取所需欄位
+            df_features = dataset[required_columns].copy()
+            
+            # 保存原始欄位名稱
+            feature_names = df_features.columns.tolist()
+            
+            # 轉換為數組
+            sequences = df_features.values.astype('float64')
+            labels = dataset['event_binary'].values
+            
+            print(f"============序列長度: {len(sequences)}")
+            
+            # 確保序列長度符合要求
+            if len(sequences) < 86401:
+                # 使用零填充
+                padding = np.zeros((86401 - len(sequences), sequences.shape[1]))
+                sequences = np.vstack([sequences, padding])
+                labels = np.pad(labels, (0, 86401 - len(labels)), 'constant')
+                print(f"已填充序列長度: {len(sequences)}")
+            elif len(sequences) > 86401:
+                # 直接截斷超過的部分
+                print(f"序列長度超過86400，直接截斷多餘部分")
+                sequences = sequences[:86401]
+                labels = labels[:86401]
+                print(f"已截斷序列長度: {len(sequences)}")
+            
+            # 保存處理後的數據
+            save_processed_sequences(sequences, labels, cleaned_data_path, feature_names, dataset['event_binary'].values)
+            
+            return sequences, labels, dataset['event_binary'].values, feature_names
+        else:
+            # 原始數據需要完整處理
+            sequences, labels, event_binary, feature_names = create_sequences(
+                dataset, 
+                cleaned_data_path, 
+                apply_balancing=apply_balancing, 
+                pos_to_neg_ratio=pos_to_neg_ratio
+            )
+            return sequences, labels, event_binary, feature_names
     except Exception as e:
         print(f"數據處理錯誤: {e}")
         raise
@@ -1501,6 +1561,7 @@ parser = argparse.ArgumentParser(description='CNN-LSTM模型用於預測離床�
 parser.add_argument('--load-only', action='store_true', help='只載入模型預測，不重新訓練')
 parser.add_argument('--threshold', type=float, default=0.8, help='預測閾值，默認為0.8')
 parser.add_argument('--predict-new', action='store_true', help='只處理新資料並使用現有模型進行預測')
+parser.add_argument('--prediction-dir', type=str, default=PREDICTION_DATA_DIR, help='指定預測資料夾路徑')
 args = parser.parse_args()
 
 # 在主程式中，修改資料載入部分
@@ -1511,7 +1572,15 @@ try:
         print(f"錯誤: 在 {INPUT_DATA_DIR} 目錄下未找到任何符合 {INPUT_DATA_PATTERN} 的檔案")
         sys.exit(1)
     
-    print(f"找到 {len(INPUT_DATA_PATHS)} 個資料檔案:")
+    # 獲取預測用的資料檔案
+    PREDICTION_DATA_DIR = args.prediction_dir  # 使用命令列參數傳入的路徑
+    os.makedirs(PREDICTION_DATA_DIR, exist_ok=True)  # 確保預測資料夾存在
+    PREDICTION_DATA_PATHS = glob.glob(os.path.join(PREDICTION_DATA_DIR, PREDICTION_DATA_PATTERN))
+    print(f"找到 {len(PREDICTION_DATA_PATHS)} 個預測用資料檔案:")
+    for i, path in enumerate(PREDICTION_DATA_PATHS):
+        print(f"  {i+1}. {os.path.basename(path)}")
+    
+    print(f"找到 {len(INPUT_DATA_PATHS)} 個訓練資料檔案:")
     for i, path in enumerate(INPUT_DATA_PATHS):
         print(f"  {i+1}. {os.path.basename(path)}")
     
@@ -1536,7 +1605,7 @@ try:
         if feature_names is None:
             feature_names = current_feature_names
         # 驗證各檔案的feature_names一致性
-        elif feature_names != current_feature_names:
+        elif not np.array_equal(feature_names, current_feature_names):
             print(f"警告: 檔案 {os.path.basename(file_path)} 的特徵名稱與之前的不一致")
             print(f"預期: {feature_names}")
             print(f"實際: {current_feature_names}")
@@ -1611,7 +1680,7 @@ try:
         # 訓練模型
         history = model.fit(
             X_all, y_all,
-            epochs=1,
+            epochs=3,
             batch_size=32,
             callbacks=callbacks,
             class_weight={0: 1, 1: 300},  # 使用更高的權重比例，專注於離床事件
@@ -1678,9 +1747,11 @@ try:
             original_df = pd.read_csv(PROCESSED_DATA_PATH)
             # 確保我們有足夠的預測結果
             if len(all_pred_flat) >= len(original_df):
-                # 添加預測結果欄位
+                # 添加預測結果欄位（二值化結果）
                 threshold = args.threshold
                 original_df['Predicted'] = (all_pred_flat[:len(original_df)] > threshold).astype(int)
+                # 添加預測機率值欄位
+                original_df['Predicted_Prob'] = all_pred_flat[:len(original_df)]
                 # 保存回原始檔案
                 original_df.to_csv(PROCESSED_DATA_PATH, index=False)
                 print(f"預測結果已添加到原始處理檔案: {PROCESSED_DATA_PATH}")
@@ -1722,6 +1793,164 @@ try:
     plt.savefig(plot_file)
     plt.close()
     print(f"預測結果圖表已保存至: {plot_file}")
+
+    # 預測資料 - 修改為預測指定資料夾中的所有檔案
+    print("\n開始預測資料...")
+    
+    # 檢查是否有預測資料
+    if len(PREDICTION_DATA_PATHS) == 0:
+        print("警告: 預測資料夾中沒有資料，將使用最後一個訓練檔案進行示範預測")
+        # 使用最後一個訓練檔案作為預測示範
+        prediction_paths = [INPUT_DATA_PATHS[-1]]
+    else:
+        prediction_paths = PREDICTION_DATA_PATHS
+    
+    # 對每個預測檔案進行處理
+    for pred_index, pred_file_path in enumerate(prediction_paths):
+        print(f"\n預測檔案 {pred_index+1}/{len(prediction_paths)}: {os.path.basename(pred_file_path)}")
+        
+        # 載入預測用資料
+        try:
+            # 檢查檔案名稱是否已包含 "cleaned_" 前綴
+            basename = os.path.basename(pred_file_path)
+            is_already_cleaned = basename.startswith("cleaned_")
+            
+            # 如果是已清理檔案，直接處理；否則按原邏輯處理
+            if is_already_cleaned:
+                print(f"檢測到已清理的檔案: {basename}")
+                dataset = pd.read_csv(pred_file_path)
+                print(f"數據集形狀: {dataset.shape}")
+                print(f"數據集列: {dataset.columns.tolist()}")
+                
+                # 確保所需的欄位都存在
+                required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+                required_columns.extend(['Raw_sum', 'Noise_max', 'OnBed_Status'])
+                
+                # 檢查是否有event_binary欄位，沒有則添加
+                if 'event_binary' not in dataset.columns:
+                    print("未找到event_binary欄位，將生成該欄位")
+                    dataset = detect_bed_events(dataset)
+                
+                required_columns.append('event_binary')
+                
+                if not all(col in dataset.columns for col in required_columns):
+                    missing_cols = [col for col in required_columns if col not in dataset.columns]
+                    raise ValueError(f"缺少必要的列: {missing_cols}")
+                
+                # 選取所需欄位
+                df_features = dataset[required_columns].copy()
+                
+                # 整理為模型輸入格式
+                pred_sequences = df_features.values.astype('float64')
+                pred_labels = dataset['event_binary'].values
+                pred_feature_names = df_features.columns.tolist()
+                
+                # 確保序列長度符合要求
+                if len(pred_sequences) < 86401:
+                    # 使用零填充
+                    padding = np.zeros((86401 - len(pred_sequences), pred_sequences.shape[1]))
+                    pred_sequences = np.vstack([pred_sequences, padding])
+                    pred_labels = np.pad(pred_labels, (0, 86401 - len(pred_labels)), 'constant')
+                    print(f"已填充序列長度: {len(pred_sequences)}")
+                elif len(pred_sequences) > 86401:
+                    # 直接截斷超過的部分
+                    print(f"序列長度超過86400，直接截斷多餘部分")
+                    pred_sequences = pred_sequences[:86401]
+                    pred_labels = pred_labels[:86401]
+                    print(f"已截斷序列長度: {len(pred_sequences)}")
+            else:
+                # 使用原有邏輯載入和處理
+                pred_sequences, pred_labels, pred_event_binary, pred_feature_names = load_and_process_data(
+                    pred_file_path,
+                    apply_balancing=False,  # 預測不需要平衡資料
+                    pos_to_neg_ratio=POS_TO_NEG_RATIO
+                )
+            
+            # 重新整理為模型輸入格式
+            X_pred = np.array(pred_sequences).reshape((pred_sequences.shape[0], pred_sequences.shape[1], 1))
+            y_pred_actual = np.array(pred_labels)
+            
+            # 使用訓練後的模型進行預測
+            pred_result = model.predict(X_pred)
+            print(f"預測結果形狀: {np.shape(pred_result)}")
+            
+            # 將預測結果壓平
+            pred_result_flat = pred_result.flatten()
+            
+            # 檢查數組長度
+            print(f"預測結果長度: {len(pred_result_flat)}")
+            print(f"實際標籤長度: {len(y_pred_actual)}")
+            
+            # 創建結果DataFrame
+            pred_results_df = pd.DataFrame({
+                'Index': range(len(pred_result_flat)),
+                'Predicted': pred_result_flat
+            })
+            
+            # 處理可能的長度不一致問題
+            if len(y_pred_actual) < len(pred_result_flat):
+                print(f"警告: 實際標籤數量({len(y_pred_actual)})少於預測結果數量({len(pred_result_flat)})")
+                actual_values = np.full(len(pred_result_flat), np.nan)
+                actual_values[:len(y_pred_actual)] = y_pred_actual
+                pred_results_df['Actual'] = actual_values
+            else:
+                pred_results_df['Actual'] = y_pred_actual[:len(pred_result_flat)]
+            
+            # 計算預測摘要
+            threshold = args.threshold
+            positives = np.sum(pred_result_flat > threshold)
+            print(f"\n預測結果摘要 ({os.path.basename(pred_file_path)}):")
+            print(f"總筆數: {len(pred_result_flat)}")
+            print(f"預測值 > {threshold} 的筆數: {positives}")
+            print(f"預測值的範圍: {np.min(pred_result_flat)} 至 {np.max(pred_result_flat)}")
+            print(f"預測值中最高的前五筆: {np.sort(pred_result_flat)[-5:]}")
+            
+            # 建立檔案名稱（基於原始檔名）
+            base_filename = os.path.splitext(os.path.basename(pred_file_path))[0]
+            
+            # 保存預測結果CSV
+            pred_output_file = os.path.join(LOG_DIR, f"predictions_{base_filename}.csv")
+            pred_results_df.to_csv(pred_output_file, index=False)
+            print(f"預測結果已保存至: {pred_output_file}")
+            
+            # 直接將預測結果寫回原始檔案
+            try:
+                # 檢查原始資料集長度與預測結果長度
+                if len(dataset) <= len(pred_result_flat):
+                    # 添加預測結果欄位（二值化和機率值）
+                    dataset['Predicted'] = (pred_result_flat[:len(dataset)] > threshold).astype(int)
+                    dataset['Predicted_Prob'] = pred_result_flat[:len(dataset)]
+                    # 保存修改後的資料集
+                    dataset.to_csv(pred_file_path, index=False)
+                    print(f"預測結果已寫回原始檔案: {pred_file_path}")
+                else:
+                    print(f"警告: 原始檔案行數({len(dataset)})大於預測結果數量({len(pred_result_flat)})")
+                    print("將只更新前 {len(pred_result_flat)} 筆資料")
+                    dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > threshold).astype(int)
+                    dataset.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
+                    dataset.to_csv(pred_file_path, index=False)
+                    print(f"預測結果已部分寫回原始檔案: {pred_file_path}")
+            except Exception as e:
+                print(f"寫回原始檔案時發生錯誤: {e}")
+            # 繪製預測結果圖
+            plt.figure(figsize=(15, 6))
+            plt.plot(pred_results_df['Index'], pred_results_df['Actual'], 'b-', alpha=0.5, label='實際值')
+            plt.plot(pred_results_df['Index'], pred_results_df['Predicted'], 'r-', alpha=0.5, label='預測值')
+            plt.axhline(y=threshold, color='g', linestyle='--', label=f'閾值 ({threshold})')
+            plt.title(f'預測結果 - {os.path.basename(pred_file_path)}')
+            plt.xlabel('資料索引')
+            plt.ylabel('值')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            plot_file = os.path.join(LOG_DIR, f"predictions_plot_{base_filename}.png")
+            plt.savefig(plot_file)
+            plt.close()
+            print(f"預測結果圖表已保存至: {plot_file}")
+            
+        except Exception as e:
+            print(f"預測檔案 {os.path.basename(pred_file_path)} 時發生錯誤: {e}")
+            continue
 
 except Exception as e:
     print(f"數據處理錯誤: {e}")
