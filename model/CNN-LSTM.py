@@ -1997,12 +1997,164 @@ parser.add_argument('--load-only', action='store_true', help='只載入模型預
 parser.add_argument('--threshold', type=float, default=0.8, help='預測閾值，默認為0.8')
 parser.add_argument('--predict-new', action='store_true', help='只處理新資料並使用現有模型進行預測')
 parser.add_argument('--prediction-dir', type=str, default=PREDICTION_DATA_DIR, help='指定預測資料夾路徑')
+parser.add_argument('--prediction-file', type=str, default='', help='指定要預測的單一檔案路徑')
 parser.add_argument('--loss-type', type=str, choices=['focal', 'time_diff', 'improved_time_diff', 'simplified_time_diff'], 
                    default='focal', help='選擇損失函數: focal (預設)、time_diff (時間差異)、improved_time_diff (改進時間差異)或simplified_time_diff (簡化時間差異)')
 args = parser.parse_args()
 
 # 在主程式中，修改資料載入部分
 try:
+    # 處理單一檔案預測模式
+    if args.predict_new and args.prediction_file:
+        # 確保模型存在
+        final_model_path = os.path.join(LOG_DIR, FINAL_MODEL_PATH)
+        if not os.path.exists(final_model_path):
+            print(f"錯誤: 找不到現有模型 {final_model_path}，無法執行 --predict-new 模式")
+            sys.exit(1)
+        
+        print(f"已啟用單一檔案預測模式: {args.prediction_file}")
+        # 檢查檔案是否存在
+        if not os.path.exists(args.prediction_file):
+            print(f"錯誤: 找不到指定的檔案 {args.prediction_file}")
+            sys.exit(1)
+        
+        # 處理檔案並生成cleaned_檔案
+        print(f"開始處理檔案: {os.path.basename(args.prediction_file)}")
+        
+        # 載入和處理單一檔案 - 注意：此處加載的檔案仍會儲存在_data/training目錄
+        original_data, original_labels, original_event_binary, original_feature_names = load_and_process_data(
+            args.prediction_file,
+            apply_balancing=False,  # 預測不需要平衡資料
+            pos_to_neg_ratio=POS_TO_NEG_RATIO
+        )
+        
+        # 修改：根據處理後的檔案路徑找到生成的cleaned_檔案
+        training_cleaned_path = get_cleaned_data_path(args.prediction_file)
+        print(f"已在訓練目錄生成處理後的檔案: {training_cleaned_path}")
+        
+        # 修改：在PREDICTION_DATA_DIR中創建相同的cleaned_檔案
+        raw_filename = os.path.basename(args.prediction_file)
+        prediction_cleaned_filename = f"cleaned_{raw_filename}"
+        prediction_cleaned_path = os.path.join(PREDICTION_DATA_DIR, prediction_cleaned_filename)
+        
+        # 確保PREDICTION_DATA_DIR目錄存在
+        os.makedirs(PREDICTION_DATA_DIR, exist_ok=True)
+        
+        # 複製檔案從_data/training到PREDICTION_DATA_DIR
+        if os.path.exists(training_cleaned_path):
+            # 讀取訓練目錄中的檔案
+            training_df = pd.read_csv(training_cleaned_path)
+            # 保存到預測目錄
+            training_df.to_csv(prediction_cleaned_path, index=False)
+            print(f"已複製處理後的檔案到預測目錄: {prediction_cleaned_path}")
+        else:
+            print(f"警告: 未找到訓練目錄中的處理後檔案: {training_cleaned_path}")
+        
+        # 載入模型
+        print(f"載入現有模型: {final_model_path}")
+        model = load_model(final_model_path, compile=False)
+        print("模型載入完成")
+        
+        # 重塑資料以符合模型輸入格式
+        X_pred = np.array(original_data).reshape((original_data.shape[0], original_data.shape[1], 1))
+        
+        # 進行預測
+        print("開始預測...")
+        pred_result = model.predict(X_pred)
+        print(f"預測結果形狀: {np.shape(pred_result)}")
+        
+        # 壓平預測結果
+        pred_result_flat = pred_result.flatten()
+        
+        # 計算最佳閾值
+        adaptive_threshold = find_optimal_threshold(pred_result_flat)
+        print(f"使用自適應閾值: {adaptive_threshold:.4f}")
+        
+        # 修改：同時將預測結果寫回兩個位置的清理過的檔案
+        try:
+            # 1. 處理預測目錄中的檔案
+            if os.path.exists(prediction_cleaned_path):
+                prediction_df = pd.read_csv(prediction_cleaned_path)
+                
+                # 添加預測結果欄位
+                if len(pred_result_flat) >= len(prediction_df):
+                    prediction_df['Predicted'] = (pred_result_flat[:len(prediction_df)] > adaptive_threshold).astype(int)
+                    prediction_df['Predicted_Prob'] = pred_result_flat[:len(prediction_df)]
+                else:
+                    # 如果預測結果比原始資料短，只修改有預測結果的部分
+                    print(f"警告: 預測結果長度({len(pred_result_flat)})小於原始資料長度({len(prediction_df)})")
+                    prediction_df.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
+                    prediction_df.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
+                
+                # 保存修改後的檔案到預測目錄
+                prediction_df.to_csv(prediction_cleaned_path, index=False)
+                print(f"預測結果已寫入預測目錄檔案: {prediction_cleaned_path}")
+            else:
+                print(f"警告: 預測目錄中的檔案不存在: {prediction_cleaned_path}")
+            
+            # 2. 也處理訓練目錄中的檔案，保持向後兼容
+            if os.path.exists(training_cleaned_path):
+                training_df = pd.read_csv(training_cleaned_path)
+                
+                # 添加預測結果欄位
+                if len(pred_result_flat) >= len(training_df):
+                    training_df['Predicted'] = (pred_result_flat[:len(training_df)] > adaptive_threshold).astype(int)
+                    training_df['Predicted_Prob'] = pred_result_flat[:len(training_df)]
+                else:
+                    print(f"警告: 預測結果長度({len(pred_result_flat)})小於原始資料長度({len(training_df)})")
+                    training_df.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
+                    training_df.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
+                
+                # 保存修改後的檔案到訓練目錄
+                training_df.to_csv(training_cleaned_path, index=False)
+                print(f"預測結果也已寫入訓練目錄檔案: {training_cleaned_path}")
+            
+            # 另存一份結果至LOG_DIR
+            base_filename = os.path.splitext(os.path.basename(prediction_cleaned_path))[0]
+            result_path = os.path.join(LOG_DIR, f"{base_filename}_prediction.csv")
+            
+            # 使用預測目錄的DataFrame儲存至LOG_DIR
+            if os.path.exists(prediction_cleaned_path):
+                prediction_df.to_csv(result_path, index=False)
+            else:
+                training_df.to_csv(result_path, index=False)
+                
+            print(f"預測結果副本已保存至: {result_path}")
+            
+            # 繪製預測結果圖 - 使用預測目錄的資料
+            plt.figure(figsize=(15, 6))
+            
+            # 選擇要繪圖的DataFrame
+            plot_df = prediction_df if os.path.exists(prediction_cleaned_path) else training_df
+            
+            plt.plot(range(len(plot_df)), plot_df['event_binary'], 'b-', alpha=0.5, label='實際值')
+            plt.plot(range(len(plot_df)), plot_df['Predicted_Prob'], 'r-', alpha=0.5, label='預測值')
+            plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
+            plt.title(f'預測結果 - {os.path.basename(prediction_cleaned_path)}')
+            plt.xlabel('資料索引')
+            plt.ylabel('值')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            plot_file = os.path.join(LOG_DIR, f"{base_filename}_prediction.png")
+            plt.savefig(plot_file)
+            plt.close()
+            print(f"預測結果圖表已保存至: {plot_file}")
+            
+            # 顯示預測摘要
+            positives = np.sum(pred_result_flat > adaptive_threshold)
+            print(f"\n預測結果摘要:")
+            print(f"總筆數: {len(pred_result_flat)}")
+            print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {positives}")
+            print(f"預測值的範圍: {np.min(pred_result_flat)} 至 {np.max(pred_result_flat)}")
+            
+            print("\n處理完成!")
+        except Exception as e:
+            print(f"處理預測結果時發生錯誤: {e}")
+        
+        # 完成單一檔案預測模式，退出程式
+        sys.exit(0)
+        
     # 獲取所有符合條件的檔案
     INPUT_DATA_PATHS = glob.glob(os.path.join(INPUT_DATA_DIR, INPUT_DATA_PATTERN))
     if not INPUT_DATA_PATHS:
@@ -2088,6 +2240,20 @@ try:
             print(f"載入現有模型進行新資料預測: {final_model_path}")
             model = load_model(final_model_path, compile=False)
             print("模型載入完成，跳過訓練過程")
+            
+            # 如果PREDICTION_DATA_PATHS為空，提示用戶
+            if not PREDICTION_DATA_PATHS:
+                print(f"警告: 在預測資料夾中未找到任何符合 {PREDICTION_DATA_PATTERN} 的檔案")
+                print(f"請使用 --prediction-file 參數指定要預測的單一檔案，或在 {PREDICTION_DATA_DIR} 目錄中放入原始資料檔案")
+                sys.exit(1)
+                
+            # 進入預測模式，不需要訓練資料
+            # 所有訓練資料相關的處理會被跳過
+            all_sequences = []
+            all_labels = []
+            all_event_binary = []
+            X_all = np.array([[0]])  # 創建一個空模型輸入，因為不需要訓練
+            y_all = np.array([0])    # 創建一個空標籤陣列
         else:
             print(f"錯誤: 找不到現有模型 {final_model_path}，無法執行 --predict-new 模式")
             sys.exit(1)
@@ -2135,109 +2301,112 @@ try:
         print(f"模型已儲存至: {final_model_path}")
 
     # 預測所有資料 - 修改為僅使用最後一個檔案進行預測展示
-    print("\n使用最後一個檔案進行預測示範...")
-    last_file_sequences = all_sequences[-1]
-    last_file_labels = all_labels[-1]
-    
-    # 將最後一個檔案的資料重新整理為模型輸入格式
-    X_last = np.array(last_file_sequences).reshape((last_file_sequences.shape[0], last_file_sequences.shape[1], 1))
-    y_last = np.array(last_file_labels)
-    
-    # 使用訓練後的模型對最後一個檔案進行預測
-    all_pred = model.predict(X_last)
-    print(f"預測結果形狀: {np.shape(all_pred)}")
-
-    # 將預測結果壓平
-    all_pred_flat = all_pred.flatten()
-    
-    # 添加調試信息來檢查數組長度不一致問題
-    print(f"all_pred_flat 長度: {len(all_pred_flat)}")
-    print(f"y_last 長度: {len(y_last)}")
-    print(f"range(len(all_pred_flat)) 長度: {len(range(len(all_pred_flat)))}")
-    
-    # 將原始標籤和預測結果保存到CSV - 修正數組長度不一致問題
-    # 創建只包含索引和預測值的DataFrame
-    results_df = pd.DataFrame({
-        'Index': range(len(all_pred_flat)),
-        'Predicted': all_pred_flat
-    })
-    
-    # 如果y_last長度與all_pred_flat不同，使用NaN填充或只使用可用部分
-    if len(y_last) < len(all_pred_flat):
-        print(f"警告: 實際標籤數量({len(y_last)})少於預測結果數量({len(all_pred_flat)})")
-        # 創建與all_pred_flat相同長度的數組，前len(y_last)個值使用y_last，其餘為NaN
-        actual_values = np.full(len(all_pred_flat), np.nan)
-        actual_values[:len(y_last)] = y_last
-        results_df['Actual'] = actual_values
+    # 如果是 --predict-new 模式且沒有訓練資料，跳過這部分處理
+    if args.predict_new and not all_sequences:
+        print("\n進入單純預測模式，跳過訓練資料評估部分...")
     else:
-        # 如果y_last更長或長度相同，只使用前len(all_pred_flat)個值
-        results_df['Actual'] = y_last[:len(all_pred_flat)]
-    
-    output_file = os.path.join(LOG_DIR, "all_predictions.csv")
-    results_df.to_csv(output_file, index=False)
-    print(f"預測結果已保存至: {output_file}")
+        print("\n使用最後一個檔案進行預測示範...")
+        last_file_sequences = all_sequences[-1]
+        last_file_labels = all_labels[-1]
+        
+        # 將最後一個檔案的資料重新整理為模型輸入格式
+        X_last = np.array(last_file_sequences).reshape((last_file_sequences.shape[0], last_file_sequences.shape[1], 1))
+        y_last = np.array(last_file_labels)
+        
+        # 使用訓練後的模型對最後一個檔案進行預測
+        all_pred = model.predict(X_last)
+        print(f"預測結果形狀: {np.shape(all_pred)}")
 
-    cleaned_data_path = get_cleaned_data_path(INPUT_DATA_PATHS[-1])
-    PROCESSED_DATA_PATH = cleaned_data_path.replace('.csv', '_processed.csv')
+        # 將預測結果壓平
+        all_pred_flat = all_pred.flatten()
+        
+        # 添加調試信息來檢查數組長度不一致問題
+        print(f"all_pred_flat 長度: {len(all_pred_flat)}")
+        print(f"y_last 長度: {len(y_last)}")
+        print(f"range(len(all_pred_flat)) 長度: {len(range(len(all_pred_flat)))}")
+        
+        # 將原始標籤和預測結果保存到CSV - 修正數組長度不一致問題
+        # 創建只包含索引和預測值的DataFrame
+        results_df = pd.DataFrame({
+            'Index': range(len(all_pred_flat)),
+            'Predicted': all_pred_flat
+        })
+        
+        # 如果y_last長度與all_pred_flat不同，使用NaN填充或只使用可用部分
+        if len(y_last) < len(all_pred_flat):
+            print(f"警告: 實際標籤數量({len(y_last)})少於預測結果數量({len(all_pred_flat)})")
+            # 創建與all_pred_flat相同長度的數組，前len(y_last)個值使用y_last，其餘為NaN
+            actual_values = np.full(len(all_pred_flat), np.nan)
+            actual_values[:len(y_last)] = y_last
+            results_df['Actual'] = actual_values
+        else:
+            # 如果y_last更長或長度相同，只使用前len(all_pred_flat)個值
+            results_df['Actual'] = y_last[:len(all_pred_flat)]
+        
+        output_file = os.path.join(LOG_DIR, "all_predictions.csv")
+        results_df.to_csv(output_file, index=False)
+        print(f"預測結果已保存至: {output_file}")
 
-    print(f"PROCESSED_DATA_PATH: {PROCESSED_DATA_PATH}")
-    if PROCESSED_DATA_PATH and os.path.exists(os.path.dirname(PROCESSED_DATA_PATH)):
-        # 檢查是否需要匹配已存在的CSV檔案的格式
-        try:
-            # 讀取原始處理好的檔案
-            original_df = pd.read_csv(PROCESSED_DATA_PATH)
-            # 確保我們有足夠的預測結果
-            if len(all_pred_flat) >= len(original_df):
-                # 使用自適應閾值檢測來確定最佳閾值
-                adaptive_threshold = find_optimal_threshold(all_pred_flat[:len(original_df)])
-                print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
-                
-                # 添加預測結果欄位（二值化結果）
-                original_df['Predicted'] = (all_pred_flat[:len(original_df)] > adaptive_threshold).astype(int)
-                # 添加預測機率值欄位
-                original_df['Predicted_Prob'] = all_pred_flat[:len(original_df)]
-                # 保存回原始檔案
-                original_df.to_csv(PROCESSED_DATA_PATH, index=False)
-                print(f"預測結果已添加到原始處理檔案: {PROCESSED_DATA_PATH}")
-            else:
-                print(f"警告: 預測結果數量({len(all_pred_flat)})少於原始檔案行數({len(original_df)})")
-                # 仍然保存results_df到PROCESSED_DATA_PATH
+        cleaned_data_path = get_cleaned_data_path(INPUT_DATA_PATHS[-1])
+        PROCESSED_DATA_PATH = cleaned_data_path.replace('.csv', '_processed.csv')
+
+        print(f"PROCESSED_DATA_PATH: {PROCESSED_DATA_PATH}")
+        if PROCESSED_DATA_PATH and os.path.exists(os.path.dirname(PROCESSED_DATA_PATH)):
+            # 檢查是否需要匹配已存在的CSV檔案的格式
+            try:
+                # 讀取原始處理好的檔案
+                original_df = pd.read_csv(PROCESSED_DATA_PATH)
+                # 確保我們有足夠的預測結果
+                if len(all_pred_flat) >= len(original_df):
+                    # 使用自適應閾值檢測來確定最佳閾值
+                    adaptive_threshold = find_optimal_threshold(all_pred_flat[:len(original_df)])
+                    print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
+                    
+                    # 添加預測結果欄位（二值化結果）
+                    original_df['Predicted'] = (all_pred_flat[:len(original_df)] > adaptive_threshold).astype(int)
+                    # 添加預測機率值欄位
+                    original_df['Predicted_Prob'] = all_pred_flat[:len(original_df)]
+                    # 保存回原始檔案
+                    original_df.to_csv(PROCESSED_DATA_PATH, index=False)
+                    print(f"預測結果已添加到原始處理檔案: {PROCESSED_DATA_PATH}")
+                else:
+                    print(f"警告: 預測結果數量({len(all_pred_flat)})少於原始檔案行數({len(original_df)})")
+                    # 仍然保存results_df到PROCESSED_DATA_PATH
+                    results_df.to_csv(PROCESSED_DATA_PATH, index=False)
+            except Exception as e:
+                print(f"處理原始檔案時發生錯誤: {e}, 直接保存預測結果")
                 results_df.to_csv(PROCESSED_DATA_PATH, index=False)
-        except Exception as e:
-            print(f"處理原始檔案時發生錯誤: {e}, 直接保存預測結果")
+        else:
+            print(f"警告: 處理後的數據路徑不存在或無效: {PROCESSED_DATA_PATH}")
+            # 建立目錄（如果需要）
+            os.makedirs(os.path.dirname(PROCESSED_DATA_PATH), exist_ok=True)
             results_df.to_csv(PROCESSED_DATA_PATH, index=False)
-    else:
-        print(f"警告: 處理後的數據路徑不存在或無效: {PROCESSED_DATA_PATH}")
-        # 建立目錄（如果需要）
-        os.makedirs(os.path.dirname(PROCESSED_DATA_PATH), exist_ok=True)
-        results_df.to_csv(PROCESSED_DATA_PATH, index=False)
-    
-    print(f"預測結果已保存至: {PROCESSED_DATA_PATH}")
+        
+        print(f"預測結果已保存至: {PROCESSED_DATA_PATH}")
 
-    # 輸出預測結果摘要
-    print(f"\n預測結果摘要:")
-    print(f"總筆數: {len(all_pred_flat)}")
-    adaptive_threshold = find_optimal_threshold(all_pred_flat)
-    print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {np.sum(all_pred_flat > adaptive_threshold)}")
-    print(f"預測值的範圍: {np.min(all_pred_flat)} 至 {np.max(all_pred_flat)}")
-    print(f"預測值中最高的前五筆: {np.sort(all_pred_flat)[-5:]}")
+        # 輸出預測結果摘要
+        print(f"\n預測結果摘要:")
+        print(f"總筆數: {len(all_pred_flat)}")
+        adaptive_threshold = find_optimal_threshold(all_pred_flat)
+        print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {np.sum(all_pred_flat > adaptive_threshold)}")
+        print(f"預測值的範圍: {np.min(all_pred_flat)} 至 {np.max(all_pred_flat)}")
+        print(f"預測值中最高的前五筆: {np.sort(all_pred_flat)[-5:]}")
 
-
-    # 繪製預測結果
-    plt.figure(figsize=(15, 6))
-    plt.plot(results_df['Index'], results_df['Actual'], 'b-', alpha=0.5, label='實際值')
-    plt.plot(results_df['Index'], results_df['Predicted'], 'r-', alpha=0.5, label='預測值')
-    plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
-    plt.title('所有資料的預測結果')
-    plt.xlabel('資料索引')
-    plt.ylabel('值')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    plot_file = os.path.join(LOG_DIR, "all_predictions_plot.png")
-    plt.savefig(plot_file)
-    plt.close()
-    print(f"預測結果圖表已保存至: {plot_file}")
+        # 繪製預測結果
+        plt.figure(figsize=(15, 6))
+        plt.plot(results_df['Index'], results_df['Actual'], 'b-', alpha=0.5, label='實際值')
+        plt.plot(results_df['Index'], results_df['Predicted'], 'r-', alpha=0.5, label='預測值')
+        plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
+        plt.title('所有資料的預測結果')
+        plt.xlabel('資料索引')
+        plt.ylabel('值')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plot_file = os.path.join(LOG_DIR, "all_predictions_plot.png")
+        plt.savefig(plot_file)
+        plt.close()
+        print(f"預測結果圖表已保存至: {plot_file}")
 
     # 預測資料 - 修改為預測指定資料夾中的所有檔案
     print("\n開始預測資料...")
