@@ -599,6 +599,169 @@ def evaluate_predictions(y_true, y_pred, timestamps, find_best_threshold=FIND_BE
         metrics, score, target_lead_time = evaluate_with_threshold(0.3)
         return metrics, 0.3, target_lead_time
 
+# 在evaluate_predictions函數之後，time_difference_loss函數之前添加這個函數
+
+def find_optimal_threshold(pred_values, window_size=100):
+    """
+    根據預測值數據自動尋找最佳閾值，專注於識別明顯的方波峰值。
+    
+    此算法基於以下原理：
+    1. 離床事件通常表現為預測值的尖峰(spike)或方波
+    2. 方波峰值在前後與背景值有明顯差異
+    3. 使用更激進的閾值策略來只捕捉顯著的峰值
+    
+    參數:
+    - pred_values: 模型預測的概率值數組
+    - window_size: 局部窗口大小，用於分析數據的局部特性
+    
+    返回:
+    - optimal_threshold: 計算出的最佳閾值
+    """
+    if len(pred_values) == 0:
+        return 0.5  # 默認閾值
+    
+    # 轉換為numpy數組以進行計算
+    if not isinstance(pred_values, np.ndarray):
+        pred_values = np.array(pred_values)
+    
+    # 檢測預測值的統計特性
+    pred_mean = np.mean(pred_values)
+    pred_std = np.std(pred_values)
+    pred_max = np.max(pred_values)
+    pred_min = np.min(pred_values)
+    
+    print(f"預測值統計: 平均={pred_mean:.4f}, 標準差={pred_std:.4f}, 最大值={pred_max:.4f}, 最小值={pred_min:.4f}")
+    
+    # 方法1: 增強型統計閾值 - 使用更大的系數來確保只檢測顯著峰值
+    # 對於方波特性的數據，我們需要更高的閾值來區分峰值與背景
+    statistical_threshold = pred_mean + 2.5 * pred_std  # 增大倍數從1.5到2.5
+    
+    # 方法2: 改進的峰值檢測法 - 聚焦於檢測顯著的尖峰
+    peak_thresholds = []
+    significant_peaks = []
+    
+    # 滑動窗口分析，尋找顯著峰值
+    for i in range(0, len(pred_values), window_size//2):  # 增加窗口重疊以捕捉更多峰值
+        window = pred_values[i:i+window_size]
+        if len(window) < 10:  # 確保窗口有足夠的數據
+            continue
+            
+        window_mean = np.mean(window)
+        window_std = np.std(window)
+        window_max = np.max(window)
+        
+        # 更嚴格的峰值判定標準 - 尋找與窗口均值有明顯差異的峰值
+        if window_max > window_mean + 3.0 * window_std:  # 提高標準差倍數
+            # 檢查峰值是否形成方波特徵（有一定持續時間）
+            peak_indices = np.where(window > window_mean + 2.0 * window_std)[0]
+            if len(peak_indices) > 0:
+                # 計算峰值點的平均值作為閾值參考
+                peak_mean = np.mean(window[peak_indices])
+                significant_peaks.append(peak_mean)
+                
+                # 計算適合當前窗口的閾值 - 基於窗口均值和峰值的差距
+                window_threshold = window_mean + (peak_mean - window_mean) * 0.6  # 設定為峰值和背景之間的值
+                peak_thresholds.append(window_threshold)
+    
+    # 方法3: 高百分位數法 - 使用更高的百分位數來捕捉稀疏的峰值
+    # 對於有少量明顯峰值的數據，99百分位比95百分位更合適
+    percentile_threshold = np.percentile(pred_values, 99)
+    
+    # 方法4: 最大梯度法 - 找出預測值分布中的顯著跳變點
+    sorted_preds = np.sort(pred_values)
+    if len(sorted_preds) > 100:
+        # 計算排序後的梯度
+        gradients = np.diff(sorted_preds)
+        
+        # 找出最大梯度點
+        max_gradient_idx = np.argmax(gradients)
+        
+        # 使用最大梯度點作為閾值，或其附近的值
+        if max_gradient_idx < len(sorted_preds) - 1:
+            gradient_threshold = sorted_preds[max_gradient_idx + 1]
+        else:
+            gradient_threshold = sorted_preds[-1] * 0.85
+            
+        # 檢查是否有多個顯著梯度點（說明有多種分布）
+        significant_gradients = np.where(gradients > np.mean(gradients) + 2 * np.std(gradients))[0]
+        if len(significant_gradients) > 1:
+            # 選擇較高的梯度點作為閾值
+            high_gradient_idx = significant_gradients[-1]  # 取最後一個顯著梯度點
+            if high_gradient_idx < len(sorted_preds) - 1:
+                gradient_threshold = sorted_preds[high_gradient_idx + 1]
+    else:
+        gradient_threshold = 0.5
+    
+    # 方法5: 直方圖分析法 - 尋找數據分布中的顯著分隔
+    hist, bin_edges = np.histogram(pred_values, bins=50)
+    # 找出直方圖中的谷值，作為潛在的閾值
+    hist_valley_indices = np.where((hist[1:-1] < hist[:-2]) & (hist[1:-1] < hist[2:]))[0] + 1
+    
+    histogram_threshold = 0.5  # 默認值
+    if len(hist_valley_indices) > 0 and np.max(pred_values) > 0.6:
+        # 尋找直方圖中位於高值區域的谷點
+        high_valleys = [i for i in hist_valley_indices if bin_edges[i] > pred_mean]
+        if high_valleys:
+            # 選擇高值區域中的第一個谷點作為閾值
+            histogram_threshold = bin_edges[high_valleys[0]]
+    
+    # 綜合多種方法，選擇最合適的閾值
+    if len(significant_peaks) > 0:
+        # 如果檢測到顯著峰值，使用基於峰值特性的閾值
+        peak_mean = np.mean(significant_peaks)
+        background_mean = pred_mean
+        
+        # 閾值設定為峰值和背景均值之間的值，偏向峰值
+        peak_based_threshold = background_mean + (peak_mean - background_mean) * 0.6
+        
+        # 收集所有計算出的閾值
+        all_thresholds = [statistical_threshold, percentile_threshold, gradient_threshold, histogram_threshold]
+        if len(peak_thresholds) > 0:
+            all_thresholds.append(np.mean(peak_thresholds))
+        all_thresholds.append(peak_based_threshold)
+        
+        # 根據數據特性選擇合適的閾值策略
+        if pred_max > 0.85 and len(significant_peaks) <= 5:
+            # 數據中有少量明顯的峰值，使用較高閾值避免誤報
+            optimal_threshold = np.median(all_thresholds)
+        else:
+            # 根據峰值和背景的對比度選擇閾值
+            contrast_ratio = peak_mean / (background_mean + 1e-6)
+            if contrast_ratio > 2.0:  # 峰值與背景反差明顯
+                # 使用峰值與背景之間的值，偏向峰值
+                optimal_threshold = peak_based_threshold
+            else:
+                # 使用統計方法
+                optimal_threshold = np.median(all_thresholds)
+    else:
+        # 沒有檢測到顯著的峰值，使用保守的閾值策略
+        all_thresholds = [statistical_threshold, percentile_threshold, gradient_threshold, histogram_threshold]
+        
+        # 檢查數據的變異性
+        variation_coefficient = pred_std / (pred_mean + 1e-6)
+        if variation_coefficient > 0.5:  # 數據變異較大
+            # 使用較低閾值以避免漏報
+            optimal_threshold = np.min([statistical_threshold, percentile_threshold])
+        else:
+            # 保守策略，使用較高閾值以避免誤報
+            optimal_threshold = np.max([statistical_threshold, percentile_threshold])
+    
+    # 對於稀疏峰值的情況，進一步提高閾值
+    if np.sum(pred_values > percentile_threshold) < len(pred_values) * 0.01:
+        # 使用99.5百分位作為最低閾值
+        min_threshold = np.percentile(pred_values, 99.5)
+        optimal_threshold = max(optimal_threshold, min_threshold)
+    
+    # 確保閾值在有意義的範圍內，但提高最小閾值以更加聚焦於顯著峰值
+    optimal_threshold = max(0.4, min(optimal_threshold, 0.9))
+    
+    print(f"計算的最佳閾值: {optimal_threshold:.4f}")
+    print(f"統計閾值: {statistical_threshold:.4f}, 百分位閾值: {percentile_threshold:.4f}, 梯度閾值: {gradient_threshold:.4f}")
+    if len(peak_thresholds) > 0:
+        print(f"峰值閾值: {np.mean(peak_thresholds):.4f} (從 {len(peak_thresholds)} 個窗口計算)")
+    
+    return optimal_threshold
+
 # 自定義的時間差異 loss function
 def time_difference_loss(y_true, y_pred):
     """
@@ -1146,7 +1309,7 @@ def build_model(input_shape, loss_type='focal'):
         print("使用Focal Loss")
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss=focal_loss(gamma=2.0, alpha=0.75),  # 增加alpha值，更偏重少數類別
+            loss=focal_loss(gamma=2.0, alpha=0.85),  # 增加alpha值，更偏重少數類別
             metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
                     tf.keras.metrics.AUC()]
         )
@@ -2025,9 +2188,12 @@ try:
             original_df = pd.read_csv(PROCESSED_DATA_PATH)
             # 確保我們有足夠的預測結果
             if len(all_pred_flat) >= len(original_df):
+                # 使用自適應閾值檢測來確定最佳閾值
+                adaptive_threshold = find_optimal_threshold(all_pred_flat[:len(original_df)])
+                print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
+                
                 # 添加預測結果欄位（二值化結果）
-                threshold = args.threshold
-                original_df['Predicted'] = (all_pred_flat[:len(original_df)] > threshold).astype(int)
+                original_df['Predicted'] = (all_pred_flat[:len(original_df)] > adaptive_threshold).astype(int)
                 # 添加預測機率值欄位
                 original_df['Predicted_Prob'] = all_pred_flat[:len(original_df)]
                 # 保存回原始檔案
@@ -2051,7 +2217,8 @@ try:
     # 輸出預測結果摘要
     print(f"\n預測結果摘要:")
     print(f"總筆數: {len(all_pred_flat)}")
-    print(f"預測值 > {threshold} 的筆數: {np.sum(all_pred_flat > threshold)}")
+    adaptive_threshold = find_optimal_threshold(all_pred_flat)
+    print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {np.sum(all_pred_flat > adaptive_threshold)}")
     print(f"預測值的範圍: {np.min(all_pred_flat)} 至 {np.max(all_pred_flat)}")
     print(f"預測值中最高的前五筆: {np.sort(all_pred_flat)[-5:]}")
 
@@ -2060,7 +2227,7 @@ try:
     plt.figure(figsize=(15, 6))
     plt.plot(results_df['Index'], results_df['Actual'], 'b-', alpha=0.5, label='實際值')
     plt.plot(results_df['Index'], results_df['Predicted'], 'r-', alpha=0.5, label='預測值')
-    plt.axhline(y=threshold, color='g', linestyle='--', label=f'閾值 ({threshold})')
+    plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
     plt.title('所有資料的預測結果')
     plt.xlabel('資料索引')
     plt.ylabel('值')
@@ -2175,11 +2342,13 @@ try:
                 pred_results_df['Actual'] = y_pred_actual[:len(pred_result_flat)]
             
             # 計算預測摘要
-            threshold = args.threshold
-            positives = np.sum(pred_result_flat > threshold)
+            adaptive_threshold = find_optimal_threshold(pred_result_flat)
+            print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
+            
+            positives = np.sum(pred_result_flat > adaptive_threshold)
             print(f"\n預測結果摘要 ({os.path.basename(pred_file_path)}):")
             print(f"總筆數: {len(pred_result_flat)}")
-            print(f"預測值 > {threshold} 的筆數: {positives}")
+            print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {positives}")
             print(f"預測值的範圍: {np.min(pred_result_flat)} 至 {np.max(pred_result_flat)}")
             print(f"預測值中最高的前五筆: {np.sort(pred_result_flat)[-5:]}")
             
@@ -2196,7 +2365,7 @@ try:
                 # 檢查原始資料集長度與預測結果長度
                 if len(dataset) <= len(pred_result_flat):
                     # 添加預測結果欄位（二值化和機率值）
-                    dataset['Predicted'] = (pred_result_flat[:len(dataset)] > threshold).astype(int)
+                    dataset['Predicted'] = (pred_result_flat[:len(dataset)] > adaptive_threshold).astype(int)
                     dataset['Predicted_Prob'] = pred_result_flat[:len(dataset)]
                     # 保存修改後的資料集
                     dataset.to_csv(pred_file_path, index=False)
@@ -2204,7 +2373,7 @@ try:
                 else:
                     print(f"警告: 原始檔案行數({len(dataset)})大於預測結果數量({len(pred_result_flat)})")
                     print("將只更新前 {len(pred_result_flat)} 筆資料")
-                    dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > threshold).astype(int)
+                    dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
                     dataset.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
                     dataset.to_csv(pred_file_path, index=False)
                     print(f"預測結果已部分寫回原始檔案: {pred_file_path}")
@@ -2214,7 +2383,7 @@ try:
             plt.figure(figsize=(15, 6))
             plt.plot(pred_results_df['Index'], pred_results_df['Actual'], 'b-', alpha=0.5, label='實際值')
             plt.plot(pred_results_df['Index'], pred_results_df['Predicted'], 'r-', alpha=0.5, label='預測值')
-            plt.axhline(y=threshold, color='g', linestyle='--', label=f'閾值 ({threshold})')
+            plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
             plt.title(f'預測結果 - {os.path.basename(pred_file_path)}')
             plt.xlabel('資料索引')
             plt.ylabel('值')
