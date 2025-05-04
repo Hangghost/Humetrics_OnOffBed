@@ -714,30 +714,28 @@ def sequence_time_difference_loss(y_true, y_pred):
     
     return tf.reduce_mean(weighted_loss)
 
-# 更先進的時間差異損失函數 - 使用純時間差計算
-def pure_time_difference_loss(y_true, y_pred, target_lead_time=WARNING_TIME/2):
+# 修改pure_time_difference_loss函數
+def pure_time_difference_loss(y_true, y_pred, target_lead_time=7.0):
     """
-    適應漸進式標籤的時間差異損失函數
+    專為離床預測設計的時間差異損失函數
     
     參數:
-    - y_true: 實際標籤（現在是漸進式的，從0.5到1.0）
+    - y_true: 實際標籤（從0到1的漸進式標籤）
     - y_pred: 預測概率
-    - target_lead_time: 目標提前時間（秒）
+    - target_lead_time: 目標提前預測時間（默認7秒）
     """
     # 轉換為張量
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
     
-    # 基礎損失 - 改為均方誤差，更適合漸進式標籤
-    # 修正：使用正確的 TensorFlow API
+    # 基礎損失 - 均方誤差，適合漸進式標籤
     mse = tf.reduce_mean(tf.square(y_true - y_pred))
     
-    # 區分不同預測情況
-    
-    # 1. 關鍵離床區域（標籤>=0.7) - 這些是最接近離床事件的時間點
+    # 區分不同預測情況，定義3種區域遮罩
+    # 1. 關鍵離床區域（標籤>=0.7)
     critical_event_mask = tf.cast(tf.greater_equal(y_true, 0.7), tf.float32)
     
-    # 2. 預警區域 (0.5 <= 標籤 < 0.7) - 這些是離床前的預警時間
+    # 2. 預警區域 (0.5 <= 標籤 < 0.7)
     warning_mask = tf.cast(
         tf.logical_and(
             tf.greater_equal(y_true, 0.5),
@@ -746,83 +744,317 @@ def pure_time_difference_loss(y_true, y_pred, target_lead_time=WARNING_TIME/2):
         tf.float32
     )
     
-    # 3. 非事件區域 (標籤<0.5) - 正常區域，沒有離床事件
+    # 3. 非事件區域 (標籤<0.5)
     normal_mask = tf.cast(tf.less(y_true, 0.5), tf.float32)
     
-    # 調整閾值為0.9
-    prediction_threshold = 0.9
+    # 使用較低的預測閾值，增加模型敏感度
+    prediction_threshold = 0.5
     
-    # 漏報懲罰 - 針對關鍵離床區域中預測值低於閾值的情況
-    # 這是最嚴重的錯誤，因為我們錯過了關鍵的離床事件
+    # 使用上面定義的遮罩直接計算不同類型的錯誤
+    # 關鍵離床事件漏報懲罰 (最嚴重錯誤) - 使用critical_event_mask
+    critical_miss_mask = tf.logical_and(
+        tf.less(y_pred, prediction_threshold),
+        tf.equal(critical_event_mask, 1.0)
+    )
     critical_miss_penalty = tf.where(
-        tf.logical_and(
-            tf.less(y_pred, prediction_threshold),   # 預測值低於閾值
-            tf.greater_equal(y_true, 0.7)            # 真實值高（關鍵區域）
-        ),
-        tf.ones_like(y_true) * 20.0,                # 極高懲罰
+        critical_miss_mask,
+        tf.ones_like(y_true) * 25.0,  # 提高懲罰權重
         tf.ones_like(y_true)
     )
     
-    # 預警區漏報 - 較輕的懲罰
+    # 預警區漏報懲罰 - 使用warning_mask
+    warning_miss_mask = tf.logical_and(
+        tf.less(y_pred, prediction_threshold),
+        tf.equal(warning_mask, 1.0)
+    )
     warning_miss_penalty = tf.where(
-        tf.logical_and(
-            tf.less(y_pred, prediction_threshold),                   # 預測值低於閾值
-            tf.logical_and(                                         # 預警區域
-                tf.greater_equal(y_true, 0.5),
-                tf.less(y_true, 0.7)
-            )
-        ),
-        tf.ones_like(y_true) * 5.0,                                # 中等懲罰
+        warning_miss_mask,
+        tf.ones_like(y_true) * 10.0,  # 提高預警區重要性
         tf.ones_like(y_true)
     )
     
-    # 誤報懲罰 - 標籤<0.5但預測>閾值的情況
-    # 這也很嚴重，但不如漏報
+    # 誤報懲罰 (較嚴重錯誤，但不如漏報) - 使用normal_mask
+    false_alarm_mask = tf.logical_and(
+        tf.greater_equal(y_pred, prediction_threshold),
+        tf.less(y_true, 0.3)  # 更嚴格的誤報定義
+    )
     false_alarm_penalty = tf.where(
-        tf.logical_and(
-            tf.greater_equal(y_pred, prediction_threshold),  # 高預測值
-            tf.less(y_true, 0.5)                           # 非事件區域
-        ),
-        tf.ones_like(y_true) * 8.0,                        # 高懲罰
+        false_alarm_mask,
+        tf.ones_like(y_true) * 8.0,
         tf.ones_like(y_true)
     )
     
-    # 輕度誤報 - 標籤<0.5但0.5<預測<閾值的情況
-    # 這是較輕的誤報
+    # 輕度誤報懲罰 - 使用normal_mask
+    minor_false_alarm_mask = tf.logical_and(
+        tf.logical_and(
+            tf.greater_equal(y_pred, 0.3),
+            tf.less(y_pred, prediction_threshold)
+        ),
+        tf.less(y_true, 0.3)
+    )
     minor_false_alarm_penalty = tf.where(
-        tf.logical_and(
-            tf.logical_and(
-                tf.greater_equal(y_pred, 0.5),
-                tf.less(y_pred, prediction_threshold)
-            ),
-            tf.less(y_true, 0.5)
-        ),
-        tf.ones_like(y_true) * 2.0,  # 較輕懲罰
+        minor_false_alarm_mask,
+        tf.ones_like(y_true) * 2.0,
         tf.ones_like(y_true)
     )
     
-    # 成功預測獎勵 - 對於關鍵區域的高預測值
-    # 我們希望在關鍵時刻得到高預測值
+    # 成功預測獎勵 - 使用 critical_event_mask 和 warning_mask 的組合
+    success_mask = tf.logical_and(
+        tf.greater_equal(y_pred, prediction_threshold),
+        tf.logical_or(
+            tf.equal(critical_event_mask, 1.0),
+            tf.equal(warning_mask, 1.0)
+        )
+    )
     success_reward = tf.where(
+        success_mask,
+        tf.ones_like(y_true) * 0.1,  # 更大的獎勵（通過更小的乘數）
+        tf.ones_like(y_true)
+    )
+    
+    # 使用加法而非乘法來組合懲罰因子，避免數值問題
+    # 計算各種罰分的總權重
+    penalty_weights = (
+        15.0 * tf.reduce_sum(tf.cast(critical_miss_mask, tf.float32)) +
+        5.0 * tf.reduce_sum(tf.cast(warning_miss_mask, tf.float32)) +
+        3.0 * tf.reduce_sum(tf.cast(false_alarm_mask, tf.float32)) +
+        1.0 * tf.reduce_sum(tf.cast(minor_false_alarm_mask, tf.float32)) -
+        2.0 * tf.reduce_sum(tf.cast(success_mask, tf.float32))  # 獎勵使用負值
+    )
+    
+    # 添加一個小常數避免除零錯誤
+    batch_size = tf.cast(tf.shape(y_true)[0], tf.float32)
+    normalized_penalty = penalty_weights / (batch_size + 1e-7)
+    
+    # 最終損失 = 原始損失 + 懲罰項
+    weighted_loss = mse + 0.3 * normalized_penalty
+    
+    return weighted_loss
+
+def improved_time_difference_loss(y_true, y_pred, target_lead_time=7.0):
+    """
+    改進版時間差異損失函數
+    
+    參數:
+    - y_true: 實際標籤
+    - y_pred: 預測概率
+    - target_lead_time: 目標提前預測時間（秒）
+    """
+    # 轉換為張量
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
+    # 結合BCE和MSE的基礎損失
+    bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+    mse = tf.reduce_mean(tf.square(y_true - y_pred))
+    base_loss = 0.7 * bce + 0.3 * mse
+    
+    # 定義預測閾值
+    prediction_threshold = 0.7
+    
+    # 區分不同區域遮罩
+    critical_event_mask = tf.cast(tf.greater_equal(y_true, 0.7), tf.float32)
+    warning_mask = tf.cast(
+        tf.logical_and(
+            tf.greater_equal(y_true, 0.5),
+            tf.less(y_true, 0.7)
+        ), 
+        tf.float32
+    )
+    normal_mask = tf.cast(tf.less(y_true, 0.5), tf.float32)
+    
+    # 使用遮罩創建不同類型的錯誤遮罩
+    # 1. 關鍵離床事件漏報
+    critical_miss_mask = tf.logical_and(
+        tf.less(y_pred, prediction_threshold),
+        tf.equal(critical_event_mask, 1.0)
+    )
+    critical_miss = tf.cast(critical_miss_mask, tf.float32) * 10.0
+    
+    # 2. 預警區漏報
+    warning_miss_mask = tf.logical_and(
+        tf.less(y_pred, prediction_threshold),
+        tf.equal(warning_mask, 1.0)
+    )
+    warning_miss = tf.cast(warning_miss_mask, tf.float32) * 5.0
+    
+    # 3. 嚴重誤報 - 高機率預測但實際是正常狀態
+    false_alarm_mask = tf.logical_and(
+        tf.greater_equal(y_pred, prediction_threshold),
+        tf.less(y_true, 0.3)
+    )
+    false_alarm = tf.cast(false_alarm_mask, tf.float32) * 3.0
+    
+    # 4. 輕度誤報 - 中等機率預測但實際是正常狀態
+    minor_false_alarm_mask = tf.logical_and(
+        tf.logical_and(
+            tf.greater_equal(y_pred, 0.5),
+            tf.less(y_pred, prediction_threshold)
+        ),
+        tf.less(y_true, 0.3)
+    )
+    minor_false_alarm = tf.cast(minor_false_alarm_mask, tf.float32) * 1.0
+    
+    # 5. 成功預測獎勵 - 使用critical_event_mask和warning_mask
+    success_mask = tf.logical_and(
+        tf.greater_equal(y_pred, prediction_threshold),
+        tf.logical_or(
+            tf.equal(critical_event_mask, 1.0),
+            tf.equal(warning_mask, 1.0)
+        )
+    )
+    success_reward = tf.cast(success_mask, tf.float32) * (-1.0)  # 負值表示獎勵
+    
+    # 組合所有懲罰和獎勵（使用加法而非乘法）
+    total_penalty = critical_miss + warning_miss + false_alarm + minor_false_alarm + success_reward
+    
+    # 總體損失 = 基礎損失 + 加權懲罰
+    final_loss = base_loss + 0.5 * total_penalty
+    
+    return tf.reduce_mean(final_loss)
+
+def simplified_time_difference_loss(y_true, y_pred, target_lead_time=7.0):
+    """
+    簡化版時間差異損失函數 - 針對二進制標籤資料優化
+    調整參數以提高預測機率
+    
+    參數:
+    - y_true: 實際標籤 (二進制 0/1)
+    - y_pred: 預測概率
+    - target_lead_time: 目標提前預測時間（默認7秒）
+    """
+    # 轉換為張量
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
+    # 基礎損失 - 結合BCE和MSE，增加BCE權重
+    bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+    mse = tf.reduce_mean(tf.square(y_true - y_pred))
+    base_loss = 0.7 * bce + 0.3 * mse  # 適當減少BCE權重，增加MSE權重
+    
+    # 二進制遮罩 - 只區分事件和非事件
+    event_mask = tf.cast(tf.equal(y_true, 1.0), tf.float32)  # 離床事件
+    non_event_mask = tf.cast(tf.equal(y_true, 0.0), tf.float32)  # 非離床事件
+    
+    # 預測閾值 - 降低各閾值以增加預測機率
+    prediction_threshold = 0.4  # 主閾值從0.5降到0.4
+    high_confidence = 0.7      # 高置信度閾值從0.8降到0.7
+    low_confidence = 0.2       # 低置信度閾值從0.3降到0.2
+    
+    # 1. 漏報懲罰 (最嚴重的錯誤) - 大幅提高懲罰力度
+    miss_mask = tf.logical_and(
+        tf.less(y_pred, prediction_threshold),
+        tf.equal(y_true, 1.0)
+    )
+    # 漏報程度越嚴重，懲罰越高 (預測值越低懲罰越高)
+    miss_degree = 1.0 - y_pred
+    miss_penalty = tf.where(
+        miss_mask, 
+        25.0 * miss_degree * event_mask,  # 提高懲罰係數從15.0到25.0
+        tf.zeros_like(y_pred)
+    )
+    
+    # 2. 高置信度誤報懲罰 (較嚴重的錯誤) - 適當降低懲罰力度
+    severe_false_alarm_mask = tf.logical_and(
+        tf.greater_equal(y_pred, high_confidence),
+        tf.equal(y_true, 0.0)
+    )
+    severe_false_alarm_penalty = tf.where(
+        severe_false_alarm_mask,
+        9.0 * y_pred * non_event_mask,  # 降低懲罰係數從12.0到9.0
+        tf.zeros_like(y_pred)
+    )
+    
+    # 3. 中度誤報懲罰 - 降低懲罰力度
+    medium_false_alarm_mask = tf.logical_and(
         tf.logical_and(
             tf.greater_equal(y_pred, prediction_threshold),
-            tf.greater_equal(y_true, 0.7)
+            tf.less(y_pred, high_confidence)
         ),
-        tf.ones_like(y_true) * 0.2,  # 減輕損失（獎勵）
-        tf.ones_like(y_true)
+        tf.equal(y_true, 0.0)
+    )
+    medium_false_alarm_penalty = tf.where(
+        medium_false_alarm_mask,
+        4.0 * y_pred * non_event_mask,  # 降低懲罰係數從6.0到4.0
+        tf.zeros_like(y_pred)
     )
     
-    # 計算總體加權損失
-    weighted_loss = mse * critical_miss_penalty * warning_miss_penalty * false_alarm_penalty * minor_false_alarm_penalty * success_reward
+    # 4. 輕度誤報懲罰 - 降低懲罰力度
+    mild_false_alarm_mask = tf.logical_and(
+        tf.logical_and(
+            tf.greater_equal(y_pred, low_confidence),
+            tf.less(y_pred, prediction_threshold)
+        ),
+        tf.equal(y_true, 0.0)
+    )
+    mild_false_alarm_penalty = tf.where(
+        mild_false_alarm_mask,
+        1.0 * y_pred * non_event_mask,  # 降低懲罰係數從2.0到1.0
+        tf.zeros_like(y_pred)
+    )
     
-    return tf.reduce_mean(weighted_loss)
+    # 5. 成功預測獎勵 - 大幅增加獎勵力度
+    success_mask = tf.logical_and(
+        tf.greater_equal(y_pred, prediction_threshold),
+        tf.equal(y_true, 1.0)
+    )
+    # 預測置信度越高獎勵越大
+    success_reward = tf.where(
+        success_mask,
+        -6.0 * y_pred * event_mask,  # 增加獎勵係數從-3.0到-6.0
+        tf.zeros_like(y_pred)
+    )
+    
+    # 6. 平滑性懲罰 - 降低懲罰力度
+    y_pred_shifted = tf.roll(y_pred, shift=1, axis=0)
+    prediction_jumps = tf.abs(y_pred - y_pred_shifted)
+    
+    # 針對兩種情況的跳變做懲罰處理:
+    # 1. 非事件區域中的大幅跳變 (減少噪聲) - 提高跳變閾值，降低懲罰
+    non_event_jumps_mask = tf.logical_and(
+        tf.greater(prediction_jumps, 0.3),  # 提高跳變閾值從0.2到0.3
+        tf.equal(y_true, 0.0)
+    )
+    
+    # 2. 事件區域中的過於尖銳的峰值 (讓預測更平滑) - 提高跳變閾值
+    event_jumps_mask = tf.logical_and(
+        tf.greater(prediction_jumps, 0.5),  # 提高跳變閾值從0.4到0.5
+        tf.equal(y_true, 1.0)
+    )
+    
+    # 綜合平滑處理 - 降低懲罰力度
+    smoothness_penalty = tf.where(
+        non_event_jumps_mask,
+        2.0 * prediction_jumps * non_event_mask,  # 降低懲罰係數從3.0到2.0
+        tf.zeros_like(y_pred)
+    ) + tf.where(
+        event_jumps_mask,
+        1.0 * prediction_jumps * event_mask,  # 降低懲罰係數從1.5到1.0
+        tf.zeros_like(y_pred)
+    )
+    
+    # 組合所有懲罰和獎勵
+    total_penalty = (
+        miss_penalty + 
+        severe_false_alarm_penalty + 
+        medium_false_alarm_penalty +
+        mild_false_alarm_penalty + 
+        success_reward +  
+        smoothness_penalty
+    )
+    
+    # 計算最終損失 - 增加自定義懲罰和獎勵的權重
+    final_loss = base_loss + 0.9 * tf.reduce_mean(total_penalty)  # 提高懲罰權重從0.7到0.9
+    
+    return final_loss
 
-def build_model(input_shape):
+def build_model(input_shape, loss_type='focal'):
     """
     構建用於處理完整時間序列的模型
     
     參數:
     - input_shape: 輸入數據的形狀，例如 (time_steps, features)
+    - loss_type: 使用的損失函數類型，可選 'focal'(默認)、'time_diff'、'improved_time_diff'、'simplified_time_diff'
     
     返回:
     - 構建好的模型
@@ -881,13 +1113,43 @@ def build_model(input_shape):
             return -alpha_t * (1-pt)**gamma * tf.math.log(pt + 1e-7)  # 添加一個小值避免log(0)
         return focal_loss_fixed
     
-    # 編譯模型，使用Focal Loss
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss=focal_loss(gamma=2.0, alpha=0.75),  # 增加alpha值，更偏重少數類別
-        metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
-                 tf.keras.metrics.AUC()]
-    )
+    # 根據選擇的損失函數類型進行編譯
+    if loss_type == 'time_diff':
+        # 使用pure_time_difference_loss
+        print("使用時間差異損失函數 (pure_time_difference_loss)")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss=pure_time_difference_loss,  # 使用時間差異損失
+            metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
+                    tf.keras.metrics.AUC()]
+        )
+    elif loss_type == 'improved_time_diff':
+        # 使用improved_time_difference_loss
+        print("使用改進版時間差異損失函數 (improved_time_difference_loss)")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss=improved_time_difference_loss,  # 使用改進版時間差異損失
+            metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
+                    tf.keras.metrics.AUC()]
+        )
+    elif loss_type == 'simplified_time_diff':
+        # 使用simplified_time_difference_loss
+        print("使用簡化版時間差異損失函數 (simplified_time_difference_loss)")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss=simplified_time_difference_loss,  # 使用簡化版時間差異損失
+            metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
+                    tf.keras.metrics.AUC()]
+        )
+    else:
+        # 使用Focal Loss (默認)
+        print("使用Focal Loss")
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss=focal_loss(gamma=2.0, alpha=0.75),  # 增加alpha值，更偏重少數類別
+            metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
+                    tf.keras.metrics.AUC()]
+        )
     
     return model
 
@@ -1572,6 +1834,8 @@ parser.add_argument('--load-only', action='store_true', help='只載入模型預
 parser.add_argument('--threshold', type=float, default=0.8, help='預測閾值，默認為0.8')
 parser.add_argument('--predict-new', action='store_true', help='只處理新資料並使用現有模型進行預測')
 parser.add_argument('--prediction-dir', type=str, default=PREDICTION_DATA_DIR, help='指定預測資料夾路徑')
+parser.add_argument('--loss-type', type=str, choices=['focal', 'time_diff', 'improved_time_diff', 'simplified_time_diff'], 
+                   default='focal', help='選擇損失函數: focal (預設)、time_diff (時間差異)、improved_time_diff (改進時間差異)或simplified_time_diff (簡化時間差異)')
 args = parser.parse_args()
 
 # 在主程式中，修改資料載入部分
@@ -1672,7 +1936,8 @@ try:
     else:
         # 訓練新模型
         print("建立並訓練新模型...")
-        model = build_model((X_all.shape[1], X_all.shape[2]))
+        print(f"使用損失函數類型: {args.loss_type}")
+        model = build_model((X_all.shape[1], X_all.shape[2]), loss_type=args.loss_type)
         
         # 設定回調函數
         callbacks = [
