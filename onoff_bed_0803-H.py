@@ -400,8 +400,6 @@ def OpenCmbFile():
     
     log_file.close()
 
-    # TODO: 新增讀取現有參數功能
-
     # 檢查是否有已存在的參數文件
     param_filename = f"{cmb_name[:-4]}_parameters.csv"
     param_filepath = os.path.join(DATA_DIR, param_filename)
@@ -2122,7 +2120,7 @@ def OpenCsvFile():
         csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             None, 
             "選擇 CSV 檔案", 
-            TRAIN_DATA_DIR,
+            "/Users/chenhunglun/Documents/Procjects/Humetrics_raw/_data/training/prediction/",
             "CSV files (*.csv)"
         )
         
