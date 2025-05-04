@@ -1994,7 +1994,7 @@ def generate_evaluation_summary(y_true, y_pred, timestamps, threshold=0.9):
 # 處理命令列參數
 parser = argparse.ArgumentParser(description='CNN-LSTM模型用於預測離床事件')
 parser.add_argument('--load-only', action='store_true', help='只載入模型預測，不重新訓練')
-parser.add_argument('--threshold', type=float, default=0.8, help='預測閾值，默認為0.8')
+parser.add_argument('--threshold', type=float, default=None, help='預測閾值，若未指定則使用自適應閾值')
 parser.add_argument('--predict-new', action='store_true', help='只處理新資料並使用現有模型進行預測')
 parser.add_argument('--prediction-dir', type=str, default=PREDICTION_DATA_DIR, help='指定預測資料夾路徑')
 parser.add_argument('--prediction-file', type=str, default='', help='指定要預測的單一檔案路徑')
@@ -2067,8 +2067,14 @@ try:
         pred_result_flat = pred_result.flatten()
         
         # 計算最佳閾值
-        adaptive_threshold = find_optimal_threshold(pred_result_flat)
-        print(f"使用自適應閾值: {adaptive_threshold:.4f}")
+        if args.threshold is not None:
+            # 使用用戶指定的閾值
+            adaptive_threshold = args.threshold
+            print(f"使用指定閾值: {adaptive_threshold:.4f}")
+        else:
+            # 使用自適應閾值
+            adaptive_threshold = find_optimal_threshold(pred_result_flat)
+            print(f"使用自適應閾值: {adaptive_threshold:.4f}")
         
         # 修改：同時將預測結果寫回兩個位置的清理過的檔案
         try:
@@ -2359,8 +2365,14 @@ try:
                 # 確保我們有足夠的預測結果
                 if len(all_pred_flat) >= len(original_df):
                     # 使用自適應閾值檢測來確定最佳閾值
-                    adaptive_threshold = find_optimal_threshold(all_pred_flat[:len(original_df)])
-                    print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
+                    if args.threshold is not None:
+                        # 使用用戶指定的閾值
+                        adaptive_threshold = args.threshold
+                        print(f"使用指定閾值: {adaptive_threshold:.4f}")
+                    else:
+                        # 使用自適應閾值
+                        adaptive_threshold = find_optimal_threshold(all_pred_flat[:len(original_df)])
+                        print(f"使用自適應閾值: {adaptive_threshold:.4f}")
                     
                     # 添加預測結果欄位（二值化結果）
                     original_df['Predicted'] = (all_pred_flat[:len(original_df)] > adaptive_threshold).astype(int)
@@ -2387,7 +2399,10 @@ try:
         # 輸出預測結果摘要
         print(f"\n預測結果摘要:")
         print(f"總筆數: {len(all_pred_flat)}")
-        adaptive_threshold = find_optimal_threshold(all_pred_flat)
+        if args.threshold is not None:
+            adaptive_threshold = args.threshold
+        else:
+            adaptive_threshold = find_optimal_threshold(all_pred_flat)
         print(f"預測值 > {adaptive_threshold:.4f} 的筆數: {np.sum(all_pred_flat > adaptive_threshold)}")
         print(f"預測值的範圍: {np.min(all_pred_flat)} 至 {np.max(all_pred_flat)}")
         print(f"預測值中最高的前五筆: {np.sort(all_pred_flat)[-5:]}")
@@ -2511,8 +2526,12 @@ try:
                 pred_results_df['Actual'] = y_pred_actual[:len(pred_result_flat)]
             
             # 計算預測摘要
-            adaptive_threshold = find_optimal_threshold(pred_result_flat)
-            print(f"使用自適應閾值: {adaptive_threshold:.4f} (原始閾值: {args.threshold})")
+            if args.threshold is not None:
+                adaptive_threshold = args.threshold
+                print(f"使用指定閾值: {adaptive_threshold:.4f}")
+            else:
+                adaptive_threshold = find_optimal_threshold(pred_result_flat)
+                print(f"使用自適應閾值: {adaptive_threshold:.4f}")
             
             positives = np.sum(pred_result_flat > adaptive_threshold)
             print(f"\n預測結果摘要 ({os.path.basename(pred_file_path)}):")
