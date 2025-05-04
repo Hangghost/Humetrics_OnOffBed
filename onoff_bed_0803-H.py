@@ -299,8 +299,7 @@ def toggle_marker():
                 raw_plot.vLine.sigPositionChanged.disconnect()
                 bit_plot.vLine.sigPositionChanged.disconnect()
             except:
-                pass
-                
+                pass                
             # 同步兩個圖表的標記線
             raw_plot.vLine.sigPositionChanged.connect(
                 lambda: bit_plot.vLine.setPos(raw_plot.vLine.value())
@@ -403,12 +402,82 @@ def OpenCmbFile():
 
     # TODO: 新增讀取現有參數功能
 
-    # 從 MQTT 獲取參數
-    if radio_Normal.isChecked():
-        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+    # 檢查是否有已存在的參數文件
+    param_filename = f"{cmb_name[:-4]}_parameters.csv"
+    param_filepath = os.path.join(DATA_DIR, param_filename)
+        
+    if os.path.exists(param_filepath):
+        # 如果參數文件存在，直接從文件讀取參數
+        try:
+            status_bar.showMessage(f'從參數文件 {param_filename} 讀取參數...')
+            QApplication.processEvents()
+            
+            # 讀取參數CSV文件
+            df_param = pd.read_csv(param_filepath)
+            reg_table = {}
+            
+            # 處理參數，按照參數名稱進行映射
+            for index, row in df_param.iterrows():
+                param_name = row['Parameter']
+                
+                # 處理通道參數
+                if param_name in ['min_preload', 'threshold_1', 'threshold_2', 'offset level']:
+                    param_index = ['min_preload', 'threshold_1', 'threshold_2', 'offset level'].index(param_name)
+                    
+                    # 根據參數類型設置對應的寄存器
+                    if param_name == 'min_preload':  # 42-47
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+42)] = int(ch_value)
+                    
+                    elif param_name == 'threshold_1':  # 48-53
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+48)] = int(ch_value)
+                    
+                    elif param_name == 'threshold_2':  # 58-63
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+58)] = int(ch_value)
+                
+                # 處理其他參數
+                elif param_name == 'Total':
+                    reg_table['41'] = int(row['Channel_1'])
+                elif param_name == 'Noise_1':
+                    reg_table['55'] = int(row['Channel_1'])
+                elif param_name == 'Noise_2':
+                    reg_table['54'] = int(row['Channel_1'])
+                elif param_name == 'Set Flip':
+                    reg_table['56'] = int(row['Channel_1'])
+                elif param_name == 'Air_Mattress':
+                    reg_table['57'] = int(row['Channel_1'])
+            
+            status_bar.showMessage(f'成功從參數文件讀取參數')
+            QApplication.processEvents()
+            
+        except Exception as e:
+            status_bar.showMessage(f'讀取參數文件失敗: {str(e)}，將從MQTT獲取參數')
+            QApplication.processEvents()
+            
+            # 讀取失敗時從MQTT獲取
+            if radio_Normal.isChecked():
+                reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+            else:
+                reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
     else:
-        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+        # 如果沒有參數文件，從MQTT獲取參數
+        status_bar.showMessage('未找到參數文件，從MQTT獲取參數...')
+        QApplication.processEvents()
+        
+        if radio_Normal.isChecked():
+            reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+        else:
+            reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
 
+    # 更新參數表格
     for ch in range(6):
         para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
         para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
