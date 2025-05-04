@@ -274,20 +274,26 @@ def create_sequences(df, cleaned_data_path, apply_balancing=APPLY_BALANCING, pos
     # 檢測事件並添加 event_binary 欄位
     df = detect_bed_events(df)
 
-    required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
-    required_columns.append('Raw_sum')
-    required_columns.append('Noise_max')
+    # 修改特徵列表，移除OnBed_Status和event_binary
+    input_feature_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+    input_feature_columns.append('Raw_sum')
+    input_feature_columns.append('Noise_max')
+    
+    # 檢查必要列是否存在（用於檢查，但不全部用於特徵）
+    required_columns = input_feature_columns.copy()
     required_columns.append('OnBed_Status')
-    required_columns.append('event_binary')  # 添加新的 event_binary 欄位
+    required_columns.append('event_binary')
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"缺少必要的列: {[col for col in required_columns if col not in df.columns]}")
-    df_features = df[required_columns].copy()
     
-    # 存一份CSV
-    df_features.to_csv(cleaned_data_path, index=False)
+    # 只複製實際用於模型的特徵列
+    df_features = df[input_feature_columns].copy()
+    
+    # 存一份CSV（包含所有列，便於檢查）
+    df.to_csv(cleaned_data_path, index=False)
     print(f"已保存CSV: {cleaned_data_path}")
     
-    # 保存原始欄位名稱
+    # 保存實際用於模型的特徵名稱
     feature_names = df_features.columns.tolist()
     
     # 轉換為數組時保留欄位名稱資訊
@@ -348,9 +354,13 @@ def load_and_process_data(raw_data_path, apply_balancing=APPLY_BALANCING, pos_to
         if 'Noise_max' in dataset.columns and 'Raw_sum' in dataset.columns:
             print("檢測到已處理過的數據檔案，跳過特徵工程步驟")
             
-            # 確保有必要的列
-            required_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
-            required_columns.extend(['Raw_sum', 'Noise_max', 'OnBed_Status'])
+            # 修改特徵列表，僅包含八個特徵
+            input_feature_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+            input_feature_columns.extend(['Raw_sum', 'Noise_max'])
+            
+            # 確保有必要的列（用於檢查）
+            required_columns = input_feature_columns.copy()
+            required_columns.append('OnBed_Status')
             
             # 檢查是否有event_binary欄位，沒有則添加
             if 'event_binary' not in dataset.columns:
@@ -363,10 +373,10 @@ def load_and_process_data(raw_data_path, apply_balancing=APPLY_BALANCING, pos_to
                 missing_cols = [col for col in required_columns if col not in dataset.columns]
                 raise ValueError(f"缺少必要的列: {missing_cols}")
             
-            # 選取所需欄位
-            df_features = dataset[required_columns].copy()
+            # 只選取實際用於模型的特徵列
+            df_features = dataset[input_feature_columns].copy()
             
-            # 保存原始欄位名稱
+            # 保存實際用於模型的特徵名稱
             feature_names = df_features.columns.tolist()
             
             # 轉換為數組
@@ -1628,6 +1638,9 @@ try:
     print(f"總標籤形狀: {y.shape}")
     print(f"總共有 {np.sum(event_binary_all)} 個離床事件")
     print(f"特徵名稱: {feature_names}")
+    print(f"注意: 已移除標籤特徵(OnBed_Status和event_binary)作為輸入，僅使用以下八個感測器相關特徵作為模型輸入:")
+    for i, feature in enumerate(feature_names):
+        print(f"  {i+1}. {feature}")
 
     # 不再分割訓練和測試集，直接使用所有資料
     X_all = X.reshape((X.shape[0], X.shape[1], 1))
@@ -1680,10 +1693,10 @@ try:
         # 訓練模型
         history = model.fit(
             X_all, y_all,
-            epochs=3,
+            epochs=2,
             batch_size=32,
             callbacks=callbacks,
-            class_weight={0: 1, 1: 300},  # 使用更高的權重比例，專注於離床事件
+            class_weight={0: 1, 1: 400},  # 使用更高的權重比例，專注於離床事件
             verbose=1
         )
         
