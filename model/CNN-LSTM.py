@@ -1309,7 +1309,7 @@ def build_model(input_shape, loss_type='focal'):
         print("使用Focal Loss")
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss=focal_loss(gamma=2.0, alpha=0.85),  # 增加alpha值，更偏重少數類別
+            loss=focal_loss(gamma=1.5, alpha=0.9), 
             metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
                     tf.keras.metrics.AUC()]
         )
@@ -2296,7 +2296,7 @@ try:
             epochs=2,
             batch_size=32,
             callbacks=callbacks,
-            class_weight={0: 1, 1: 400},  # 使用更高的權重比例，專注於離床事件
+            class_weight={0: 1, 1: 500},  # 使用更高的權重比例，專注於離床事件
             verbose=1
         )
         
