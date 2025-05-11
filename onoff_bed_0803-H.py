@@ -2183,14 +2183,173 @@ def OpenCsvFile():
         # 使用線條繪製，而非填充區域
         pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
         bit_plot_pred_offbed = bit_plot.plot(t1sec, event_offbed - 9.5, 
-                                           pen=pen, name='PREDICT OFFBED')
+                                           pen=pen, name='ACTUAL OFFBED')
         
         # 繪製predicted_binary數據 - 使用藍色線條
         pen_pred = pg.mkPen(color=(70, 130, 255), width=2)  # 使用藍色粗線條
         bit_plot_predicted = bit_plot.plot(t1sec, aligned_pred_data - 10.5,
                                           pen=pen_pred, name='PREDICTED DATA')
         
-        status_bar.showMessage(f"已成功載入CSV檔案: {os.path.basename(csv_path)}")
+        # 計算指標 - 真實事件和預測事件的差異分析
+        # 參數設定
+        tolerance_time = 7  # 容忍時間 7 秒
+        exclude_window = 180  # 排除時間窗 3 分鐘 (180 秒)
+        
+        # 找出所有事件的時間點
+        true_events = np.where(aligned_data == 1)[0]  # 真實事件的索引位置
+        all_pred_points = np.where(aligned_pred_data == 1)[0]  # 所有預測事件的索引位置
+        
+        # 將連續的預測點合併為預測事件
+        pred_events = []
+        if len(all_pred_points) > 0:
+            # 排序所有預測點
+            all_pred_points.sort()
+            
+            # 定義連續點的閾值（時間間隔）
+            continuity_threshold = 1  # 只有完全連續的點才視為同一事件（無間隔）
+            
+            # 初始化第一個事件
+            current_event = [all_pred_points[0]]
+            
+            # 遍歷剩餘點，將連續點合併為同一事件
+            for i in range(1, len(all_pred_points)):
+                # 如果當前點與前一點的時間差小於等於閾值，視為同一事件
+                if all_pred_points[i] - all_pred_points[i-1] <= continuity_threshold:
+                    current_event.append(all_pred_points[i])
+                else:
+                    # 當發現不連續點時，將當前事件添加到事件列表，並開始新事件
+                    pred_events.append(current_event)
+                    current_event = [all_pred_points[i]]
+            
+            # 添加最後一個事件
+            pred_events.append(current_event)
+        
+        if len(true_events) == 0 or len(pred_events) == 0:
+            # 如果沒有事件，則設定默認指標值
+            score = 0.0
+            status_bar.showMessage(f"已載入CSV檔案，但未找到足夠事件進行分析")
+            update_calculated_value(score)
+            QApplication.processEvents()
+            return
+        
+        # 初始化統計變量
+        matched_pairs = []  # 配對的事件
+        time_diffs = []     # 時間差異
+        false_positives = 0  # 誤報數量
+        false_negatives = 0  # 漏報數量
+        
+        # 記錄已配對的預測事件索引
+        matched_pred_event_indices = set()
+        
+        # 建立一個標記數組，表示預測事件是否在排除窗口內
+        in_exclusion_window = np.zeros(len(aligned_pred_data), dtype=bool)
+        
+        # 1. 先配對離「真實事件」最近的「預測事件」
+        for true_idx in true_events:
+            closest_pred_event_idx = None
+            min_diff = float('inf')
+            closest_pred_point = None
+            
+            # 對每個預測事件計算與當前真實事件的時間差
+            for event_idx, pred_event in enumerate(pred_events):
+                if event_idx in matched_pred_event_indices:
+                    continue  # 跳過已配對的預測事件
+                
+                # 計算事件中每個點與真實事件的時間差，取最小值
+                for pred_point in pred_event:
+                    time_diff = abs(pred_point - true_idx)  # 時間差 (以索引差表示)
+                    
+                    # 檢查是否在容忍時間內且是最小的時間差
+                    if time_diff <= tolerance_time and time_diff < min_diff:
+                        min_diff = time_diff
+                        closest_pred_event_idx = event_idx
+                        closest_pred_point = pred_point
+            
+            # 如果找到符合條件的最近預測事件
+            if closest_pred_event_idx is not None and closest_pred_point is not None:
+                matched_pairs.append((true_idx, closest_pred_point))
+                time_diffs.append(closest_pred_point - true_idx)  # 正值表示預測滯後，負值表示預測提早
+                matched_pred_event_indices.add(closest_pred_event_idx)
+                
+                # 3. 標記排除窗口 - 對應預測事件後3分鐘
+                # 使用事件中的所有點來標記排除窗口
+                for pred_point in pred_events[closest_pred_event_idx]:
+                    start_exclude = pred_point
+                    end_exclude = min(pred_point + exclude_window, len(aligned_pred_data))
+                    in_exclusion_window[start_exclude:end_exclude] = True
+            else:
+                # 如果沒有找到符合條件的預測事件，視為漏報
+                false_negatives += 1
+        
+        # 4. 統計誤報 - 未被配對且不在排除窗口的預測事件
+        false_positives = 0
+        for event_idx, pred_event in enumerate(pred_events):
+            if event_idx in matched_pred_event_indices:
+                continue  # 跳過已配對的預測事件
+            
+            # 檢查事件中是否有任何時間點在排除窗口內
+            # 如果有任何一個點在排除窗口內，整個事件就不算作誤報
+            any_point_in_exclusion_window = False
+            for pred_point in pred_event:
+                if in_exclusion_window[pred_point]:
+                    any_point_in_exclusion_window = True
+                    break
+            
+            # 只有當事件的所有時間點都不在排除窗口內時，才算作誤報
+            if not any_point_in_exclusion_window:
+                false_positives += 1
+        
+        # 5. 計算綜合指標
+        total_matches = len(matched_pairs)
+        
+        # 分開計算提早和延遲的時間差
+        early_diffs = [diff for diff in time_diffs if diff < 0]  # 提早（負值）
+        late_diffs = [diff for diff in time_diffs if diff >= 0]  # 延遲（正值）
+        
+        # 計算平均提早和延遲時間
+        avg_early_diff = np.mean(np.abs(early_diffs)) if early_diffs else 0
+        avg_late_diff = np.mean(late_diffs) if late_diffs else 0
+        avg_time_diff = np.mean(np.abs(time_diffs)) if time_diffs else 0
+        
+        # 計算一個綜合評分 (0-100)，考慮配對率、時間差和誤報/漏報
+        if total_matches > 0:
+            match_rate = total_matches / (total_matches + false_negatives)
+            precision = total_matches / (total_matches + false_positives) if (total_matches + false_positives) > 0 else 0
+            
+            # 時間差指標 - 分別考慮提早和延遲
+            # 延遲分數：延遲越小越好
+            late_score = max(0, 1.0 - (avg_late_diff / 10.0)) if avg_late_diff <= 10 else 0
+            print(f"延遲分數: {late_score}")
+            
+            # 提早分數：提早越多越好（最多提早10秒獲得滿分，完全不提早得0分）
+            early_score = min(1.0, avg_early_diff / 4.0) if avg_early_diff > 0 else 0
+            print(f"提早分數: {early_score}")
+            
+            # 綜合時間差分數：根據提早和延遲樣本的比例加權
+            if not time_diffs:
+                time_diff_score = 0
+            else:
+                early_weight = len(early_diffs) / len(time_diffs) if early_diffs else 0
+                late_weight = len(late_diffs) / len(time_diffs) if late_diffs else 0
+                time_diff_score = early_weight * early_score + late_weight * late_score
+            
+            # 綜合評分 (調整權重)
+            match_weight = 0.4
+            precision_weight = 0.2
+            time_diff_weight = 0.4
+            
+            score = 100 * (match_weight * match_rate + precision_weight * precision + time_diff_weight * time_diff_score)
+        else:
+            score = 0.0
+        
+        # 顯示結果
+        early_late_msg = f"提早樣本: {len(early_diffs)}, 平均提早: {avg_early_diff:.2f}秒 | 延遲樣本: {len(late_diffs)}, 平均延遲: {avg_late_diff:.2f}秒"
+        result_msg = (f"評分: {score:.2f} | 所有事件: {len(true_events)} | 預測事件: {len(pred_events)} | "
+                      f"配對: {total_matches} | 漏報: {false_negatives} | 誤報: {false_positives} | 平均時差: {avg_time_diff:.2f}秒 | "
+                      f"配對率: {match_rate:.2f} | 精確率: {precision:.2f} | 時間差指標: {time_diff_score:.2f} | {early_late_msg}")
+        
+        status_bar.showMessage(f"{result_msg}")
+        update_calculated_value(score)
         QApplication.processEvents()
     except Exception as e:
         status_bar.showMessage(f"載入 CSV 檔案時發生錯誤: {str(e)}")

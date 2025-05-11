@@ -68,6 +68,10 @@ os.makedirs("./_data/training", exist_ok=True)
 
 SILENCE_TIME = 0
 
+EPOCHS = 2
+BATCH_SIZE = 32
+ALPHA = 0.9
+GAMMA = 1.6
 
 # 自定義的評估回調
 class EventEvaluationCallback(tf.keras.callbacks.Callback):
@@ -1309,7 +1313,7 @@ def build_model(input_shape, loss_type='focal'):
         print("使用Focal Loss")
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss=focal_loss(gamma=1.5, alpha=0.9), 
+            loss=focal_loss(gamma=GAMMA, alpha=ALPHA), 
             metrics=['accuracy', tf.keras.metrics.Recall(), tf.keras.metrics.Precision(), 
                     tf.keras.metrics.AUC()]
         )
@@ -2293,8 +2297,8 @@ try:
         # 訓練模型
         history = model.fit(
             X_all, y_all,
-            epochs=2,
-            batch_size=32,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
             callbacks=callbacks,
             class_weight={0: 1, 1: 500},  # 使用更高的權重比例，專注於離床事件
             verbose=1
