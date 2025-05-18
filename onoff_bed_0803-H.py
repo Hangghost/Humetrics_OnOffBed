@@ -161,7 +161,15 @@ class TimeAxisItem(pg.AxisItem):
         value = value % 86400
         if value == 0: 
             global startday
-            return (startday + timedelta(days=day)).strftime('%Y/%m/%d')
+            try:
+                date_str = (startday + timedelta(days=day)).strftime('%Y/%m/%d')
+                if day == 0:
+                    # 只在第一天打印，避免過多日誌
+                    print(f"[DEBUG] 時間軸日期: {date_str}, 基於 startday = {startday}")
+                return date_str
+            except Exception as e:
+                print(f"[ERROR] 時間軸格式化錯誤: {e}, startday = {startday}, day = {day}")
+                return "日期錯誤"
         else:
             hours = int(value // 3600)
             minutes = int((value % 3600) // 60)
@@ -377,9 +385,20 @@ def GetParaTable():
     dist_thr      = int(para_table.item(0, 8).text())
     air_mattress  = int(para_table.item(2, 8).text())
 
+# 添加在檔案中的適當位置（例如在其他函數定義之後）
+def check_startday():
+    """打印當前 startday 的值"""
+    global startday
+    
+    try:
+        with open("startday_log.txt", "a") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - startday = {startday}\n")
+    except:
+        pass
+
 #-----------------------------------------------------------------------    
 def OpenCmbFile():
-    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, cmb_name
+    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, cmb_name, startday
     
     # 添加數據源記錄
     log_file = open(f'{LOG_DIR}/data_source_log.txt', 'w', encoding='utf-8')
@@ -1084,10 +1103,10 @@ def OpenCmbFile():
         
 
     # 計算不同取樣率對應的時間 --------------------------------------------------------    
-    st = (time_array[0] - time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
-    # 不在這裡宣告global startday，而是直接使用全域變數
     global t10ms
     global t1sec
+    
+    st = (time_array[0] - time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
     startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
     preprocess_log_file.write(f"\n基準時間: {startday}, 起始秒數: {st}\n")
 
@@ -1511,9 +1530,14 @@ def OpenCmbFile():
         status_bar.showMessage(f'保存檔案時發生錯誤: {str(e)}')
         QApplication.processEvents()
 
+    # 最後檢查 startday 的值
+    check_startday()
+    status_bar.showMessage(f"載入完成，檔案日期: {startday.strftime('%Y/%m/%d')}")
+
 #-----------------------------------------------------------------------
 def update_raw_plot():
     global raw_plot_ch
+    check_startday()  # 添加這行以記錄 startday 的值
     GetParaTable()
     # --------------------------------------------------------------------
     data_median = []
@@ -1631,8 +1655,16 @@ def update_raw_plot():
 
 #-----------------------------------------------------------------------
 def update_bit_plot():
-    global bit_plot_sum
+    global onload
+    global onbed
+    #global bit_plot_label
+    global t1sec
+    global idx1sec
+    
+    check_startday()  # 添加這行以記錄 startday 的值
+
     global bit_plot_ch
+    global bit_plot_sum
     global bit_plot_onff
     global bit_plot_pred_offbed
     global bit_plot_predicted
@@ -2522,7 +2554,7 @@ def download_files_by_time_range(FILE_PATH, ST_TIME, ED_TIME, FTP_ADDR, USER, PA
 
 #--------------------------------------------------------------------------
 def loadClicked(event):
-    global cmb_name  # 將global宣告移到函數開頭
+    global cmb_name, startday  # 將global宣告移到函數開頭並添加startday
     
     ST_TIME = start_time.text()
     ED_TIME = end_time.text()
@@ -2833,7 +2865,8 @@ def generate_annotation():
 
 #--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
-startday = datetime.now()
+
+startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # 確保初始值也設為當天的0點
 
 radio_Normal = QRadioButton('Normal')
 radio_Test = QRadioButton('Test')
@@ -3064,4 +3097,5 @@ mw.show()
 # timer.singleShot(500, lambda: update_calculated_value(123.45))
 
 app.exec_()
+
 
