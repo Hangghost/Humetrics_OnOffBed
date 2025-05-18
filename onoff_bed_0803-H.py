@@ -79,6 +79,10 @@ TRAIN_DATA_DIR = "./_data/pyqt_viewer/training"
 if not os.path.exists(TRAIN_DATA_DIR):
     os.makedirs(TRAIN_DATA_DIR)
 
+PREDICT_DATA_DIR = "./_data/training/prediction"
+if not os.path.exists(PREDICT_DATA_DIR):
+    os.makedirs(PREDICT_DATA_DIR)
+
 #--------------------------------------------------------------------------
 class CustomViewBox(pg.ViewBox):
     def __init__(self, *args, **kwargs):
@@ -165,7 +169,8 @@ class TimeAxisItem(pg.AxisItem):
                 date_str = (startday + timedelta(days=day)).strftime('%Y/%m/%d')
                 if day == 0:
                     # 只在第一天打印，避免過多日誌
-                    print(f"[DEBUG] 時間軸日期: {date_str}, 基於 startday = {startday}")
+                    # print(f"[DEBUG] 時間軸日期: {date_str}, 基於 startday = {startday}")
+                    pass
                 return date_str
             except Exception as e:
                 print(f"[ERROR] 時間軸格式化錯誤: {e}, startday = {startday}, day = {day}")
@@ -1533,6 +1538,51 @@ def OpenCmbFile():
     # 最後檢查 startday 的值
     check_startday()
     status_bar.showMessage(f"載入完成，檔案日期: {startday.strftime('%Y/%m/%d')}")
+    
+    # 在OpenCmbFile最後，所有處理完成後，再嘗試自動讀取CSV
+    try:
+        # 獲取SN和時間範圍
+        sn = iCueSN.text()
+        start_time_str = start_time.text()
+        end_time_str = end_time.text()
+        
+        # 解析時間字符串
+        start_date = start_time_str[:8]  # 取得 YYYYMMDD
+        start_time_value = start_time_str[9:15]  # 取得 HHMMSS
+        end_date = end_time_str[:8]  # 取得 YYYYMMDD
+        end_time_value = end_time_str[9:15]  # 取得 HHMMSS
+        
+        # 構建CSV檔案名稱
+        csv_filename = f"cleaned_{sn}_{start_date}_{start_time_value[:2]}_{end_date}_{end_time_value[:2]}_data.csv"
+        csv_path = os.path.join(PREDICT_DATA_DIR, csv_filename)
+        
+        # 檢查檔案是否存在
+        if os.path.exists(csv_path):
+            status_bar.showMessage(f'自動載入CSV檔案: {csv_filename}')
+            QApplication.processEvents()
+            
+            # 讀取 CSV 檔案
+            df = pd.read_csv(csv_path)
+            
+            # 繪製數據並獲取處理後的數據
+            result = plot_csv_data(df, startday, t1sec)
+            if result is not None:
+                aligned_data, aligned_pred_data, true_events, pred_events = result
+
+                # 計算預測指標
+                score, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+                status_bar.showMessage(result_msg)
+                update_calculated_value(score)
+                QApplication.processEvents()
+            else:
+                status_bar.showMessage(f'找到CSV檔案但無法正確繪製: {csv_filename}')
+        else:
+            status_bar.showMessage(f'找不到CSV檔案: {csv_filename}')
+        # 如果檔案不存在，不顯示錯誤訊息，讓用戶手動點選
+
+    except Exception as e:
+        # 自動載入失敗，但不顯示錯誤，讓用戶可以手動選擇
+        print(f"自動載入CSV時發生錯誤: {str(e)}")
 
 #-----------------------------------------------------------------------
 def update_raw_plot():
@@ -2175,27 +2225,116 @@ def OpenCsvFile():
         # 讀取 CSV 檔案
         df = pd.read_csv(csv_path)
         
-        # 檢查是否有event_binary欄位
-        if 'event_binary' not in df.columns:
-            status_bar.showMessage(f"CSV 檔案中找不到 event_binary 欄位")
-            QApplication.processEvents()
+        # 繪製數據並獲取處理後的數據
+        result = plot_csv_data(df, startday, t1sec)
+        if result is None:
             return
+            
+        aligned_data, aligned_pred_data, true_events, pred_events = result
+        
+        # 計算預測指標
+        score, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+        status_bar.showMessage(result_msg)
+        update_calculated_value(score)
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f"載入 CSV 檔案時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+
+        
+def calculate_rising_dist(dist, log_file=None):
+    """計算翻身指標的輔助函數
+    
+    Args:
+        dist: 位移資料
+        log_file: 日誌文件對象，如果提供則記錄計算過程
+    
+    Returns:
+        計算後的翻身指標
+    """
+    if log_file:
+        log_file.write("  計算翻身指標細節:\n")
+        log_file.write(f"    位移資料前10個值: {dist[:10]}\n")
+    
+    dist_series = pd.Series(dist)
+    shift = 60
+    
+    if log_file:
+        log_file.write(f"    使用的偏移量: {shift}\n")
+    
+    # 為了處理邊界情況，我們需要確保移位操作不會超出範圍
+    # 先計算移位差值，然後用0填充NaN（這會在序列末尾產生）
+    rising_dist = dist_series.shift(-shift) - dist_series
+    
+    if log_file:
+        log_file.write(f"    偏移差值前10個值: {rising_dist[:10]}\n")
+    
+    # 用0填充NaN值，這會發生在序列的末尾
+    rising_dist = rising_dist.fillna(0)
+    
+    # 轉換為整數陣列（這樣我們可以在numpy陣列上操作）
+    rising_dist = np.int32(rising_dist)
+    
+    if log_file:
+        log_file.write(f"    填充NaN後前10個值: {rising_dist[:10]}\n")
+    
+    # 負值處理
+    rising_dist[rising_dist < 0] = 0
+    
+    if log_file:
+        log_file.write(f"    負值處理後前10個值: {rising_dist[:10]}\n")
+    
+    # 縮放數值
+    rising_dist = rising_dist // 127
+    
+    if log_file:
+        log_file.write(f"    除以127後前10個值: {rising_dist[:10]}\n")
+    
+    # 限制最大值
+    rising_dist[rising_dist > 1000] = 1000
+    
+    if log_file:
+        log_file.write(f"    限制最大值後前10個值: {rising_dist[:10]}\n")
+        log_file.write(f"    最終翻身指標統計：最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}, 長度={len(rising_dist)}\n")
+    
+    return rising_dist
+
+def plot_csv_data(df, startday, t1sec):
+    """
+    繪製CSV檔案中的離床事件和預測事件
+    
+    參數:
+    df - 包含event_binary和Predicted列的DataFrame
+    startday - 起始日期時間
+    t1sec - 時間向量
+    
+    返回:
+    (aligned_data, aligned_pred_data, true_events, pred_events) - 繪製後的數據和事件
+    或者在出錯時返回None
+    """
+    try:
+        # 檢查是否有必要的欄位
+        if 'event_binary' not in df.columns:
+            status_bar.showMessage("CSV 檔案中找不到 event_binary 欄位")
+            QApplication.processEvents()
+            return None
         
         # 檢查是否有Predicted欄位
         if 'Predicted' not in df.columns:
-            status_bar.showMessage(f"CSV 檔案中找不到 Predicted 欄位")
+            status_bar.showMessage("CSV 檔案中找不到 Predicted 欄位")
             QApplication.processEvents()
-            return
+            return None
         
         # 獲取event_binary數據
         event_binary = df['event_binary'].values
         predicted_binary = df['Predicted'].values
         
         # 更新predicted_offbed數據
+        global bit_plot_pred_offbed, bit_plot_predicted
         if 'bit_plot_pred_offbed' in globals() and bit_plot_pred_offbed is not None:
             bit_plot_pred_offbed.clear()
         
-        global bit_plot_predicted
         if 'bit_plot_predicted' in globals() and bit_plot_predicted is not None:
             bit_plot_predicted.clear()
         
@@ -2227,17 +2366,12 @@ def OpenCsvFile():
         # 使用線條繪製，而非填充區域
         pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
         bit_plot_pred_offbed = bit_plot.plot(t1sec, event_offbed - 9.5, 
-                                           pen=pen, name='ACTUAL OFFBED')
+                                          pen=pen, name='ACTUAL OFFBED')
         
         # 繪製predicted_binary數據 - 使用藍色線條
         pen_pred = pg.mkPen(color=(70, 130, 255), width=2)  # 使用藍色粗線條
         bit_plot_predicted = bit_plot.plot(t1sec, aligned_pred_data - 10.5,
-                                          pen=pen_pred, name='PREDICTED DATA')
-        
-        # 計算指標 - 真實事件和預測事件的差異分析
-        # 參數設定
-        tolerance_time = 7  # 容忍時間 7 秒
-        exclude_window = 180  # 排除時間窗 3 分鐘 (180 秒)
+                                         pen=pen_pred, name='PREDICTED DATA')
         
         # 找出所有事件的時間點
         true_events = np.where(aligned_data == 1)[0]  # 真實事件的索引位置
@@ -2267,14 +2401,38 @@ def OpenCsvFile():
             
             # 添加最後一個事件
             pred_events.append(current_event)
-        
+            
+        return (aligned_data, aligned_pred_data, true_events, pred_events)
+    except Exception as e:
+        status_bar.showMessage(f"繪製CSV數據時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+        return None
+
+def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events):
+    """
+    計算預測指標
+    
+    參數:
+    aligned_data - 對齊後的真實事件數據
+    aligned_pred_data - 對齊後的預測事件數據
+    true_events - 真實事件索引陣列
+    pred_events - 預測事件索引陣列列表
+    
+    返回:
+    score - 綜合評分，如果無法計算則返回0
+    """
+    try:
+        # 如果沒有足夠事件進行分析，直接返回
         if len(true_events) == 0 or len(pred_events) == 0:
-            # 如果沒有事件，則設定默認指標值
             score = 0.0
-            status_bar.showMessage(f"已載入CSV檔案，但未找到足夠事件進行分析")
+            status_bar.showMessage("已載入CSV檔案，但未找到足夠事件進行分析")
             update_calculated_value(score)
             QApplication.processEvents()
-            return
+            return score
+            
+        # 參數設定
+        tolerance_time = 7  # 容忍時間 7 秒
+        exclude_window = 180  # 排除時間窗 3 分鐘 (180 秒)
         
         # 初始化統計變量
         matched_pairs = []  # 配對的事件
@@ -2395,9 +2553,12 @@ def OpenCsvFile():
         status_bar.showMessage(f"{result_msg}")
         update_calculated_value(score)
         QApplication.processEvents()
+        
+        return score, result_msg
     except Exception as e:
-        status_bar.showMessage(f"載入 CSV 檔案時發生錯誤: {str(e)}")
+        status_bar.showMessage(f"計算預測指標時發生錯誤: {str(e)}")
         QApplication.processEvents()
+        return 0
 
         
 def calculate_rising_dist(dist, log_file=None):
