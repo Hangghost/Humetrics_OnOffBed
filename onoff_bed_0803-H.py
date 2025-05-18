@@ -896,12 +896,24 @@ def OpenCmbFile():
         preprocess_log_file.write(f"正在處理通道 {ch+1}:\n")
         
         # --------------------------------------------------------
-        hp = np.convolve(data[:,ch], [-1, -2, -3, -4, 4, 3, 2, 1], mode='same')
-        preprocess_log_file.write(f"  通道 {ch+1} 高通濾波後前10個值: {hp[:10]}\n")
+        orig_len = data.shape[0]
+        # Step 1: 每3點取median（非滑動）
+        channel_data = data[:, ch]
+        channel_data = np.roll(channel_data, 3)
+        reshaped = channel_data[:orig_len - orig_len % 3].reshape(-1, 3)  # 分成3個一組
+        med3_ds = np.median(reshaped, axis=1)  # 每3點取median
+        # Step 2: 差分
+        diff_series = pd.Series(np.diff(med3_ds, prepend=med3_ds[0]))  # 頭補上第一個值維持長度
+        # Step 3: Rolling MAD on diff_series
+        mad_series = diff_series.rolling(window=15, center=True).apply(
+            lambda x: np.mean(np.abs(x - x.mean())), raw=True
+        ).fillna(0)
+        # Step 4: Upsample 回原長度 ×3，並補0
+        upsampled = np.repeat(mad_series.values, 3)  # 每個值複製3次
+        padded = np.zeros(orig_len)  # 初始化為0
+        padded[:min(len(upsampled), orig_len)] = upsampled[:orig_len]  # 補到原始長度
+        n = padded[::10]
         
-        n = np.convolve(np.abs(hp / 16), lpf, mode='full')
-        n = n[10:-37] / 4096
-        n = n[::10]
         n10.append(np.int32(n))
         preprocess_log_file.write(f"  通道 {ch+1} 噪聲值前10個元素: {n[:10]}\n")
         
@@ -1766,7 +1778,7 @@ def EvalParameters():
         log_file.write(f"  通道 {ch} 噪聲值前10個值: {n[:10]}\n")
         
         # 判斷是否為零點（無負載狀態）
-        zeroing = np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5))
+        zeroing = (np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5)) & (np.less(n, noise_offbed) | (ch > 3)))
         log_file.write(f"  通道 {ch} 零點判定前10個值: {zeroing[:10]}\n")
         
         th1 = th1_edit[ch]
