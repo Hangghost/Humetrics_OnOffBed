@@ -51,6 +51,7 @@ from pyqtgraph.Qt import QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QRadioButton, QCheckBox, qApp, QHeaderView, QLabel
 import pyqtgraph as pg
+import pyqtgraph.exporters
 from PyQt5.QtCore import Qt, QSizeF
 from PyQt5.QtGui import QPainter, QPdfWriter, QImage, QIcon, QColor
 import paho.mqtt.client as mqtt
@@ -61,6 +62,7 @@ import time
 from datetime import datetime, timedelta
 import json
 import ssl
+import pytz
 #import threading
 
 global TAB_K
@@ -3024,6 +3026,140 @@ def generate_annotation():
             
     status_bar.showMessage(f'標注檔案已儲存: {filename}')
 
+def save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir):
+    """
+    保存當前圖表的截圖
+    
+    參數:
+    serial_id - 設備序號
+    st_time - 開始時間字符串
+    ed_time - 結束時間字符串  
+    screenshot_dir - 截圖保存目錄
+    """
+    try:
+        # 確保圖表已經完全繪製
+        QApplication.processEvents()
+        
+        # 生成檔案名稱
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 截圖整個主視窗
+        main_window_filename = f"{serial_id}_{st_time}_{ed_time}_main_window_{timestamp}.png"
+        main_window_path = os.path.join(screenshot_dir, main_window_filename)
+        
+        # 截圖整個主視窗
+        pixmap = mw.grab()
+        pixmap.save(main_window_path)
+        
+        status_bar.showMessage(f'已保存截圖: {serial_id} ({st_time}-{ed_time})')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'截圖保存失敗: {str(e)}')
+        QApplication.processEvents()
+        print(f"截圖錯誤詳情: {str(e)}")
+
+#--------------------------------------------------------------------------
+
+def batch_ftp_download_clicked():
+    # 檢查CSV文件是否存在
+    csv_path = './serial_ids_20250519.csv'
+    if not os.path.exists(csv_path):
+        status_bar.showMessage(f'找不到檔案: {csv_path}')
+        QApplication.processEvents()
+        return
+    
+    # 讀取CSV文件中的設備ID
+    serial_ids = []
+    try:
+        with open(csv_path, 'r') as f:
+            for line in f:
+                serial_id = line.strip()
+                if serial_id:  # 確保ID不是空的
+                    serial_ids.append(serial_id)
+    except Exception as e:
+        status_bar.showMessage(f'讀取CSV檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        return
+    
+    if not serial_ids:
+        status_bar.showMessage('CSV檔案中沒有找到有效的設備ID')
+        QApplication.processEvents()
+        return
+    
+    status_bar.showMessage(f'找到 {len(serial_ids)} 個設備ID，開始批量下載...')
+    QApplication.processEvents()
+    
+    # 創建截圖保存目錄
+    screenshot_dir = os.path.join(LOG_DIR, 'batch_screenshots')
+    if not os.path.exists(screenshot_dir):
+        os.makedirs(screenshot_dir)
+    
+    # 獲取當前時間
+    now_utc = datetime.now(pytz.utc)
+    gmt8 = pytz.timezone('Asia/Singapore')
+    today = now_utc.astimezone(gmt8)
+    
+    # 計算最近三天的日期
+    days = [today - timedelta(days=i) for i in range(2, 5)]  # 前2,3,4天
+    
+    # 保存原始UI設置
+    original_sn = iCueSN.text()
+    original_start = start_time.text()
+    original_end = end_time.text()
+    
+    # 設置數據源為FTP:\\RAW
+    original_source = data_source.currentText()
+    data_source.setCurrentText('FTP:\\RAW')
+    
+    # 對每個ID和每一天下載數據
+    for serial_id in serial_ids:
+        status_bar.showMessage(f'處理設備 {serial_id}...')
+        QApplication.processEvents()
+        
+        # 設置設備ID
+        iCueSN.setText(serial_id)
+        
+        for day in days:
+            # 設置當天4:00到隔天4:00的時間範圍
+            day_start = day.replace(hour=4, minute=0, second=0)
+            day_end = day_start + timedelta(days=1)
+            
+            # 格式化時間為YYYYMMDD_HHMMSS
+            st_time = day_start.strftime('%Y%m%d_040000')
+            ed_time = day_end.strftime('%Y%m%d_040000')
+            
+            status_bar.showMessage(f'下載設備 {serial_id} 從 {st_time} 到 {ed_time} 的數據...')
+            QApplication.processEvents()
+            
+            # 設置時間範圍
+            start_time.setText(st_time)
+            end_time.setText(ed_time)
+            
+            # 執行下載 - 直接調用loadClicked模擬點擊事件
+            try:
+                # 創建一個模擬的鼠標點擊事件
+                loadClicked(None)
+                # 等待一段時間以確保下載和繪圖完成
+                QApplication.processEvents()
+                time.sleep(3)  # 增加等待時間確保圖表完全繪製
+                
+                # 截圖保存
+                save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir)
+                
+            except Exception as e:
+                status_bar.showMessage(f'下載時發生錯誤: {str(e)}')
+                QApplication.processEvents()
+    
+    # 恢復原始UI設置
+    iCueSN.setText(original_sn)
+    start_time.setText(original_start)
+    end_time.setText(original_end)
+    data_source.setCurrentText(original_source)
+    
+    status_bar.showMessage(f'批量下載完成，截圖已保存至: {screenshot_dir}')
+    QApplication.processEvents()
+
 #--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
 
@@ -3093,6 +3229,9 @@ json_button.clicked.connect(OpenJsonFile)
 
 csv_button = QtWidgets.QPushButton("開啟 CSV")
 csv_button.clicked.connect(OpenCsvFile)
+
+batch_ftp_download = QPushButton('Batch FTP Download')
+batch_ftp_download.clicked.connect(batch_ftp_download_clicked)
 
 # 標記相關按鈕
 marker_btn = QPushButton('開始標記')
@@ -3211,6 +3350,7 @@ marker_row_layout.setAlignment(QtCore.Qt.AlignLeft)  # 設置按鈕靠左對齊
 marker_row_layout.addWidget(check_get_para)
 marker_row_layout.addWidget(json_button)
 marker_row_layout.addWidget(csv_button)
+marker_row_layout.addWidget(batch_ftp_download)  # 添加批量下載按鈕
 
 marker_row_layout.addWidget(marker_btn)
 marker_row_layout.addWidget(marker_type_combo)
