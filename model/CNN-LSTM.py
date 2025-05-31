@@ -2082,6 +2082,10 @@ try:
         
         # 修改：同時將預測結果寫回兩個位置的清理過的檔案
         try:
+            # 初始化變數
+            prediction_df = None
+            training_df = None
+            
             # 1. 處理預測目錄中的檔案
             if os.path.exists(prediction_cleaned_path):
                 prediction_df = pd.read_csv(prediction_cleaned_path)
@@ -2123,24 +2127,31 @@ try:
             base_filename = os.path.splitext(os.path.basename(prediction_cleaned_path))[0]
             result_path = os.path.join(LOG_DIR, f"{base_filename}_prediction.csv")
             
-            # 使用預測目錄的DataFrame儲存至LOG_DIR
-            if os.path.exists(prediction_cleaned_path):
+            # 使用可用的DataFrame儲存至LOG_DIR
+            if prediction_df is not None:
                 prediction_df.to_csv(result_path, index=False)
-            else:
+                plot_df = prediction_df
+            elif training_df is not None:
                 training_df.to_csv(result_path, index=False)
+                plot_df = training_df
+            else:
+                # 如果都沒有，創建一個基本的DataFrame
+                plot_df = pd.DataFrame({
+                    'event_binary': original_event_binary,
+                    'Predicted_Prob': pred_result_flat,
+                    'Predicted': (pred_result_flat > adaptive_threshold).astype(int)
+                })
+                plot_df.to_csv(result_path, index=False)
                 
             print(f"預測結果副本已保存至: {result_path}")
             
-            # 繪製預測結果圖 - 使用預測目錄的資料
+            # 繪製預測結果圖
             plt.figure(figsize=(15, 6))
-            
-            # 選擇要繪圖的DataFrame
-            plot_df = prediction_df if os.path.exists(prediction_cleaned_path) else training_df
             
             plt.plot(range(len(plot_df)), plot_df['event_binary'], 'b-', alpha=0.5, label='實際值')
             plt.plot(range(len(plot_df)), plot_df['Predicted_Prob'], 'r-', alpha=0.5, label='預測值')
             plt.axhline(y=adaptive_threshold, color='g', linestyle='--', label=f'閾值 ({adaptive_threshold:.4f})')
-            plt.title(f'預測結果 - {os.path.basename(prediction_cleaned_path)}')
+            plt.title(f'預測結果 - {os.path.basename(args.prediction_file)}')
             plt.xlabel('資料索引')
             plt.ylabel('值')
             plt.legend()
@@ -2161,6 +2172,8 @@ try:
             print("\n處理完成!")
         except Exception as e:
             print(f"處理預測結果時發生錯誤: {e}")
+            import traceback
+            traceback.print_exc()
         
         # 完成單一檔案預測模式，退出程式
         sys.exit(0)
@@ -2470,13 +2483,21 @@ try:
                     missing_cols = [col for col in required_columns if col not in dataset.columns]
                     raise ValueError(f"缺少必要的列: {missing_cols}")
                 
-                # 選取所需欄位
-                df_features = dataset[required_columns].copy()
+                # 只選取實際用於模型的特徵列（8個特徵）
+                input_feature_columns = [f'Channel_{i}_Raw' for i in range(1, 7)]
+                input_feature_columns.extend(['Raw_sum', 'Noise_max'])
+                df_features = dataset[input_feature_columns].copy()
                 
-                # 整理為模型輸入格式
+                # 保存實際用於模型的特徵名稱
+                pred_feature_names = df_features.columns.tolist()
+                
+                # 轉換為數組
                 pred_sequences = df_features.values.astype('float64')
                 pred_labels = dataset['event_binary'].values
-                pred_feature_names = df_features.columns.tolist()
+                
+                print(f"============預測序列長度: {len(pred_sequences)}")
+                print(f"============預測序列特徵數: {pred_sequences.shape[1]}")
+                print(f"============預測特徵名稱: {pred_feature_names}")
                 
                 # 確保序列長度符合要求
                 if len(pred_sequences) < 86401:
