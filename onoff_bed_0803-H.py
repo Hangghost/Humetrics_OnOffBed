@@ -2620,6 +2620,239 @@ def calculate_rising_dist(dist, log_file=None):
     
     return rising_dist
 
+
+
+def process_cmb_to_data_files(cmb_file_path, force_reprocess=False):
+    """
+    處理 CMB 檔案並產生對應的數據檔案
+    
+    Args:
+        cmb_file_path: CMB 檔案的完整路徑
+        force_reprocess: 是否強制重新處理（即使目標檔案已存在）
+    
+    Returns:
+        bool: 處理是否成功
+    """
+    try:
+        # 從檔案路徑提取檔案名稱
+        cmb_filename = os.path.basename(cmb_file_path)
+        base_name = cmb_filename[:-4]  # 移除 .cmb 副檔名
+        
+        # 檢查目標檔案是否已存在
+        data_csv_path = os.path.join(DATA_DIR, f"{base_name}_data.csv")
+        full_csv_path = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+        param_csv_path = os.path.join(DATA_DIR, f"{base_name}_parameters.csv")
+        
+        if not force_reprocess:
+            if all(os.path.exists(f) for f in [data_csv_path, full_csv_path, param_csv_path]):
+                status_bar.showMessage(f'檔案 {base_name} 的數據檔案已存在，跳過處理')
+                QApplication.processEvents()
+                return True
+        
+        # 保存當前的全域變數狀態
+        global cmb_name, startday, d10, n10, x10, rising_dist, rising_dist_air, onbed, t1sec, idx1sec
+        original_cmb_name = cmb_name if 'cmb_name' in globals() else None
+        
+        # 設定 cmb_name 為當前處理的檔案
+        cmb_name = cmb_filename
+        
+        status_bar.showMessage(f'正在處理 {cmb_filename}...')
+        QApplication.processEvents()
+        
+        # 檢查對應的 .txt 檔案是否存在
+        txt_path = os.path.join(LOG_DIR, f'{base_name}.txt')
+        if not os.path.exists(txt_path):
+            status_bar.showMessage(f'找不到對應的 .txt 檔案: {txt_path}')
+            QApplication.processEvents()
+            return False
+        
+        # 從檔案名稱解析設備序號和時間
+        parts = base_name.split('_')
+        if len(parts) >= 3:
+            device_sn = parts[0]
+            start_time_str = parts[1] + '_' + parts[2] + '00'
+            
+            # 設定 iCueSN
+            iCueSN.setText(device_sn)
+            
+            # 解析開始時間
+            try:
+                startday = datetime.strptime(start_time_str, '%Y%m%d_%H%M%S')
+            except:
+                startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            status_bar.showMessage(f'無法解析檔案名稱格式: {base_name}')
+            QApplication.processEvents()
+            return False
+        
+        # 執行 CMB 檔案處理（不重新下載，直接處理現有檔案）
+        try:
+            # 調用 OpenCmbFile 的核心處理邏輯
+            OpenCmbFile()
+            
+            # 確保數據處理完成
+            if 'd10' not in globals() or not d10:
+                status_bar.showMessage(f'數據處理失敗: {cmb_filename}')
+                QApplication.processEvents()
+                return False
+            
+            # 產生數據檔案（使用與 OpenCmbFile 相同的邏輯）
+            # 建立輸出檔案名稱
+            csv_filename = f"{base_name}_data.csv"
+            csv_filepath = os.path.join(DATA_DIR, csv_filename)
+            
+            # 準備數據
+            data_dict = {
+                'DateTime': [startday + timedelta(seconds=t) for t in t1sec],
+                'Timestamp': t1sec
+            }
+            
+            # 添加各通道的數據
+            for ch in range(6):
+                data_dict[f'Channel_{ch+1}_Raw'] = d10[ch][idx1sec]
+                data_dict[f'Channel_{ch+1}_Noise'] = n10[ch][idx1sec]
+                data_dict[f'Channel_{ch+1}_Max'] = x10[ch][idx1sec]
+            
+            # 添加位移和翻身數據
+            data_dict['Rising_Dist_Normal'] = rising_dist[idx1sec]
+            data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
+            data_dict['OnBed_Status'] = onbed
+            
+            # 轉換為DataFrame
+            df = pd.DataFrame(data_dict)
+            
+            # 過濾DataFrame，只保留12:00:00到隔天12:00:00的資料
+            try:
+                noon_today = startday.replace(hour=12, minute=0, second=0)
+                noon_tomorrow = noon_today + timedelta(days=1)
+                filtered_df = df[(df['DateTime'] >= noon_today) & (df['DateTime'] <= noon_tomorrow)]
+                
+                if len(filtered_df) == 0:
+                    filtered_df = df
+            except:
+                filtered_df = df
+            
+            # 保存過濾後的資料
+            filtered_df.to_csv(csv_filepath, index=False)
+            
+            # 同時儲存原始完整資料
+            full_csv_filepath = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+            df.to_csv(full_csv_filepath, index=False)
+            
+            # 儲存參數設定
+            param_filename = f"{base_name}_parameters.csv"
+            param_filepath = os.path.join(DATA_DIR, param_filename)
+            
+            # 準備參數數據
+            param_dict = {
+                'Parameter': [],
+                'Channel_1': [], 'Channel_2': [], 'Channel_3': [],
+                'Channel_4': [], 'Channel_5': [], 'Channel_6': []
+            }
+            
+            # 收集參數表中的所有數據
+            param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
+            for row in range(4):
+                param_dict['Parameter'].append(param_names[row])
+                for col in range(6):
+                    try:
+                        value = para_table.item(row, col).text()
+                    except:
+                        value = "0"
+                    param_dict[f'Channel_{col+1}'].append(value)
+            
+            # 添加其他重要參數
+            additional_params = [
+                ('Total', str(globals().get('bed_threshold', 0))),
+                ('Noise_1', str(globals().get('noise_onbed', 0))),
+                ('Noise_2', str(globals().get('noise_offbed', 0))),
+                ('Set Flip', str(globals().get('dist_thr', 0))),
+                ('Air_Mattress', str(globals().get('air_mattress', 0))),
+                ('Device_SN', device_sn),
+                ('Start_Time', str(startday))
+            ]
+
+            for param_name, param_value in additional_params:
+                param_dict['Parameter'].append(param_name)
+                param_dict['Channel_1'].append(param_value)
+                for col in ['Channel_2', 'Channel_3', 'Channel_4', 'Channel_5', 'Channel_6']:
+                    param_dict[col].append('')
+            
+            # 轉換為DataFrame並保存
+            df_param = pd.DataFrame(param_dict)
+            df_param.to_csv(param_filepath, index=False)
+            
+            status_bar.showMessage(f'已成功處理 {cmb_filename} 並產生數據檔案')
+            QApplication.processEvents()
+            
+            return True
+            
+        except Exception as e:
+            status_bar.showMessage(f'處理 {cmb_filename} 時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            return False
+        
+        finally:
+            # 恢復原始的 cmb_name
+            if original_cmb_name:
+                cmb_name = original_cmb_name
+    
+    except Exception as e:
+        status_bar.showMessage(f'處理檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        return False
+
+def batch_process_existing_cmb_files():
+    """
+    批量處理 ./_logs/pyqt-viewer 目錄下現有的 CMB 檔案
+    """
+    try:
+        # 掃描 LOG_DIR 目錄下的所有 .cmb 檔案
+        cmb_files = []
+        for filename in os.listdir(LOG_DIR):
+            if filename.endswith('.cmb'):
+                cmb_path = os.path.join(LOG_DIR, filename)
+                cmb_files.append(cmb_path)
+        
+        if not cmb_files:
+            status_bar.showMessage('在 ./_logs/pyqt-viewer 目錄下未找到任何 .cmb 檔案')
+            QApplication.processEvents()
+            return
+        
+        status_bar.showMessage(f'找到 {len(cmb_files)} 個 .cmb 檔案，開始批量處理...')
+        QApplication.processEvents()
+        
+        processed_count = 0
+        skipped_count = 0
+        
+        for cmb_path in cmb_files:
+            filename = os.path.basename(cmb_path)
+            base_name = filename[:-4]
+            
+            # 檢查對應的數據檔案是否已存在
+            data_csv_path = os.path.join(DATA_DIR, f"{base_name}_data.csv")
+            full_csv_path = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+            param_csv_path = os.path.join(DATA_DIR, f"{base_name}_parameters.csv")
+            
+            if all(os.path.exists(f) for f in [data_csv_path, full_csv_path, param_csv_path]):
+                status_bar.showMessage(f'跳過已處理的檔案: {filename}')
+                QApplication.processEvents()
+                skipped_count += 1
+                continue
+            
+            # 處理檔案
+            if process_cmb_to_data_files(cmb_path, force_reprocess=False):
+                processed_count += 1
+            
+            # 短暫延遲以避免界面凍結
+            time.sleep(0.1)
+        
+        status_bar.showMessage(f'批量處理完成！處理了 {processed_count} 個檔案，跳過 {skipped_count} 個已存在的檔案')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'批量處理時發生錯誤: {str(e)}')
+        QApplication.processEvents()
 #----------------------------------------------------------------------- 
 
 # 需要在業務邏輯處理的部分添加更新數值顯示的函數
@@ -3159,6 +3392,18 @@ def batch_ftp_download_clicked():
     
     status_bar.showMessage(f'批量下載完成，截圖已保存至: {screenshot_dir}')
     QApplication.processEvents()
+    
+    # 自動處理下載的 CMB 檔案，產生數據檔案
+    status_bar.showMessage('開始自動處理下載的數據檔案...')
+    QApplication.processEvents()
+    
+    try:
+        batch_process_existing_cmb_files()
+        status_bar.showMessage('批量下載和數據處理全部完成！')
+    except Exception as e:
+        status_bar.showMessage(f'數據處理時發生錯誤: {str(e)}')
+    
+    QApplication.processEvents()
 
 #--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
@@ -3232,6 +3477,11 @@ csv_button.clicked.connect(OpenCsvFile)
 
 batch_ftp_download = QPushButton('Batch FTP Download')
 batch_ftp_download.clicked.connect(batch_ftp_download_clicked)
+
+# 新增批量處理現有檔案的按鈕
+batch_process_button = QPushButton('Process Existing CMB Files')
+batch_process_button.clicked.connect(batch_process_existing_cmb_files)
+batch_process_button.setToolTip('批量處理 ./_logs/pyqt-viewer 目錄下現有的 CMB 檔案，產生對應的數據檔案')
 
 # 標記相關按鈕
 marker_btn = QPushButton('開始標記')
@@ -3351,6 +3601,7 @@ marker_row_layout.addWidget(check_get_para)
 marker_row_layout.addWidget(json_button)
 marker_row_layout.addWidget(csv_button)
 marker_row_layout.addWidget(batch_ftp_download)  # 添加批量下載按鈕
+marker_row_layout.addWidget(batch_process_button)  # 添加批量處理按鈕
 
 marker_row_layout.addWidget(marker_btn)
 marker_row_layout.addWidget(marker_type_combo)
@@ -3398,5 +3649,3 @@ mw.show()
 # timer.singleShot(500, lambda: update_calculated_value(123.45))
 
 app.exec_()
-
-
