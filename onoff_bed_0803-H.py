@@ -2184,7 +2184,7 @@ def OpenJsonFile():
         QApplication.processEvents()
 
 def OpenCsvFile():
-    global csv_path, predicted_offbed, bit_plot_pred_offbed, onbed
+    global csv_path, predicted_offbed, bit_plot_pred_offbed, onbed, cmb_name
     
     # 獲取SN和時間範圍
     sn = iCueSN.text()
@@ -2214,6 +2214,79 @@ def OpenCsvFile():
         return
     
     try:
+        # 檢查是否已有 t1sec 和 startday，如果沒有則從檔案名稱解析並更新面板欄位
+        if 't1sec' not in globals() or 'startday' not in globals():
+            # 從CSV檔案名稱解析資訊
+            filename = os.path.basename(csv_path)
+            
+            # 解析檔名格式: cleaned_SPS2021PA000484_20250528_04_20250529_04_data.csv
+            parts = filename.split('_')
+            if len(parts) >= 6 and parts[0] == 'cleaned':
+                try:
+                    # 提取設備序號和時間資訊
+                    device_sn = parts[1]  # SPS2021PA000484
+                    start_date_part = parts[2]  # 20250528
+                    start_hour_part = parts[3]  # 04
+                    end_date_part = parts[4]  # 20250529
+                    end_hour_part = parts[5]  # 04
+                    
+                    # 更新面板欄位
+                    iCueSN.setText(device_sn)
+                    start_time.setText(f"{start_date_part}_{start_hour_part}0000")
+                    end_time.setText(f"{end_date_part}_{end_hour_part}0000")
+                    
+                    # 在 LOG_DIR 中尋找對應的 cmb 檔案
+                    # 檔名格式通常是: {device_sn}_{start_date_part}_{start_hour_part}_{end_date_part}_{end_hour_part}.cmb
+                    potential_cmb_patterns = [
+                        f"{device_sn}_{start_date_part}_{start_hour_part}_{end_date_part}_{end_hour_part}.cmb",
+                        f"{device_sn}_{start_date_part[4:]}_{start_hour_part}_{end_date_part[4:]}_{end_hour_part}.cmb",
+                        f"{device_sn}*.cmb"  # 萬用字元模式
+                    ]
+                    
+                    found_cmb = None
+                    import glob
+                    
+                    # 尋找匹配的 cmb 檔案
+                    for pattern in potential_cmb_patterns:
+                        if '*' in pattern:
+                            # 使用萬用字元搜尋
+                            cmb_pattern = os.path.join(LOG_DIR, pattern)
+                            matching_files = glob.glob(cmb_pattern)
+                            if matching_files:
+                                # 取最新的檔案
+                                found_cmb = os.path.basename(max(matching_files, key=os.path.getmtime))
+                                break
+                        else:
+                            # 直接檢查檔案是否存在
+                            cmb_path = os.path.join(LOG_DIR, pattern)
+                            if os.path.exists(cmb_path):
+                                found_cmb = pattern
+                                break
+                    
+                    if found_cmb:
+                        cmb_name = found_cmb
+                        status_bar.showMessage(f"已找到對應的 cmb 檔案: {cmb_name}")
+                    else:
+                        # 如果找不到對應的 cmb 檔案，使用預設名稱
+                        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        cmb_name = f"{device_sn}_{current_time}.cmb"
+                        status_bar.showMessage(f"未找到對應的 cmb 檔案，使用預設名稱: {cmb_name}")
+                    
+                    status_bar.showMessage(f"已從檔名更新面板資訊: {device_sn}, {start_date_part} {start_hour_part}:00")
+                    QApplication.processEvents()
+                    
+                    # 呼叫 OpenCmbFile() 來初始化 t1sec 和 startday
+                    OpenCmbFile()
+                    
+                except (ValueError, IndexError) as e:
+                    status_bar.showMessage(f"無法從檔名解析資訊: {str(e)}")
+                    QApplication.processEvents()
+                    return
+            else:
+                status_bar.showMessage("檔名格式不符預期，無法自動設定參數")
+                QApplication.processEvents()
+                return
+        
         # 讀取 CSV 檔案
         df = pd.read_csv(csv_path)
         
@@ -2420,7 +2493,7 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
             status_bar.showMessage("已載入CSV檔案，但未找到足夠事件進行分析")
             update_calculated_value(score)
             QApplication.processEvents()
-            return score
+            return score, "已載入CSV檔案，但未找到足夠事件進行分析"
             
         # 參數設定
         tolerance_time = 7  # 容忍時間 7 秒
@@ -2505,6 +2578,11 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
         avg_late_diff = np.mean(late_diffs) if late_diffs else 0
         avg_time_diff = np.mean(np.abs(time_diffs)) if time_diffs else 0
         
+        # 初始化變數，避免在else分支中引用未定義的變數
+        match_rate = 0.0
+        precision = 0.0
+        time_diff_score = 0.0
+        
         # 計算一個綜合評分 (0-100)，考慮配對率、時間差和誤報/漏報
         if total_matches > 0:
             match_rate = total_matches / (total_matches + false_negatives)
@@ -2550,7 +2628,7 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
     except Exception as e:
         status_bar.showMessage(f"計算預測指標時發生錯誤: {str(e)}")
         QApplication.processEvents()
-        return 0
+        return 0, f"計算預測指標時發生錯誤: {str(e)}"
 
         
 def calculate_rising_dist(dist, log_file=None):
