@@ -2187,8 +2187,18 @@ try:
     # 獲取預測用的資料檔案
     PREDICTION_DATA_DIR = args.prediction_dir  # 使用命令列參數傳入的路徑
     os.makedirs(PREDICTION_DATA_DIR, exist_ok=True)  # 確保預測資料夾存在
-    PREDICTION_DATA_PATHS = glob.glob(os.path.join(PREDICTION_DATA_DIR, PREDICTION_DATA_PATTERN))
-    print(f"找到 {len(PREDICTION_DATA_PATHS)} 個預測用資料檔案:")
+    
+    # 先取得所有符合基本模式的檔案，然後排除不需要的檔案
+    all_prediction_files = glob.glob(os.path.join(PREDICTION_DATA_DIR, PREDICTION_DATA_PATTERN))
+    # 排除包含 "_full_data.csv" 的檔案
+    PREDICTION_DATA_PATHS = [path for path in all_prediction_files if not path.endswith("_full_data.csv")]
+    
+    print(f"找到 {len(all_prediction_files)} 個符合模式 {PREDICTION_DATA_PATTERN} 的檔案")
+    if len(all_prediction_files) != len(PREDICTION_DATA_PATHS):
+        excluded_count = len(all_prediction_files) - len(PREDICTION_DATA_PATHS)
+        print(f"已排除 {excluded_count} 個 *_full_data.csv 檔案")
+    
+    print(f"最終篩選出 {len(PREDICTION_DATA_PATHS)} 個預測用資料檔案:")
     for i, path in enumerate(PREDICTION_DATA_PATHS):
         print(f"  {i+1}. {os.path.basename(path)}")
     
@@ -2562,6 +2572,9 @@ try:
                 adaptive_threshold = find_optimal_threshold(pred_result_flat)
                 print(f"使用自適應閾值: {adaptive_threshold:.4f}")
             
+            # 添加二值化結果到pred_results_df
+            pred_results_df['Predicted_binary'] = (pred_result_flat > adaptive_threshold).astype(int)
+            
             positives = np.sum(pred_result_flat > adaptive_threshold)
             print(f"\n預測結果摘要 ({os.path.basename(pred_file_path)}):")
             print(f"總筆數: {len(pred_result_flat)}")
@@ -2571,31 +2584,52 @@ try:
             
             # 建立檔案名稱（基於原始檔名）
             base_filename = os.path.splitext(os.path.basename(pred_file_path))[0]
+            # 加入 adaptive_threshold 到 base_filename
+            base_filename = f"{base_filename}_{adaptive_threshold:.4f}"
             
             # 保存預測結果CSV
             pred_output_file = os.path.join(LOG_DIR, f"predictions_{base_filename}.csv")
             pred_results_df.to_csv(pred_output_file, index=False)
             print(f"預測結果已保存至: {pred_output_file}")
             
-            # 直接將預測結果寫回原始檔案
+            # 確定要寫回的clean_檔案路徑
+            if is_already_cleaned:
+                # 如果原始檔案已經是clean_檔案，直接使用原路徑
+                cleaned_file_path = pred_file_path
+                # 使用當前的dataset (已經是clean_檔案的資料)
+                target_dataset = dataset
+            else:
+                # 如果原始檔案不是clean_檔案，使用get_cleaned_data_path函數獲取正確路徑
+                cleaned_file_path = get_cleaned_data_path(pred_file_path)
+                
+                # 讀取已經生成的cleaned_檔案作為目標dataset
+                try:
+                    target_dataset = pd.read_csv(cleaned_file_path)
+                    print(f"讀取已生成的cleaned_檔案: {cleaned_file_path}")
+                    print(f"Cleaned檔案形狀: {target_dataset.shape}")
+                except FileNotFoundError:
+                    print(f"警告: 找不到cleaned_檔案 {cleaned_file_path}，將使用原始dataset創建")
+                    target_dataset = dataset
+            
+            # 將預測結果寫回clean_檔案
             try:
-                # 檢查原始資料集長度與預測結果長度
-                if len(dataset) <= len(pred_result_flat):
+                # 檢查目標資料集長度與預測結果長度
+                if len(target_dataset) <= len(pred_result_flat):
                     # 添加預測結果欄位（二值化和機率值）
-                    dataset['Predicted'] = (pred_result_flat[:len(dataset)] > adaptive_threshold).astype(int)
-                    dataset['Predicted_Prob'] = pred_result_flat[:len(dataset)]
-                    # 保存修改後的資料集
-                    dataset.to_csv(pred_file_path, index=False)
-                    print(f"預測結果已寫回原始檔案: {pred_file_path}")
+                    target_dataset['Predicted'] = (pred_result_flat[:len(target_dataset)] > adaptive_threshold).astype(int)
+                    target_dataset['Predicted_Prob'] = pred_result_flat[:len(target_dataset)]
+                    # 保存修改後的資料集到clean_檔案
+                    target_dataset.to_csv(cleaned_file_path, index=False)
+                    print(f"預測結果已寫回clean_檔案: {cleaned_file_path}")
                 else:
-                    print(f"警告: 原始檔案行數({len(dataset)})大於預測結果數量({len(pred_result_flat)})")
+                    print(f"警告: clean_檔案行數({len(target_dataset)})大於預測結果數量({len(pred_result_flat)})")
                     print(f"將只更新前 {len(pred_result_flat)} 筆資料")
-                    dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
-                    dataset.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
-                    dataset.to_csv(pred_file_path, index=False)
-                    print(f"預測結果已部分寫回原始檔案: {pred_file_path}")
+                    target_dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
+                    target_dataset.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
+                    target_dataset.to_csv(cleaned_file_path, index=False)
+                    print(f"預測結果已部分寫回clean_檔案: {cleaned_file_path}")
             except Exception as e:
-                print(f"寫回原始檔案時發生錯誤: {e}")
+                print(f"寫回clean_檔案時發生錯誤: {e}")
                 import traceback
                 traceback.print_exc()
             
