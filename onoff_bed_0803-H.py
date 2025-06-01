@@ -876,16 +876,6 @@ def OpenCmbFile():
     global data_bcg
     #data_bcg = [x, y, z]
 
-    # 將未處理的訊號存成CSV，並加入時間欄位
-    data_csv = pd.DataFrame(data)
-
-    # 移除時間插值邏輯，使用原始時間點
-    if len(time_array) > 0:
-        # 使用原始時間點，不進行插值
-        data_csv.insert(0, 'timestamp', np.repeat(time_array, len(data) // len(time_array)))
-    
-    data_csv.to_csv(f"{LOG_DIR}/{cmb_name[:-4]}_raw.csv", index=False)
-
     # 初始化日誌檔案
     preprocess_log_file = open(f'{LOG_DIR}/{cmb_name[:-4]}_preprocess_log.txt', 'w', encoding='utf-8')
     preprocess_log_file.write("=== 資料前處理函數日誌 ===\n")
