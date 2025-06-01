@@ -55,49 +55,27 @@ def merge_predictions_to_original_files():
             original_df = pd.read_csv(original_file_path)
             print(f"📊 原始檔案: {original_df.shape[0]} 行, {original_df.shape[1]} 欄")
             
-            # 檢查預測結果格式
-            if 'Predicted' not in pred_df.columns:
-                print("⚠️  預測結果檔案中沒有 'Predicted' 欄位，嘗試使用 'Predicted' 欄位...")
-                if 'Predicted' in pred_df.columns:
-                    # 假設 'Predicted' 欄位是預測機率值
-                    pred_probs = pred_df['Predicted'].values
-                else:
-                    print("❌ 無法找到預測機率值")
-                    continue
-            else:
-                pred_probs = pred_df['Predicted'].values
-            
-            # 計算最佳閾值（使用簡單的方法）
-            threshold = np.percentile(pred_probs, 95)  # 使用95百分位作為閾值
-            pred_binary = (pred_probs > threshold).astype(int)
-            
-            print(f"🎯 使用閾值: {threshold:.4f}")
-            print(f"📈 預測為正例的數量: {np.sum(pred_binary)}")
+            # 檢查預測結果是否包含需要的欄位
+            if 'Predicted' not in pred_df.columns or 'Predicted_Prob' not in pred_df.columns:
+                print("❌ 預測結果檔案中缺少 'Predicted' 或 'Predicted_Prob' 欄位")
+                continue
             
             # 確保長度一致
-            min_length = min(len(original_df), len(pred_probs))
+            min_length = min(len(original_df), len(pred_df))
             
-            # 添加預測結果到原始檔案
-            # 如果已經有這些欄位，先刪除
+            # 如果原始檔案已經有這些欄位，先刪除
             if 'Predicted' in original_df.columns:
                 original_df = original_df.drop(columns=['Predicted'])
             if 'Predicted_Prob' in original_df.columns:
                 original_df = original_df.drop(columns=['Predicted_Prob'])
             
-            # 添加新的預測結果
-            original_df.loc[:min_length-1, 'Predicted'] = pred_binary[:min_length]
-            original_df.loc[:min_length-1, 'Predicted_Prob'] = pred_probs[:min_length]
+            # 直接添加預測結果到原始檔案
+            original_df.loc[:min_length-1, 'Predicted'] = pred_df['Predicted'].values[:min_length]
+            original_df.loc[:min_length-1, 'Predicted_Prob'] = pred_df['Predicted_Prob'].values[:min_length]
             
             # 為沒有預測結果的行填入預設值
             original_df['Predicted'] = original_df['Predicted'].fillna(0).astype(int)
             original_df['Predicted_Prob'] = original_df['Predicted_Prob'].fillna(0.0)
-            
-            # 備份原始檔案
-            backup_path = original_file_path + ".backup"
-            if not os.path.exists(backup_path):
-                original_df_backup = pd.read_csv(original_file_path)
-                original_df_backup.to_csv(backup_path, index=False)
-                print(f"💾 已建立備份檔案: {backup_path}")
             
             # 保存合併後的檔案
             original_df.to_csv(original_file_path, index=False)
@@ -115,10 +93,9 @@ def merge_predictions_to_original_files():
     
     if successful_merges > 0:
         print("\n📝 注意事項:")
-        print("1. 原始檔案已被修改，備份檔案位於同一目錄下 (.backup 副檔名)")
-        print("2. 添加了兩個新欄位:")
-        print("   - Predicted: 二進制預測結果 (0/1)")
-        print("   - Predicted_Prob: 預測機率值 (0.0-1.0)")
+        print("已添加兩個欄位:")
+        print("   - Predicted: 預測結果")
+        print("   - Predicted_Prob: 預測機率值")
 
 if __name__ == "__main__":
     merge_predictions_to_original_files() 
