@@ -2519,6 +2519,10 @@ try:
                     apply_balancing=False,  # 預測不需要平衡資料
                     pos_to_neg_ratio=POS_TO_NEG_RATIO
                 )
+                
+                # 重新讀取原始檔案作為 dataset，用於後續寫回預測結果
+                dataset = pd.read_csv(pred_file_path)
+                print(f"重新讀取原始檔案用於寫回預測結果: {dataset.shape}")
             
             # 重新整理為模型輸入格式
             X_pred = np.array(pred_sequences).reshape((pred_sequences.shape[0], pred_sequences.shape[1], 1))
@@ -2585,13 +2589,16 @@ try:
                     print(f"預測結果已寫回原始檔案: {pred_file_path}")
                 else:
                     print(f"警告: 原始檔案行數({len(dataset)})大於預測結果數量({len(pred_result_flat)})")
-                    print("將只更新前 {len(pred_result_flat)} 筆資料")
+                    print(f"將只更新前 {len(pred_result_flat)} 筆資料")
                     dataset.loc[:len(pred_result_flat)-1, 'Predicted'] = (pred_result_flat > adaptive_threshold).astype(int)
                     dataset.loc[:len(pred_result_flat)-1, 'Predicted_Prob'] = pred_result_flat
                     dataset.to_csv(pred_file_path, index=False)
                     print(f"預測結果已部分寫回原始檔案: {pred_file_path}")
             except Exception as e:
                 print(f"寫回原始檔案時發生錯誤: {e}")
+                import traceback
+                traceback.print_exc()
+            
             # 繪製預測結果圖
             plt.figure(figsize=(15, 6))
             plt.plot(pred_results_df['Index'], pred_results_df['Actual'], 'b-', alpha=0.5, label='實際值')
