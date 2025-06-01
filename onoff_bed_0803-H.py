@@ -2838,11 +2838,16 @@ def batch_process_existing_cmb_files():
                 status_bar.showMessage(f'跳過已處理的檔案: {filename}')
                 QApplication.processEvents()
                 skipped_count += 1
+                
+                # 即使跳過處理，也檢查是否需要複製到預測目錄
+                copy_to_prediction_dir(base_name)
                 continue
             
             # 處理檔案
             if process_cmb_to_data_files(cmb_path, force_reprocess=False):
                 processed_count += 1
+                # 處理完成後，複製到預測目錄
+                copy_to_prediction_dir(base_name)
             
             # 短暫延遲以避免界面凍結
             time.sleep(0.1)
@@ -2853,7 +2858,27 @@ def batch_process_existing_cmb_files():
     except Exception as e:
         status_bar.showMessage(f'批量處理時發生錯誤: {str(e)}')
         QApplication.processEvents()
-#----------------------------------------------------------------------- 
+
+def copy_to_prediction_dir(base_name):
+    """
+    將處理後的檔案複製到預測目錄
+    """
+    try:
+        # 檢查 _data 和 _full_data 檔案
+        for suffix in ['_data', '_full_data']:
+            source_path = os.path.join(DATA_DIR, f"{base_name}{suffix}.csv")
+            if os.path.exists(source_path):
+                # 創建 cleaned_ 檔案名
+                cleaned_filename = f"cleaned_{base_name}{suffix}.csv"
+                dest_path = os.path.join(PREDICT_DATA_DIR, cleaned_filename)
+                
+                # 複製檔案
+                import shutil
+                shutil.copy2(source_path, dest_path)
+                print(f"已複製 {source_path} 到 {dest_path}")
+                
+    except Exception as e:
+        print(f"複製檔案到預測目錄時發生錯誤: {str(e)}")
 
 # 需要在業務邏輯處理的部分添加更新數值顯示的函數
 def update_calculated_value(value):
@@ -3306,10 +3331,14 @@ def batch_ftp_download_clicked():
     serial_ids = []
     try:
         with open(csv_path, 'r') as f:
-            for line in f:
-                serial_id = line.strip()
-                if serial_id:  # 確保ID不是空的
-                    serial_ids.append(serial_id)
+            lines = f.readlines()
+            for i, line in enumerate(lines):
+                line = line.strip()
+                # 跳過標題行和空行
+                if i == 0 and line.lower() in ['serial_id', 'serialid', 'id']:
+                    continue
+                if line and not line.lower().startswith('serial'):  # 確保ID不是空的且不是標題
+                    serial_ids.append(line)
     except Exception as e:
         status_bar.showMessage(f'讀取CSV檔案時發生錯誤: {str(e)}')
         QApplication.processEvents()
