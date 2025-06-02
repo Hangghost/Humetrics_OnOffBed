@@ -2360,9 +2360,9 @@ def process_single_csv_file_for_batch(csv_file, device_sn, start_date_part, star
         aligned_data, aligned_pred_data, true_events, pred_events = result
         
         # 計算預測指標
-        score, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+        score, metrics_dict, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
         
-        # 準備返回的結果資料
+        # 準備返回的結果資料，包含所有解析的指標欄位
         result_data = {
             'filename': os.path.basename(csv_file),
             'device_sn': device_sn,
@@ -2370,10 +2370,21 @@ def process_single_csv_file_for_batch(csv_file, device_sn, start_date_part, star
             'start_hour': start_hour_part,
             'end_date': end_date_part,
             'end_hour': end_hour_part,
-            'score': score,
+            'score': metrics_dict['score'],
+            'total_true_events': metrics_dict['total_true_events'],
+            'total_pred_events': metrics_dict['total_pred_events'],
+            'matched_pairs': metrics_dict['matched_pairs'],
+            'false_negatives': metrics_dict['false_negatives'],
+            'false_positives': metrics_dict['false_positives'],
+            'avg_time_diff': metrics_dict['avg_time_diff'],
+            'match_rate': metrics_dict['match_rate'],
+            'precision': metrics_dict['precision'],
+            'time_diff_score': metrics_dict['time_diff_score'],
+            'early_samples': metrics_dict['early_samples'],
+            'avg_early_time': metrics_dict['avg_early_time'],
+            'late_samples': metrics_dict['late_samples'],
+            'avg_late_time': metrics_dict['avg_late_time'],
             'result_message': result_msg,
-            'total_true_events': len(true_events),
-            'total_pred_events': len(pred_events),
             'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
@@ -2388,28 +2399,83 @@ def process_single_csv_file_for_batch(csv_file, device_sn, start_date_part, star
             'end_date': end_date_part,
             'end_hour': end_hour_part,
             'score': 0,
-            'result_message': f"處理錯誤: {str(e)}",
             'total_true_events': 0,
             'total_pred_events': 0,
+            'matched_pairs': 0,
+            'false_negatives': 0,
+            'false_positives': 0,
+            'avg_time_diff': 0.0,
+            'match_rate': 0.0,
+            'precision': 0.0,
+            'time_diff_score': 0.0,
+            'early_samples': 0,
+            'avg_early_time': 0.0,
+            'late_samples': 0,
+            'avg_late_time': 0.0,
+            'result_message': f"處理錯誤: {str(e)}",
             'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
 
 def save_batch_results(batch_results, folder_path):
-    """將批量處理結果儲存到 CSV 檔案"""
+    """將批量處理結果儲存到 CSV 檔案和文字報告"""
     try:
         # 產生結果檔案名稱
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        result_filename = f"batch_prediction_results_{timestamp}.csv"
-        result_path = os.path.join(folder_path, result_filename)
+        
+        # 建立結果儲存目錄
+        results_dir = os.path.join('_logs', 'pyqt-viewer', 'batch_prediction_results')
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # CSV 檔案路徑
+        csv_filename = f"batch_prediction_results_{timestamp}.csv"
+        csv_path = os.path.join(results_dir, csv_filename)
+        
+        # 文字報告路徑
+        txt_filename = f"batch_prediction_report_{timestamp}.txt"
+        txt_path = os.path.join(results_dir, txt_filename)
         
         # 將結果轉換為 DataFrame
         df_results = pd.DataFrame(batch_results)
         
-        # 儲存到 CSV 檔案
-        df_results.to_csv(result_path, index=False, encoding='utf-8-sig')
+        # 按評分排序（由高到低）
+        df_results = df_results.sort_values('score', ascending=False)
         
-        status_bar.showMessage(f"批量處理結果已儲存至: {result_path}")
+        # 儲存到 CSV 檔案
+        df_results.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        
+        # 生成文字報告
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write("批量預測結果分析報告\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"處理時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"處理檔案數量: {len(batch_results)}\n\n")
+            
+            # 統計摘要
+            scores = [result['score'] for result in batch_results]
+            f.write("評分統計:\n")
+            f.write(f"  平均評分: {np.mean(scores):.2f}\n")
+            f.write(f"  最高評分: {np.max(scores):.2f}\n")
+            f.write(f"  最低評分: {np.min(scores):.2f}\n")
+            f.write(f"  標準差: {np.std(scores):.2f}\n\n")
+            
+            # 詳細結果（按評分排序）
+            f.write("詳細結果 (按評分排序):\n")
+            f.write("-" * 50 + "\n")
+            
+            for i, result in enumerate(df_results.to_dict('records'), 1):
+                f.write(f"\n{i}. {result['filename']}\n")
+                f.write(f"   設備序號: {result['device_sn']}\n")
+                f.write(f"   時間範圍: {result['start_date']} {result['start_hour']}:00 - {result['end_date']} {result['end_hour']}:00\n")
+                f.write(f"   評分: {result['score']:.2f}\n")
+                f.write(f"   真實事件: {result['total_true_events']}, 預測事件: {result['total_pred_events']}\n")
+                f.write(f"   配對: {result['matched_pairs']}, 漏報: {result['false_negatives']}, 誤報: {result['false_positives']}\n")
+                f.write(f"   配對率: {result['match_rate']:.2f}, 精確率: {result['precision']:.2f}\n")
+                f.write(f"   平均時差: {result['avg_time_diff']:.2f}秒, 時間差指標: {result['time_diff_score']:.2f}\n")
+                f.write(f"   提早樣本: {result['early_samples']} (平均: {result['avg_early_time']:.2f}秒)\n")
+                f.write(f"   延遲樣本: {result['late_samples']} (平均: {result['avg_late_time']:.2f}秒)\n")
+        
+        status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}")
         QApplication.processEvents()
         
     except Exception as e:
@@ -2506,9 +2572,9 @@ def process_single_csv_file(csv_path):
         aligned_data, aligned_pred_data, true_events, pred_events = result
         
         # 計算預測指標
-        score, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+        score, metrics_dict, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
         status_bar.showMessage(result_msg)
-        update_calculated_value(score)
+        update_calculated_value(metrics_dict['score'])
         QApplication.processEvents()
         
     except Exception as e:
@@ -2693,15 +2759,34 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
     
     返回:
     score - 綜合評分，如果無法計算則返回0
+    metrics_dict - 包含所有指標的字典
+    result_msg - 格式化的結果訊息
     """
     try:
         # 如果沒有足夠事件進行分析，直接返回
         if len(true_events) == 0 or len(pred_events) == 0:
             score = 0.0
-            status_bar.showMessage("已載入CSV檔案，但未找到足夠事件進行分析")
+            metrics_dict = {
+                'score': 0.0,
+                'total_true_events': len(true_events),
+                'total_pred_events': len(pred_events),
+                'matched_pairs': 0,
+                'false_negatives': 0,
+                'false_positives': 0,
+                'avg_time_diff': 0.0,
+                'match_rate': 0.0,
+                'precision': 0.0,
+                'time_diff_score': 0.0,
+                'early_samples': 0,
+                'avg_early_time': 0.0,
+                'late_samples': 0,
+                'avg_late_time': 0.0
+            }
+            result_msg = "已載入CSV檔案，但未找到足夠事件進行分析"
+            status_bar.showMessage(result_msg)
             update_calculated_value(score)
             QApplication.processEvents()
-            return score, "已載入CSV檔案，但未找到足夠事件進行分析"
+            return score, metrics_dict, result_msg
             
         # 參數設定
         tolerance_time = 7  # 容忍時間 7 秒
@@ -2822,6 +2907,24 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
         else:
             score = 0.0
         
+        # 建立詳細指標字典
+        metrics_dict = {
+            'score': round(score, 2),
+            'total_true_events': len(true_events),
+            'total_pred_events': len(pred_events),
+            'matched_pairs': total_matches,
+            'false_negatives': false_negatives,
+            'false_positives': false_positives,
+            'avg_time_diff': round(avg_time_diff, 2),
+            'match_rate': round(match_rate, 2),
+            'precision': round(precision, 2),
+            'time_diff_score': round(time_diff_score, 2),
+            'early_samples': len(early_diffs),
+            'avg_early_time': round(avg_early_diff, 2),
+            'late_samples': len(late_diffs),
+            'avg_late_time': round(avg_late_diff, 2)
+        }
+        
         # 顯示結果
         early_late_msg = f"提早樣本: {len(early_diffs)}, 平均提早: {avg_early_diff:.2f}秒 | 延遲樣本: {len(late_diffs)}, 平均延遲: {avg_late_diff:.2f}秒"
         result_msg = (f"評分: {score:.2f} | 所有事件: {len(true_events)} | 預測事件: {len(pred_events)} | "
@@ -2832,11 +2935,28 @@ def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, p
         update_calculated_value(score)
         QApplication.processEvents()
         
-        return score, result_msg
+        return score, metrics_dict, result_msg
     except Exception as e:
-        status_bar.showMessage(f"計算預測指標時發生錯誤: {str(e)}")
+        error_msg = f"計算預測指標時發生錯誤: {str(e)}"
+        metrics_dict = {
+            'score': 0.0,
+            'total_true_events': 0,
+            'total_pred_events': 0,
+            'matched_pairs': 0,
+            'false_negatives': 0,
+            'false_positives': 0,
+            'avg_time_diff': 0.0,
+            'match_rate': 0.0,
+            'precision': 0.0,
+            'time_diff_score': 0.0,
+            'early_samples': 0,
+            'avg_early_time': 0.0,
+            'late_samples': 0,
+            'avg_late_time': 0.0
+        }
+        status_bar.showMessage(error_msg)
         QApplication.processEvents()
-        return 0, f"計算預測指標時發生錯誤: {str(e)}"
+        return 0, metrics_dict, error_msg
 
         
 def calculate_rising_dist(dist, log_file=None):
@@ -3788,6 +3908,11 @@ batch_process_button = QPushButton('Process Existing CMB Files')
 batch_process_button.clicked.connect(batch_process_existing_cmb_files)
 batch_process_button.setToolTip('批量處理 ./_logs/pyqt-viewer 目錄下現有的 CMB 檔案，產生對應的數據檔案')
 
+# 新增批量計算預測結果的按鈕
+batch_prediction_button = QPushButton('批量計算預測結果')
+batch_prediction_button.clicked.connect(batch_process_csv_files)
+batch_prediction_button.setToolTip('批量處理資料夾中的所有 CSV 檔案，計算預測指標並生成詳細報告')
+
 # 標記相關按鈕
 marker_btn = QPushButton('開始標記')
 marker_btn.clicked.connect(toggle_marker)
@@ -3907,6 +4032,7 @@ marker_row_layout.addWidget(json_button)
 marker_row_layout.addWidget(csv_button)
 marker_row_layout.addWidget(batch_ftp_download)  # 添加批量下載按鈕
 marker_row_layout.addWidget(batch_process_button)  # 添加批量處理按鈕
+marker_row_layout.addWidget(batch_prediction_button)  # 添加批量計算預測結果按鈕
 
 marker_row_layout.addWidget(marker_btn)
 marker_row_layout.addWidget(marker_type_combo)
