@@ -63,6 +63,11 @@ from datetime import datetime, timedelta
 import json
 import ssl
 import pytz
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from matplotlib import rcParams
+import seaborn as sns
+from scipy import stats
 #import threading
 
 global TAB_K
@@ -2442,6 +2447,10 @@ def save_batch_results(batch_results, folder_path):
         txt_filename = f"batch_prediction_report_{timestamp}.txt"
         txt_path = os.path.join(results_dir, txt_filename)
         
+        # 圖檔路徑
+        plot_filename = f"batch_prediction_analysis_{timestamp}.png"
+        plot_path = os.path.join(results_dir, plot_filename)
+        
         # 將結果轉換為 DataFrame
         df_results = pd.DataFrame(batch_results)
         
@@ -2450,6 +2459,9 @@ def save_batch_results(batch_results, folder_path):
         
         # 儲存到 CSV 檔案
         df_results.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        
+        # 生成圖檔總結
+        generate_batch_analysis_plots(df_results, plot_path)
         
         # 生成文字報告
         with open(txt_path, 'w', encoding='utf-8') as f:
@@ -2466,8 +2478,18 @@ def save_batch_results(batch_results, folder_path):
             f.write(f"  最低評分: {np.min(scores):.2f}\n")
             f.write(f"  標準差: {np.std(scores):.2f}\n\n")
             
+            # 離群值分析
+            outliers_info = analyze_outliers(df_results)
+            f.write("離群值分析:\n")
+            f.write("-" * 30 + "\n")
+            for metric, outliers in outliers_info.items():
+                if outliers:
+                    f.write(f"\n{metric} 離群值:\n")
+                    for outlier in outliers:
+                        f.write(f"  - {outlier['filename']}: {outlier['value']:.2f}\n")
+            
             # 詳細結果（按評分排序）
-            f.write("詳細結果 (按評分排序):\n")
+            f.write("\n\n詳細結果 (按評分排序):\n")
             f.write("-" * 50 + "\n")
             
             for i, result in enumerate(df_results.to_dict('records'), 1):
@@ -2482,13 +2504,190 @@ def save_batch_results(batch_results, folder_path):
                 f.write(f"   提早樣本: {result['early_samples']} (平均: {result['avg_early_time']:.2f}秒)\n")
                 f.write(f"   延遲樣本: {result['late_samples']} (平均: {result['avg_late_time']:.2f}秒)\n")
         
-        status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}")
+        status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}")
         QApplication.processEvents()
         
     except Exception as e:
         status_bar.showMessage(f"儲存批量處理結果時發生錯誤: {str(e)}")
         QApplication.processEvents()
 
+
+def generate_batch_analysis_plots(df_results, plot_path):
+    """生成批量分析圖檔，包含各指標的分布圖和離群值分析"""
+    try:
+        # 設定中文字體
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 定義要分析的指標
+        metrics = {
+            'total_true_events': '真實事件數',
+            'total_pred_events': '預測事件數', 
+            'matched_pairs': '配對數',
+            'false_negatives': '漏報數',
+            'false_positives': '誤報數',
+            'avg_time_diff': '平均時差(秒)',
+            'match_rate': '配對率',
+            'precision': '精確率',
+            'time_diff_score': '時間差指標',
+            'early_samples': '提早樣本數',
+            'avg_early_time': '平均提早時間(秒)',
+            'late_samples': '延遲樣本數',
+            'avg_late_time': '平均延遲時間(秒)'
+        }
+        
+        # 建立子圖
+        fig, axes = plt.subplots(5, 3, figsize=(20, 25))
+        fig.suptitle('批量預測結果分析 - 指標分布圖', fontsize=16, fontweight='bold')
+        
+        axes = axes.flatten()
+        
+        for i, (metric, title) in enumerate(metrics.items()):
+            if i >= len(axes):
+                break
+                
+            ax = axes[i]
+            
+            # 取得數據
+            data = df_results[metric].dropna()
+            
+            if len(data) == 0:
+                ax.text(0.5, 0.5, '無數據', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(title)
+                continue
+            
+            # 計算離群值
+            Q1 = data.quantile(0.25)
+            Q3 = data.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            outliers = data[(data < lower_bound) | (data > upper_bound)]
+            
+            # 繪製直方圖
+            ax.hist(data, bins=min(20, len(data.unique())), alpha=0.7, color='skyblue', edgecolor='black')
+            
+            # 標記離群值
+            if len(outliers) > 0:
+                for outlier_val in outliers:
+                    ax.axvline(x=outlier_val, color='red', linestyle='--', alpha=0.7)
+            
+            # 添加統計資訊
+            mean_val = data.mean()
+            median_val = data.median()
+            std_val = data.std()
+            
+            ax.axvline(x=mean_val, color='green', linestyle='-', linewidth=2, label=f'平均: {mean_val:.2f}')
+            ax.axvline(x=median_val, color='orange', linestyle='-', linewidth=2, label=f'中位數: {median_val:.2f}')
+            
+            # 設定標題和標籤
+            ax.set_title(f'{title}\n(標準差: {std_val:.2f}, 離群值: {len(outliers)}個)', fontsize=10)
+            ax.set_xlabel('數值')
+            ax.set_ylabel('頻率')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            
+            # 在圖上標註離群值的設備
+            if len(outliers) > 0:
+                outlier_devices = []
+                for outlier_val in outliers:
+                    devices = df_results[df_results[metric] == outlier_val]['device_sn'].tolist()
+                    outlier_devices.extend(devices)
+                
+                if outlier_devices:
+                    outlier_text = f"離群設備: {', '.join(set(outlier_devices[:3]))}"
+                    if len(set(outlier_devices)) > 3:
+                        outlier_text += f" 等{len(set(outlier_devices))}個"
+                    ax.text(0.02, 0.98, outlier_text, transform=ax.transAxes, 
+                           fontsize=8, verticalalignment='top', 
+                           bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+        
+        # 隱藏多餘的子圖
+        for i in range(len(metrics), len(axes)):
+            axes[i].set_visible(False)
+        
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # 生成相關性熱力圖
+        correlation_plot_path = plot_path.replace('.png', '_correlation.png')
+        generate_correlation_heatmap(df_results, correlation_plot_path, metrics)
+        
+    except Exception as e:
+        print(f"生成分析圖檔時發生錯誤: {str(e)}")
+
+
+def generate_correlation_heatmap(df_results, plot_path, metrics):
+    """生成指標間相關性熱力圖"""
+    try:
+        # 選擇數值型指標
+        numeric_metrics = [col for col in metrics.keys() if col in df_results.columns]
+        correlation_data = df_results[numeric_metrics].corr()
+        
+        plt.figure(figsize=(12, 10))
+        
+        # 建立熱力圖
+        mask = np.triu(np.ones_like(correlation_data, dtype=bool))
+        sns.heatmap(correlation_data, 
+                   mask=mask,
+                   annot=True, 
+                   cmap='coolwarm', 
+                   center=0,
+                   square=True,
+                   fmt='.2f',
+                   cbar_kws={"shrink": .8})
+        
+        plt.title('指標間相關性分析', fontsize=14, fontweight='bold', pad=20)
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+    except Exception as e:
+        print(f"生成相關性熱力圖時發生錯誤: {str(e)}")
+
+
+def analyze_outliers(df_results):
+    """分析各指標的離群值"""
+    outliers_info = {}
+    
+    metrics = ['total_true_events', 'total_pred_events', 'matched_pairs', 
+               'false_negatives', 'false_positives', 'avg_time_diff',
+               'match_rate', 'precision', 'time_diff_score', 
+               'early_samples', 'avg_early_time', 'late_samples', 'avg_late_time']
+    
+    for metric in metrics:
+        if metric not in df_results.columns:
+            continue
+            
+        data = df_results[metric].dropna()
+        if len(data) == 0:
+            continue
+        
+        # 使用 IQR 方法檢測離群值
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        outlier_mask = (data < lower_bound) | (data > upper_bound)
+        outlier_indices = data[outlier_mask].index
+        
+        outliers = []
+        for idx in outlier_indices:
+            outliers.append({
+                'filename': df_results.loc[idx, 'filename'],
+                'device_sn': df_results.loc[idx, 'device_sn'],
+                'value': df_results.loc[idx, metric]
+            })
+        
+        if outliers:
+            outliers_info[metric] = outliers
+    
+    return outliers_info
 
 def process_single_csv_file(csv_path):
     """處理單個 CSV 檔案的原始邏輯"""
