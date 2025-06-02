@@ -2266,6 +2266,8 @@ def batch_process_csv_files():
     
     # 準備結果收集
     batch_results = []
+    processed_count = 0
+    skipped_count = 0
     
     # 處理每個 CSV 檔案
     for i, csv_file in enumerate(csv_files):
@@ -2280,6 +2282,7 @@ def batch_process_csv_files():
             if file_info is None:
                 status_bar.showMessage(f"跳過檔案 {filename}：無法解析檔名格式")
                 QApplication.processEvents()
+                skipped_count += 1
                 continue
             
             device_sn, start_date_part, start_hour_part, end_date_part, end_hour_part = file_info
@@ -2296,7 +2299,7 @@ def batch_process_csv_files():
             # 初始化 cmb 相關參數
             try:
                 OpenCmbFile()  # 這會設定 startday 和 t1sec
-            except:
+            except Exception:
                 # 如果 OpenCmbFile 失敗，使用預設值
                 startday = datetime.strptime(start_date_part, '%Y%m%d')
                 t1sec = np.arange(0, 86400)  # 預設一天的秒數
@@ -2306,6 +2309,9 @@ def batch_process_csv_files():
             
             if result:
                 batch_results.append(result)
+                processed_count += 1
+            else:
+                skipped_count += 1
             
             # 恢復原始面板資訊
             iCueSN.setText(original_sn)
@@ -2315,14 +2321,15 @@ def batch_process_csv_files():
         except Exception as e:
             status_bar.showMessage(f"處理檔案 {filename} 時發生錯誤: {str(e)}")
             QApplication.processEvents()
+            skipped_count += 1
             continue
     
     # 儲存批量處理結果
     if batch_results:
         save_batch_results(batch_results, folder_path)
-        status_bar.showMessage(f"批量處理完成，共處理 {len(batch_results)} 個檔案，結果已儲存")
+        status_bar.showMessage(f"批量處理完成！成功處理 {processed_count} 個檔案，跳過 {skipped_count} 個檔案，結果已儲存")
     else:
-        status_bar.showMessage("批量處理完成，但沒有成功處理的檔案")
+        status_bar.showMessage(f"批量處理完成，但沒有成功處理的檔案（跳過 {skipped_count} 個檔案）")
     
     QApplication.processEvents()
 
