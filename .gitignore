@@ -173,3 +173,5 @@ onoff_bed_simulation_log.txt
 serial_ids_20250519.csv
 serial_ids_20250519_full.csv
 startday_log.txt
+
+serial_ids*.csv

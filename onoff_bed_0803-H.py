@@ -70,6 +70,13 @@ import seaborn as sns
 from scipy import stats
 #import threading
 
+# 導入離群設備PDF生成工具
+try:
+    from outlier_pdf_generator import generate_outlier_screenshots_pdf
+except ImportError:
+    print("警告：outlier_pdf_generator模組未找到，PDF生成功能將不可用")
+    generate_outlier_screenshots_pdf = None
+
 global TAB_K
 TAB_K = 8
 
@@ -2528,6 +2535,18 @@ def save_batch_results(batch_results, folder_path):
         status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}")
         QApplication.processEvents()
         
+        # 生成離群設備截圖PDF報告
+        if common_outlier_devices and generate_outlier_screenshots_pdf is not None:
+            try:
+                pdf_path = generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timestamp, LOG_DIR)
+                if pdf_path:
+                    status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}\nPDF: {pdf_path}")
+                    QApplication.processEvents()
+            except Exception as e:
+                print(f"生成離群設備PDF時發生錯誤: {str(e)}")
+                status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}\n(PDF生成失敗)")
+                QApplication.processEvents()
+        
     except Exception as e:
         status_bar.showMessage(f"儲存批量處理結果時發生錯誤: {str(e)}")
         QApplication.processEvents()
@@ -3981,7 +4000,7 @@ def save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir):
 
 def batch_ftp_download_clicked():
     # 檢查CSV文件是否存在
-    csv_path = './serial_ids_20250519.csv'
+    csv_path = './serial_ids_20250529.csv'
     if not os.path.exists(csv_path):
         status_bar.showMessage(f'找不到檔案: {csv_path}')
         QApplication.processEvents()
@@ -4024,7 +4043,7 @@ def batch_ftp_download_clicked():
     
     # 計算最近三天的日期
     # days = [today - timedelta(days=i) for i in range(2, 5)]  # 前2,3,4天
-    days = [today - timedelta(days=2)]  # 前 2 天開始加
+    days = [today - timedelta(days=3)]  # 前 2 天開始加
     
     # 保存原始UI設置
     original_sn = iCueSN.text()
