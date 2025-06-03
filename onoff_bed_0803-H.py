@@ -2482,12 +2482,33 @@ def save_batch_results(batch_results, folder_path):
             outliers_info = analyze_outliers(df_results)
             f.write("離群值分析:\n")
             f.write("-" * 30 + "\n")
-            for metric, outliers in outliers_info.items():
+            
+            # 按指標名稱排序顯示離群值
+            for metric in sorted(outliers_info.keys()):
+                outliers = outliers_info[metric]
                 if outliers:
                     f.write(f"\n{metric} 離群值:\n")
-                    for outlier in outliers:
-                        f.write(f"  - {outlier['filename']}: {outlier['value']:.2f}\n")
+                    # 按設備序號排序
+                    sorted_outliers = sorted(outliers, key=lambda x: x['device_sn'])
+                    for outlier in sorted_outliers:
+                        f.write(f"  - {outlier['device_sn']} ({outlier['filename']}): {outlier['value']:.2f}\n")
             
+            # 共同離群設備分析
+            common_outlier_devices = find_common_outlier_devices(outliers_info, df_results)
+            if common_outlier_devices:
+                f.write(f"\n共同離群設備分析:\n")
+                f.write("-" * 30 + "\n")
+                f.write("在 avg_time_diff, match_rate, precision 三個指標都為離群值的設備:\n")
+                for device_info in sorted(common_outlier_devices, key=lambda x: x['device_sn']):
+                    f.write(f"  - {device_info['device_sn']}: "
+                           f"時差={device_info['avg_time_diff']:.2f}秒, "
+                           f"配對率={device_info['match_rate']:.2f}, "
+                           f"精確率={device_info['precision']:.2f}\n")
+            else:
+                f.write(f"\n共同離群設備分析:\n")
+                f.write("-" * 30 + "\n")
+                f.write("沒有設備在三個關鍵指標(avg_time_diff, match_rate, precision)都為離群值\n")
+
             # 詳細結果（按評分排序）
             f.write("\n\n詳細結果 (按評分排序):\n")
             f.write("-" * 50 + "\n")
@@ -2650,13 +2671,11 @@ def generate_correlation_heatmap(df_results, plot_path, metrics):
 
 
 def analyze_outliers(df_results):
-    """分析各指標的離群值"""
+    """分析指定指標的離群值"""
     outliers_info = {}
     
-    metrics = ['total_true_events', 'total_pred_events', 'matched_pairs', 
-               'false_negatives', 'false_positives', 'avg_time_diff',
-               'match_rate', 'precision', 'time_diff_score', 
-               'early_samples', 'avg_early_time', 'late_samples', 'avg_late_time']
+    # 只分析這三個關鍵指標
+    metrics = ['avg_time_diff', 'match_rate', 'precision']
     
     for metric in metrics:
         if metric not in df_results.columns:
@@ -2688,6 +2707,45 @@ def analyze_outliers(df_results):
             outliers_info[metric] = outliers
     
     return outliers_info
+
+def find_common_outlier_devices(outliers_info, df_results):
+    """找出在三個關鍵指標都為離群值的共同設備"""
+    target_metrics = ['avg_time_diff', 'match_rate', 'precision']
+    
+    # 收集每個指標的離群設備
+    outlier_devices_by_metric = {}
+    for metric in target_metrics:
+        if metric in outliers_info:
+            outlier_devices_by_metric[metric] = set([outlier['device_sn'] for outlier in outliers_info[metric]])
+        else:
+            outlier_devices_by_metric[metric] = set()
+    
+    # 找出在所有三個指標都為離群值的設備
+    if len(outlier_devices_by_metric) >= 3:
+        common_devices = outlier_devices_by_metric['avg_time_diff']
+        for metric in ['match_rate', 'precision']:
+            if metric in outlier_devices_by_metric:
+                common_devices = common_devices.intersection(outlier_devices_by_metric[metric])
+        
+        # 為每個共同離群設備收集指標數值
+        common_devices_with_values = []
+        for device_sn in common_devices:
+            # 找到該設備的記錄
+            device_records = df_results[df_results['device_sn'] == device_sn]
+            if not device_records.empty:
+                # 取第一筆記錄（如果有多筆的話）
+                record = device_records.iloc[0]
+                device_info = {
+                    'device_sn': device_sn,
+                    'avg_time_diff': record['avg_time_diff'],
+                    'match_rate': record['match_rate'],
+                    'precision': record['precision']
+                }
+                common_devices_with_values.append(device_info)
+        
+        return common_devices_with_values
+    
+    return []
 
 def process_single_csv_file(csv_path):
     """處理單個 CSV 檔案的原始邏輯"""
