@@ -4023,7 +4023,8 @@ def batch_ftp_download_clicked():
     today = now_utc.astimezone(gmt8)
     
     # 計算最近三天的日期
-    days = [today - timedelta(days=i) for i in range(2, 5)]  # 前2,3,4天
+    # days = [today - timedelta(days=i) for i in range(2, 5)]  # 前2,3,4天
+    days = [today - timedelta(days=2)]  # 前 2 天開始加
     
     # 保存原始UI設置
     original_sn = iCueSN.text()
