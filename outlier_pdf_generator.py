@@ -20,6 +20,7 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
     
     # 列出所有截圖文件
     screenshot_files = [f for f in os.listdir(screenshot_dir) if f.endswith('.png')]
+    print(f"截圖目錄中共找到 {len(screenshot_files)} 個PNG文件")
     
     for record_info in common_outlier_devices:
         try:
@@ -29,35 +30,61 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
             end_date = record_info['end_date']
             end_hour = int(record_info['end_hour'])      # 確保轉換為整數
             
-            # 構建預期的截圖文件名模式
-            # 截圖文件名格式通常是: {device_sn}_{start_date}_{start_hour}_{end_date}_{end_hour}_*.png
-            expected_pattern = f"{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}"
+            # 構建多種可能的截圖文件名模式
+            possible_patterns = [
+                # 原始模式：{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}
+                f"{device_sn}_{start_date}_{start_hour:02d}{end_date}_{end_hour:02d}",
+                # 完整時間格式：{device_sn}_{start_date}_{start_hour:02d}0000_{end_date}_{end_hour:02d}0000
+                f"{device_sn}_{start_date}_{start_hour:02d}0000_{end_date}_{end_hour:02d}0000",
+                # 簡化格式（只匹配設備序號和開始日期）
+                f"{device_sn}_{start_date}",
+                # 寬鬆匹配（只匹配設備序號）
+                f"{device_sn}_"
+            ]
+            
+            print(f"搜索設備 {device_sn} 的截圖文件，時間段：{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00")
+            print(f"可能的模式：{possible_patterns}")
             
             # 尋找匹配的截圖文件
             matching_screenshots = []
             for screenshot_file in screenshot_files:
-                if screenshot_file.startswith(expected_pattern):
-                    screenshot_path = os.path.join(screenshot_dir, screenshot_file)
-                    if os.path.exists(screenshot_path):
-                        matching_screenshots.append({
-                            'device_sn': device_sn,
-                            'file_path': screenshot_path,
-                            'file_name': screenshot_file,
-                            'record_info': record_info,
-                            'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00"
-                        })
+                # 檢查是否匹配任何一種模式
+                for pattern in possible_patterns:
+                    if screenshot_file.startswith(pattern):
+                        screenshot_path = os.path.join(screenshot_dir, screenshot_file)
+                        if os.path.exists(screenshot_path):
+                            # 避免重複添加
+                            if not any(ms['file_name'] == screenshot_file for ms in matching_screenshots):
+                                matching_screenshots.append({
+                                    'device_sn': device_sn,
+                                    'file_path': screenshot_path,
+                                    'file_name': screenshot_file,
+                                    'record_info': record_info,
+                                    'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00",
+                                    'matched_pattern': pattern
+                                })
+                                print(f"  找到匹配文件：{screenshot_file}（模式：{pattern}）")
+                        break  # 找到匹配就跳出模式循環
             
             if matching_screenshots:
                 # 按文件名排序（這樣時間順序會是正確的）
                 matching_screenshots.sort(key=lambda x: x['file_name'])
                 found_screenshots.extend(matching_screenshots)
+                print(f"  設備 {device_sn} 找到 {len(matching_screenshots)} 個截圖文件")
             else:
                 print(f"未找到設備 {device_sn} 在時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
+                # 列出該設備的所有可能文件
+                device_files = [f for f in screenshot_files if f.startswith(device_sn)]
+                if device_files:
+                    print(f"  該設備的其他截圖文件：{device_files}")
+                else:
+                    print(f"  該設備沒有任何截圖文件")
         
         except (ValueError, KeyError) as e:
             print(f"處理設備資料時發生錯誤: {record_info.get('device_sn', 'Unknown')}, 錯誤: {e}")
             continue
     
+    print(f"總共收集到 {len(found_screenshots)} 個匹配的截圖文件")
     return found_screenshots
 
 def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timestamp, log_dir):
