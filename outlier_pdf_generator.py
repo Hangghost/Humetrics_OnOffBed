@@ -22,36 +22,41 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
     screenshot_files = [f for f in os.listdir(screenshot_dir) if f.endswith('.png')]
     
     for record_info in common_outlier_devices:
-        device_sn = record_info['device_sn']
-        start_date = record_info['start_date']
-        start_hour = record_info['start_hour']
-        end_date = record_info['end_date']
-        end_hour = record_info['end_hour']
+        try:
+            device_sn = record_info['device_sn']
+            start_date = record_info['start_date']
+            start_hour = int(record_info['start_hour'])  # 確保轉換為整數
+            end_date = record_info['end_date']
+            end_hour = int(record_info['end_hour'])      # 確保轉換為整數
+            
+            # 構建預期的截圖文件名模式
+            # 截圖文件名格式通常是: {device_sn}_{start_date}_{start_hour}_{end_date}_{end_hour}_*.png
+            expected_pattern = f"{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}"
+            
+            # 尋找匹配的截圖文件
+            matching_screenshots = []
+            for screenshot_file in screenshot_files:
+                if screenshot_file.startswith(expected_pattern):
+                    screenshot_path = os.path.join(screenshot_dir, screenshot_file)
+                    if os.path.exists(screenshot_path):
+                        matching_screenshots.append({
+                            'device_sn': device_sn,
+                            'file_path': screenshot_path,
+                            'file_name': screenshot_file,
+                            'record_info': record_info,
+                            'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00"
+                        })
+            
+            if matching_screenshots:
+                # 按文件名排序（這樣時間順序會是正確的）
+                matching_screenshots.sort(key=lambda x: x['file_name'])
+                found_screenshots.extend(matching_screenshots)
+            else:
+                print(f"未找到設備 {device_sn} 在時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
         
-        # 構建預期的截圖文件名模式
-        # 截圖文件名格式通常是: {device_sn}_{start_date}_{start_hour}_{end_date}_{end_hour}_*.png
-        expected_pattern = f"{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}"
-        
-        # 尋找匹配的截圖文件
-        matching_screenshots = []
-        for screenshot_file in screenshot_files:
-            if screenshot_file.startswith(expected_pattern):
-                screenshot_path = os.path.join(screenshot_dir, screenshot_file)
-                if os.path.exists(screenshot_path):
-                    matching_screenshots.append({
-                        'device_sn': device_sn,
-                        'file_path': screenshot_path,
-                        'file_name': screenshot_file,
-                        'record_info': record_info,
-                        'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00"
-                    })
-        
-        if matching_screenshots:
-            # 按文件名排序（這樣時間順序會是正確的）
-            matching_screenshots.sort(key=lambda x: x['file_name'])
-            found_screenshots.extend(matching_screenshots)
-        else:
-            print(f"未找到設備 {device_sn} 在時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
+        except (ValueError, KeyError) as e:
+            print(f"處理設備資料時發生錯誤: {record_info.get('device_sn', 'Unknown')}, 錯誤: {e}")
+            continue
     
     return found_screenshots
 
@@ -176,22 +181,38 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
         table_data = [['設備序號', '時間段', '平均時差(秒)', '配對率', '精確率', '評分', '截圖']]
         
         for record_info in common_outlier_devices:
-            device_sn = record_info['device_sn']
-            time_period = f"{record_info['start_date']} {record_info['start_hour']:02d}:00 - {record_info['end_date']} {record_info['end_hour']:02d}:00"
-            
-            # 檢查是否有對應的截圖
-            has_screenshot = any(s['record_info']['filename'] == record_info['filename'] for s in screenshots)
-            screenshot_status = "有" if has_screenshot else "無"
-            
-            table_data.append([
-                device_sn,
-                time_period,
-                f"{record_info['avg_time_diff']:.2f}",
-                f"{record_info['match_rate']:.2f}",
-                f"{record_info['precision']:.2f}",
-                f"{record_info['score']:.2f}",
-                screenshot_status
-            ])
+            try:
+                device_sn = record_info['device_sn']
+                # 確保 start_hour 和 end_hour 轉換為整數
+                start_hour = int(record_info['start_hour'])
+                end_hour = int(record_info['end_hour'])
+                time_period = f"{record_info['start_date']} {start_hour:02d}:00 - {record_info['end_date']} {end_hour:02d}:00"
+                
+                # 檢查是否有對應的截圖
+                has_screenshot = any(s['record_info']['filename'] == record_info['filename'] for s in screenshots)
+                screenshot_status = "有" if has_screenshot else "無"
+                
+                table_data.append([
+                    device_sn,
+                    time_period,
+                    f"{record_info['avg_time_diff']:.2f}",
+                    f"{record_info['match_rate']:.2f}",
+                    f"{record_info['precision']:.2f}",
+                    f"{record_info['score']:.2f}",
+                    screenshot_status
+                ])
+            except (ValueError, KeyError) as e:
+                print(f"處理設備資料統計表格時發生錯誤: {record_info.get('device_sn', 'Unknown')}, 錯誤: {e}")
+                # 添加錯誤行到表格
+                table_data.append([
+                    record_info.get('device_sn', 'Unknown'),
+                    '資料錯誤',
+                    'N/A',
+                    'N/A',
+                    'N/A',
+                    'N/A',
+                    'N/A'
+                ])
         
         table = Table(table_data)
         table.setStyle(TableStyle([
