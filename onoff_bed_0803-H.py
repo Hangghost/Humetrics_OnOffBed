@@ -2507,7 +2507,10 @@ def save_batch_results(batch_results, folder_path):
                 f.write("-" * 30 + "\n")
                 f.write("在 avg_time_diff, match_rate, precision 三個指標都為離群值的設備資料:\n")
                 for record_info in sorted(common_outlier_devices, key=lambda x: (x['device_sn'], x['start_date'], x['start_hour'])):
-                    f.write(f"  - {record_info['device_sn']} ({record_info['start_date']} {record_info['start_hour']}:00 - {record_info['end_date']} {record_info['end_hour']}:00):  ")
+                    # 確保 start_hour 和 end_hour 轉換為整數
+                    start_hour = int(record_info['start_hour'])
+                    end_hour = int(record_info['end_hour'])
+                    f.write(f"  - {record_info['device_sn']} ({record_info['start_date']} {start_hour:02d}:00 - {record_info['end_date']} {end_hour:02d}:00):  ")
                     f.write(f"    時差={record_info['avg_time_diff']:.2f}秒, "
                            f"配對率={record_info['match_rate']:.2f}, "
                            f"精確率={record_info['precision']:.2f}, "
@@ -2522,9 +2525,12 @@ def save_batch_results(batch_results, folder_path):
             f.write("-" * 50 + "\n")
             
             for i, result in enumerate(df_results.to_dict('records'), 1):
+                # 確保 start_hour 和 end_hour 轉換為整數
+                start_hour = int(result['start_hour'])
+                end_hour = int(result['end_hour'])
                 f.write(f"\n{i}. {result['filename']}\n")
                 f.write(f"   設備序號: {result['device_sn']}\n")
-                f.write(f"   時間範圍: {result['start_date']} {result['start_hour']}:00 - {result['end_date']} {result['end_hour']}:00\n")
+                f.write(f"   時間範圍: {result['start_date']} {start_hour:02d}:00 - {result['end_date']} {end_hour:02d}:00\n")
                 f.write(f"   評分: {result['score']:.2f}\n")
                 f.write(f"   真實事件: {result['total_true_events']}, 預測事件: {result['total_pred_events']}\n")
                 f.write(f"   配對: {result['matched_pairs']}, 漏報: {result['false_negatives']}, 誤報: {result['false_positives']}\n")
@@ -2754,13 +2760,21 @@ def find_common_outlier_devices(outliers_info, df_results):
             record_match = df_results[df_results['filename'] == filename]
             if not record_match.empty:
                 record = record_match.iloc[0]
+                # 確保 start_hour 和 end_hour 轉換為整數
+                try:
+                    start_hour = int(record['start_hour'])
+                    end_hour = int(record['end_hour'])
+                except (ValueError, TypeError):
+                    start_hour = 0
+                    end_hour = 0
+                
                 record_info = {
                     'filename': filename,
                     'device_sn': record['device_sn'],
                     'start_date': record['start_date'],
-                    'start_hour': record['start_hour'],
+                    'start_hour': start_hour,
                     'end_date': record['end_date'],
-                    'end_hour': record['end_hour'],
+                    'end_hour': end_hour,
                     'avg_time_diff': record['avg_time_diff'],
                     'match_rate': record['match_rate'],
                     'precision': record['precision'],
