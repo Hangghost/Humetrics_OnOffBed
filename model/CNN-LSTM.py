@@ -2177,14 +2177,8 @@ try:
         
         # 完成單一檔案預測模式，退出程式
         sys.exit(0)
-        
-    # 獲取所有符合條件的檔案
-    INPUT_DATA_PATHS = glob.glob(os.path.join(INPUT_DATA_DIR, INPUT_DATA_PATTERN))
-    if not INPUT_DATA_PATHS:
-        print(f"錯誤: 在 {INPUT_DATA_DIR} 目錄下未找到任何符合 {INPUT_DATA_PATTERN} 的檔案")
-        sys.exit(1)
     
-    # 獲取預測用的資料檔案
+    # 獲取預測用的資料檔案 - 移動到這裡，在 --predict-new 檢查之後
     PREDICTION_DATA_DIR = args.prediction_dir  # 使用命令列參數傳入的路徑
     os.makedirs(PREDICTION_DATA_DIR, exist_ok=True)  # 確保預測資料夾存在
     
@@ -2202,61 +2196,78 @@ try:
     for i, path in enumerate(PREDICTION_DATA_PATHS):
         print(f"  {i+1}. {os.path.basename(path)}")
     
-    print(f"找到 {len(INPUT_DATA_PATHS)} 個訓練資料檔案:")
-    for i, path in enumerate(INPUT_DATA_PATHS):
-        print(f"  {i+1}. {os.path.basename(path)}")
-    
-    # 初始化存儲所有資料的陣列
-    all_sequences = []
-    all_labels = []
-    all_event_binary = []
-    feature_names = None
-    
-    # 逐一處理每個檔案
-    for i, file_path in enumerate(INPUT_DATA_PATHS):
-        print(f"\n處理檔案 {i+1}/{len(INPUT_DATA_PATHS)}: {os.path.basename(file_path)}")
+    # 只有在非 --predict-new 模式下才檢查訓練資料
+    if not args.predict_new:
+        # 獲取所有符合條件的檔案
+        INPUT_DATA_PATHS = glob.glob(os.path.join(INPUT_DATA_DIR, INPUT_DATA_PATTERN))
+        if not INPUT_DATA_PATHS:
+            print(f"錯誤: 在 {INPUT_DATA_DIR} 目錄下未找到任何符合 {INPUT_DATA_PATTERN} 的檔案")
+            sys.exit(1)
         
-        # 使用總和值進行訓練 
-        sequences, labels, event_binary, current_feature_names = load_and_process_data(
-            file_path,
-            apply_balancing=APPLY_BALANCING,
-            pos_to_neg_ratio=POS_TO_NEG_RATIO
-        )
+        print(f"找到 {len(INPUT_DATA_PATHS)} 個訓練資料檔案:")
+        for i, path in enumerate(INPUT_DATA_PATHS):
+            print(f"  {i+1}. {os.path.basename(path)}")
         
-        # 第一個檔案時設定feature_names
-        if feature_names is None:
-            feature_names = current_feature_names
-        # 驗證各檔案的feature_names一致性
-        elif not np.array_equal(feature_names, current_feature_names):
-            print(f"警告: 檔案 {os.path.basename(file_path)} 的特徵名稱與之前的不一致")
-            print(f"預期: {feature_names}")
-            print(f"實際: {current_feature_names}")
-            # 繼續處理，但可能會導致問題
+        # 初始化存儲所有資料的陣列
+        all_sequences = []
+        all_labels = []
+        all_event_binary = []
+        feature_names = None
         
-        # 將當前檔案的資料添加到總資料集中
-        all_sequences.append(sequences)
-        all_labels.append(labels)
-        all_event_binary.append(event_binary)
+        # 逐一處理每個檔案
+        for i, file_path in enumerate(INPUT_DATA_PATHS):
+            print(f"\n處理檔案 {i+1}/{len(INPUT_DATA_PATHS)}: {os.path.basename(file_path)}")
+            
+            # 使用總和值進行訓練 
+            sequences, labels, event_binary, current_feature_names = load_and_process_data(
+                file_path,
+                apply_balancing=APPLY_BALANCING,
+                pos_to_neg_ratio=POS_TO_NEG_RATIO
+            )
+            
+            # 第一個檔案時設定feature_names
+            if feature_names is None:
+                feature_names = current_feature_names
+            # 驗證各檔案的feature_names一致性
+            elif not np.array_equal(feature_names, current_feature_names):
+                print(f"警告: 檔案 {os.path.basename(file_path)} 的特徵名稱與之前的不一致")
+                print(f"預期: {feature_names}")
+                print(f"實際: {current_feature_names}")
+                # 繼續處理，但可能會導致問題
+            
+            # 將當前檔案的資料添加到總資料集中
+            all_sequences.append(sequences)
+            all_labels.append(labels)
+            all_event_binary.append(event_binary)
+            
+            print(f"檔案 {os.path.basename(file_path)} 中包含 {np.sum(event_binary)} 個離床事件")
         
-        print(f"檔案 {os.path.basename(file_path)} 中包含 {np.sum(event_binary)} 個離床事件")
-    
-    # 合併所有檔案的資料
-    X = np.vstack(all_sequences)
-    y = np.concatenate(all_labels)
-    event_binary_all = np.concatenate(all_event_binary)
-    
-    print(f"\n合併後資料統計:")
-    print(f"總序列形狀: {X.shape}")
-    print(f"總標籤形狀: {y.shape}")
-    print(f"總共有 {np.sum(event_binary_all)} 個離床事件")
-    print(f"特徵名稱: {feature_names}")
-    print(f"注意: 已移除標籤特徵(OnBed_Status和event_binary)作為輸入，僅使用以下八個感測器相關特徵作為模型輸入:")
-    for i, feature in enumerate(feature_names):
-        print(f"  {i+1}. {feature}")
+        # 合併所有檔案的資料
+        X = np.vstack(all_sequences)
+        y = np.concatenate(all_labels)
+        event_binary_all = np.concatenate(all_event_binary)
+        
+        print(f"\n合併後資料統計:")
+        print(f"總序列形狀: {X.shape}")
+        print(f"總標籤形狀: {y.shape}")
+        print(f"總共有 {np.sum(event_binary_all)} 個離床事件")
+        print(f"特徵名稱: {feature_names}")
+        print(f"注意: 已移除標籤特徵(OnBed_Status和event_binary)作為輸入，僅使用以下八個感測器相關特徵作為模型輸入:")
+        for i, feature in enumerate(feature_names):
+            print(f"  {i+1}. {feature}")
 
-    # 不再分割訓練和測試集，直接使用所有資料
-    X_all = X.reshape((X.shape[0], X.shape[1], 1))
-    y_all = y
+        # 不再分割訓練和測試集，直接使用所有資料
+        X_all = X.reshape((X.shape[0], X.shape[1], 1))
+        y_all = y
+    else:
+        # --predict-new 模式下，設置空的訓練資料
+        all_sequences = []
+        all_labels = []
+        all_event_binary = []
+        X_all = np.array([[0]])  # 創建一個空模型輸入，因為不需要訓練
+        y_all = np.array([0])    # 創建一個空標籤陣列
+        feature_names = None
+        INPUT_DATA_PATHS = []  # 空的訓練資料路徑列表
 
     # 創建日誌目錄
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -2265,8 +2276,8 @@ try:
     final_model_path = os.path.join(LOG_DIR, FINAL_MODEL_PATH)
 
     # 生成完整的時間戳序列 - 移到這裡，確保在設定callbacks前定義
-    timestamps = np.arange(len(X))  # 使用完整數據集的長度
-    
+    timestamps = np.arange(len(X_all)) if not args.predict_new else np.arange(1)  # --predict-new 模式下使用最小長度
+
     if args.predict_new:
         # 只處理新資料並使用現有模型進行預測
         if os.path.exists(final_model_path):
