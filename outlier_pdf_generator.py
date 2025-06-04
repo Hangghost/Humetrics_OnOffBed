@@ -10,7 +10,7 @@ import glob
 from datetime import datetime
 
 def collect_outlier_screenshots(common_outlier_devices, log_dir):
-    """收集離群設備資料的截圖文件（基於設備+日期）"""
+    """收集離群設備資料的截圖文件（基於設備+精確時間段）"""
     screenshot_dir = os.path.join(log_dir, 'batch_screenshots')
     found_screenshots = []
     
@@ -30,53 +30,81 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
             end_date = record_info['end_date']
             end_hour = int(record_info['end_hour'])      # 確保轉換為整數
             
-            # 構建多種可能的截圖文件名模式
+            # 構建精確的截圖文件名模式 - 只匹配特定時間段
+            # 按匹配精確度排序，優先使用更精確的模式
             possible_patterns = [
-                # 原始模式：{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}
-                f"{device_sn}_{start_date}_{start_hour:02d}{end_date}_{end_hour:02d}",
-                # 完整時間格式：{device_sn}_{start_date}_{start_hour:02d}0000_{end_date}_{end_hour:02d}0000
+                # 最精確模式：完整時間格式 {device_sn}_{start_date}_{start_hour:02d}0000_{end_date}_{end_hour:02d}0000
                 f"{device_sn}_{start_date}_{start_hour:02d}0000_{end_date}_{end_hour:02d}0000",
-                # 簡化格式（只匹配設備序號和開始日期）
-                f"{device_sn}_{start_date}",
-                # 寬鬆匹配（只匹配設備序號）
-                f"{device_sn}_"
+                # 次精確模式：簡化時間格式 {device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}
+                f"{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}",
+                # 備用模式：匹配開始日期和時間 {device_sn}_{start_date}_{start_hour:02d}
+                f"{device_sn}_{start_date}_{start_hour:02d}"
             ]
             
-            print(f"搜索設備 {device_sn} 的截圖文件，時間段：{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00")
-            print(f"可能的模式：{possible_patterns}")
+            print(f"搜索設備 {device_sn} 的精確時間段截圖，時間段：{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00")
+            print(f"精確匹配模式：{possible_patterns}")
             
             # 尋找匹配的截圖文件
             matching_screenshots = []
             for screenshot_file in screenshot_files:
-                # 檢查是否匹配任何一種模式
-                for pattern in possible_patterns:
+                # 檢查是否匹配任何一種精確模式
+                for pattern_index, pattern in enumerate(possible_patterns):
                     if screenshot_file.startswith(pattern):
-                        screenshot_path = os.path.join(screenshot_dir, screenshot_file)
-                        if os.path.exists(screenshot_path):
-                            # 避免重複添加
-                            if not any(ms['file_name'] == screenshot_file for ms in matching_screenshots):
-                                matching_screenshots.append({
-                                    'device_sn': device_sn,
-                                    'file_path': screenshot_path,
-                                    'file_name': screenshot_file,
-                                    'record_info': record_info,
-                                    'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00",
-                                    'matched_pattern': pattern
-                                })
-                                print(f"  找到匹配文件：{screenshot_file}（模式：{pattern}）")
-                        break  # 找到匹配就跳出模式循環
+                        # 額外驗證：確保這確實是正確的時間段
+                        # 檢查文件名中是否包含預期的結束日期（進一步驗證）
+                        if pattern_index <= 1:  # 對於前兩種精確模式，進行額外驗證
+                            # 檢查檔名是否同時包含開始和結束日期
+                            if start_date in screenshot_file and end_date in screenshot_file:
+                                time_validation_passed = True
+                            else:
+                                time_validation_passed = False
+                                print(f"  文件 {screenshot_file} 雖匹配模式 {pattern}，但時間段驗證失敗")
+                        else:
+                            # 對於第三種模式，進行更嚴格的驗證
+                            # 確保檔名不包含其他日期（避免誤匹配其他時間段）
+                            other_dates_found = False
+                            # 檢查是否包含其他常見的日期格式
+                            import re
+                            date_pattern = r'202\d{5}'  # 匹配 YYYYMMDD 格式
+                            found_dates = re.findall(date_pattern, screenshot_file)
+                            if len(found_dates) > 1:
+                                # 如果找到多個日期，檢查是否都是預期的日期
+                                expected_dates = {start_date, end_date}
+                                if not all(date in expected_dates for date in found_dates):
+                                    other_dates_found = True
+                                    print(f"  文件 {screenshot_file} 包含其他時間段，跳過")
+                            
+                            time_validation_passed = not other_dates_found
+                        
+                        if time_validation_passed:
+                            screenshot_path = os.path.join(screenshot_dir, screenshot_file)
+                            if os.path.exists(screenshot_path):
+                                # 避免重複添加
+                                if not any(ms['file_name'] == screenshot_file for ms in matching_screenshots):
+                                    matching_screenshots.append({
+                                        'device_sn': device_sn,
+                                        'file_path': screenshot_path,
+                                        'file_name': screenshot_file,
+                                        'record_info': record_info,
+                                        'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00",
+                                        'matched_pattern': pattern,
+                                        'pattern_precision': pattern_index  # 記錄匹配精確度
+                                    })
+                                    print(f"  ✓ 找到精確匹配文件：{screenshot_file}（模式：{pattern}，精確度：{pattern_index}）")
+                            break  # 找到匹配就跳出模式循環
             
             if matching_screenshots:
-                # 按文件名排序（這樣時間順序會是正確的）
-                matching_screenshots.sort(key=lambda x: x['file_name'])
+                # 按匹配精確度排序（精確度高的優先），然後按文件名排序
+                matching_screenshots.sort(key=lambda x: (x['pattern_precision'], x['file_name']))
                 found_screenshots.extend(matching_screenshots)
-                print(f"  設備 {device_sn} 找到 {len(matching_screenshots)} 個截圖文件")
+                print(f"  設備 {device_sn} 找到 {len(matching_screenshots)} 個精確時間段的截圖文件")
             else:
-                print(f"未找到設備 {device_sn} 在時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
-                # 列出該設備的所有可能文件
+                print(f"未找到設備 {device_sn} 在精確時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
+                # 列出該設備的所有截圖文件作為參考
                 device_files = [f for f in screenshot_files if f.startswith(device_sn)]
                 if device_files:
-                    print(f"  該設備的其他截圖文件：{device_files}")
+                    print(f"  該設備的其他截圖文件：{device_files[:3]}{'...' if len(device_files) > 3 else ''}")
+                    print(f"  總共 {len(device_files)} 個該設備的截圖文件，但都不匹配指定的時間段")
                 else:
                     print(f"  該設備沒有任何截圖文件")
         
@@ -84,7 +112,7 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
             print(f"處理設備資料時發生錯誤: {record_info.get('device_sn', 'Unknown')}, 錯誤: {e}")
             continue
     
-    print(f"總共收集到 {len(found_screenshots)} 個匹配的截圖文件")
+    print(f"總共收集到 {len(found_screenshots)} 個精確匹配的截圖文件")
     return found_screenshots
 
 def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timestamp, log_dir):
