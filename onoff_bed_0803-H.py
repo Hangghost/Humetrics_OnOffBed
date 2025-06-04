@@ -2503,18 +2503,19 @@ def save_batch_results(batch_results, folder_path):
             # 共同離群設備分析
             common_outlier_devices = find_common_outlier_devices(outliers_info, df_results)
             if common_outlier_devices:
-                f.write(f"\n共同離群設備分析:\n")
+                f.write(f"\n共同離群設備資料分析:\n")
                 f.write("-" * 30 + "\n")
-                f.write("在 avg_time_diff, match_rate, precision 三個指標都為離群值的設備:\n")
-                for device_info in sorted(common_outlier_devices, key=lambda x: x['device_sn']):
-                    f.write(f"  - {device_info['device_sn']}: "
-                           f"時差={device_info['avg_time_diff']:.2f}秒, "
-                           f"配對率={device_info['match_rate']:.2f}, "
-                           f"精確率={device_info['precision']:.2f}\n")
+                f.write("在 avg_time_diff, match_rate, precision 三個指標都為離群值的設備資料:\n")
+                for record_info in sorted(common_outlier_devices, key=lambda x: (x['device_sn'], x['start_date'], x['start_hour'])):
+                    f.write(f"  - {record_info['device_sn']} ({record_info['start_date']} {record_info['start_hour']}:00 - {record_info['end_date']} {record_info['end_hour']}:00):  ")
+                    f.write(f"    時差={record_info['avg_time_diff']:.2f}秒, "
+                           f"配對率={record_info['match_rate']:.2f}, "
+                           f"精確率={record_info['precision']:.2f}, "
+                           f"評分={record_info['score']:.2f}\n")
             else:
-                f.write(f"\n共同離群設備分析:\n")
+                f.write(f"\n共同離群設備資料分析:\n")
                 f.write("-" * 30 + "\n")
-                f.write("沒有設備在三個關鍵指標(avg_time_diff, match_rate, precision)都為離群值\n")
+                f.write("沒有設備資料在三個關鍵指標(avg_time_diff, match_rate, precision)都為離群值\n")
 
             # 詳細結果（按評分排序）
             f.write("\n\n詳細結果 (按評分排序):\n")
@@ -2728,41 +2729,46 @@ def analyze_outliers(df_results):
     return outliers_info
 
 def find_common_outlier_devices(outliers_info, df_results):
-    """找出在三個關鍵指標都為離群值的共同設備"""
+    """找出在三個關鍵指標都為離群值的共同設備資料（設備+特定日期）"""
     target_metrics = ['avg_time_diff', 'match_rate', 'precision']
     
-    # 收集每個指標的離群設備
-    outlier_devices_by_metric = {}
+    # 收集每個指標的離群資料（使用filename作為唯一識別）
+    outlier_records_by_metric = {}
     for metric in target_metrics:
         if metric in outliers_info:
-            outlier_devices_by_metric[metric] = set([outlier['device_sn'] for outlier in outliers_info[metric]])
+            outlier_records_by_metric[metric] = set([outlier['filename'] for outlier in outliers_info[metric]])
         else:
-            outlier_devices_by_metric[metric] = set()
+            outlier_records_by_metric[metric] = set()
     
-    # 找出在所有三個指標都為離群值的設備
-    if len(outlier_devices_by_metric) >= 3:
-        common_devices = outlier_devices_by_metric['avg_time_diff']
+    # 找出在所有三個指標都為離群值的資料記錄
+    if len(outlier_records_by_metric) >= 3:
+        common_records = outlier_records_by_metric['avg_time_diff']
         for metric in ['match_rate', 'precision']:
-            if metric in outlier_devices_by_metric:
-                common_devices = common_devices.intersection(outlier_devices_by_metric[metric])
+            if metric in outlier_records_by_metric:
+                common_records = common_records.intersection(outlier_records_by_metric[metric])
         
-        # 為每個共同離群設備收集指標數值
-        common_devices_with_values = []
-        for device_sn in common_devices:
-            # 找到該設備的記錄
-            device_records = df_results[df_results['device_sn'] == device_sn]
-            if not device_records.empty:
-                # 取第一筆記錄（如果有多筆的話）
-                record = device_records.iloc[0]
-                device_info = {
-                    'device_sn': device_sn,
+        # 為每個共同離群資料收集完整資訊
+        common_records_with_values = []
+        for filename in common_records:
+            # 找到該檔案的記錄
+            record_match = df_results[df_results['filename'] == filename]
+            if not record_match.empty:
+                record = record_match.iloc[0]
+                record_info = {
+                    'filename': filename,
+                    'device_sn': record['device_sn'],
+                    'start_date': record['start_date'],
+                    'start_hour': record['start_hour'],
+                    'end_date': record['end_date'],
+                    'end_hour': record['end_hour'],
                     'avg_time_diff': record['avg_time_diff'],
                     'match_rate': record['match_rate'],
-                    'precision': record['precision']
+                    'precision': record['precision'],
+                    'score': record['score']
                 }
-                common_devices_with_values.append(device_info)
+                common_records_with_values.append(record_info)
         
-        return common_devices_with_values
+        return common_records_with_values
     
     return []
 
