@@ -10,7 +10,7 @@ import glob
 from datetime import datetime
 
 def collect_outlier_screenshots(common_outlier_devices, log_dir):
-    """收集離群設備的截圖文件"""
+    """收集離群設備資料的截圖文件（基於設備+日期）"""
     screenshot_dir = os.path.join(log_dir, 'batch_screenshots')
     found_screenshots = []
     
@@ -21,33 +21,42 @@ def collect_outlier_screenshots(common_outlier_devices, log_dir):
     # 列出所有截圖文件
     screenshot_files = [f for f in os.listdir(screenshot_dir) if f.endswith('.png')]
     
-    for device_info in common_outlier_devices:
-        device_sn = device_info['device_sn']
-        device_screenshots = []
+    for record_info in common_outlier_devices:
+        device_sn = record_info['device_sn']
+        start_date = record_info['start_date']
+        start_hour = record_info['start_hour']
+        end_date = record_info['end_date']
+        end_hour = record_info['end_hour']
         
-        # 尋找該設備的截圖（可能有多個時間段的）
+        # 構建預期的截圖文件名模式
+        # 截圖文件名格式通常是: {device_sn}_{start_date}_{start_hour}_{end_date}_{end_hour}_*.png
+        expected_pattern = f"{device_sn}_{start_date}_{start_hour:02d}_{end_date}_{end_hour:02d}"
+        
+        # 尋找匹配的截圖文件
+        matching_screenshots = []
         for screenshot_file in screenshot_files:
-            if screenshot_file.startswith(device_sn + '_'):
+            if screenshot_file.startswith(expected_pattern):
                 screenshot_path = os.path.join(screenshot_dir, screenshot_file)
                 if os.path.exists(screenshot_path):
-                    device_screenshots.append({
+                    matching_screenshots.append({
                         'device_sn': device_sn,
                         'file_path': screenshot_path,
                         'file_name': screenshot_file,
-                        'device_info': device_info
+                        'record_info': record_info,
+                        'time_period': f"{start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00"
                     })
         
-        if device_screenshots:
+        if matching_screenshots:
             # 按文件名排序（這樣時間順序會是正確的）
-            device_screenshots.sort(key=lambda x: x['file_name'])
-            found_screenshots.extend(device_screenshots)
+            matching_screenshots.sort(key=lambda x: x['file_name'])
+            found_screenshots.extend(matching_screenshots)
         else:
-            print(f"未找到設備 {device_sn} 的截圖文件")
+            print(f"未找到設備 {device_sn} 在時間段 {start_date} {start_hour:02d}:00 - {end_date} {end_hour:02d}:00 的截圖文件")
     
     return found_screenshots
 
 def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timestamp, log_dir):
-    """生成離群設備截圖的PDF報告"""
+    """生成離群設備資料截圖的PDF報告（基於設備+日期）"""
     try:
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle
@@ -62,11 +71,11 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
         screenshots = collect_outlier_screenshots(common_outlier_devices, log_dir)
         
         if not screenshots:
-            print("未找到任何離群設備的截圖文件")
+            print("未找到任何離群設備資料的截圖文件")
             return None
         
         # 生成PDF文件路徑
-        pdf_filename = f"outlier_devices_screenshots_{timestamp}.pdf"
+        pdf_filename = f"outlier_device_data_screenshots_{timestamp}.pdf"
         pdf_path = os.path.join(results_dir, pdf_filename)
         
         # 創建PDF文檔（使用橫向A4）
@@ -147,39 +156,41 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
         )
         
         # 添加標題
-        title = Paragraph("離群設備截圖報告", title_style)
+        title = Paragraph("離群設備資料截圖報告", title_style)
         story.append(title)
         story.append(Spacer(1, 20))
         
         # 添加摘要資訊
         summary_text = f"""
         <b>報告生成時間：</b>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>
-        <b>離群設備數量：</b>{len(common_outlier_devices)}<br/>
+        <b>離群設備資料數量：</b>{len(common_outlier_devices)}<br/>
         <b>找到截圖數量：</b>{len(screenshots)}<br/>
-        <b>分析指標：</b>平均時差(avg_time_diff)、配對率(match_rate)、精確率(precision)
+        <b>分析指標：</b>平均時差(avg_time_diff)、配對率(match_rate)、精確率(precision)<br/>
+        <b>說明：</b>以下為在三個關鍵指標都為離群值的設備資料（設備+特定時間段）
         """
         summary = Paragraph(summary_text, normal_style)
         story.append(summary)
         story.append(Spacer(1, 20))
         
-        # 創建設備統計表格
-        table_data = [['設備序號', '平均時差(秒)', '配對率', '精確率', '截圖數量']]
-        screenshot_count_by_device = {}
-        for screenshot in screenshots:
-            device_sn = screenshot['device_sn']
-            if device_sn not in screenshot_count_by_device:
-                screenshot_count_by_device[device_sn] = 0
-            screenshot_count_by_device[device_sn] += 1
+        # 創建設備資料統計表格
+        table_data = [['設備序號', '時間段', '平均時差(秒)', '配對率', '精確率', '評分', '截圖']]
         
-        for device_info in common_outlier_devices:
-            device_sn = device_info['device_sn']
-            screenshot_count = screenshot_count_by_device.get(device_sn, 0)
+        for record_info in common_outlier_devices:
+            device_sn = record_info['device_sn']
+            time_period = f"{record_info['start_date']} {record_info['start_hour']:02d}:00 - {record_info['end_date']} {record_info['end_hour']:02d}:00"
+            
+            # 檢查是否有對應的截圖
+            has_screenshot = any(s['record_info']['filename'] == record_info['filename'] for s in screenshots)
+            screenshot_status = "有" if has_screenshot else "無"
+            
             table_data.append([
                 device_sn,
-                f"{device_info['avg_time_diff']:.2f}",
-                f"{device_info['match_rate']:.2f}",
-                f"{device_info['precision']:.2f}",
-                str(screenshot_count)
+                time_period,
+                f"{record_info['avg_time_diff']:.2f}",
+                f"{record_info['match_rate']:.2f}",
+                f"{record_info['precision']:.2f}",
+                f"{record_info['score']:.2f}",
+                screenshot_status
             ])
         
         table = Table(table_data)
@@ -188,8 +199,8 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, -1), chinese_font_name),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -197,43 +208,31 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
         story.append(table)
         story.append(PageBreak())
         
-        # 按設備分組截圖
-        screenshots_by_device = {}
+        # 按設備資料分組截圖
+        screenshots_by_record = {}
         for screenshot in screenshots:
-            device_sn = screenshot['device_sn']
-            if device_sn not in screenshots_by_device:
-                screenshots_by_device[device_sn] = []
-            screenshots_by_device[device_sn].append(screenshot)
+            record_key = f"{screenshot['device_sn']}_{screenshot['time_period']}"
+            if record_key not in screenshots_by_record:
+                screenshots_by_record[record_key] = []
+            screenshots_by_record[record_key].append(screenshot)
         
-        # 為每個設備添加截圖頁面
-        for device_index, (device_sn, device_screenshots) in enumerate(screenshots_by_device.items()):
-            # 獲取設備資訊
-            device_info = next((d for d in common_outlier_devices if d['device_sn'] == device_sn), None)
+        # 為每個設備資料添加截圖頁面
+        for record_index, (record_key, record_screenshots) in enumerate(screenshots_by_record.items()):
+            # 獲取設備資料資訊
+            record_info = record_screenshots[0]['record_info']
             
-            # 設備標題
-            device_title_text = f"設備：{device_sn}"
-            if device_info:
-                device_title_text += f"<br/>時差：{device_info['avg_time_diff']:.2f}秒 | 配對率：{device_info['match_rate']:.2f} | 精確率：{device_info['precision']:.2f}"
+            # 設備資料標題
+            device_title_text = f"設備：{record_info['device_sn']}<br/>時間段：{record_screenshots[0]['time_period']}"
+            device_title_text += f"<br/>檔案：{record_info['filename']}"
+            device_title_text += f"<br/>時差：{record_info['avg_time_diff']:.2f}秒 | 配對率：{record_info['match_rate']:.2f} | 精確率：{record_info['precision']:.2f} | 評分：{record_info['score']:.2f}"
             
             device_title = Paragraph(device_title_text, device_title_style)
             story.append(device_title)
             story.append(Spacer(1, 10))
             
             # 添加截圖
-            for i, screenshot in enumerate(device_screenshots):
+            for i, screenshot in enumerate(record_screenshots):
                 try:
-                    # 解析文件名中的時間資訊
-                    file_name = screenshot['file_name']
-                    parts = file_name.split('_')
-                    if len(parts) >= 6:
-                        time_info = f"時間：{parts[1]} {parts[2][:2]}:00 - {parts[3]} {parts[4][:2]}:00"
-                    else:
-                        time_info = f"截圖文件：{file_name}"
-                    
-                    time_paragraph = Paragraph(time_info, normal_style)
-                    story.append(time_paragraph)
-                    story.append(Spacer(1, 10))
-                    
                     # 添加截圖圖片
                     img = Image(screenshot['file_path'])
                     # 調整圖片大小以適合頁面（橫向A4，考慮標題佔用的空間）
@@ -249,7 +248,7 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
                     story.append(img)
                     
                     # 分頁邏輯：第一張截圖與標題同頁，後續截圖每張一頁
-                    if i < len(device_screenshots) - 1:
+                    if i < len(record_screenshots) - 1:
                         story.append(PageBreak())
                     
                 except Exception as e:
@@ -257,13 +256,13 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
                     error_paragraph = Paragraph(error_text, normal_style)
                     story.append(error_paragraph)
             
-            # 設備間分頁（除非是最後一個設備）
-            if device_index < len(screenshots_by_device) - 1:
+            # 設備資料間分頁（除非是最後一個）
+            if record_index < len(screenshots_by_record) - 1:
                 story.append(PageBreak())
         
         # 生成PDF
         doc.build(story)
-        print(f"離群設備截圖PDF已生成：{pdf_path}")
+        print(f"離群設備資料截圖PDF已生成：{pdf_path}")
         return pdf_path
         
     except ImportError:
@@ -277,8 +276,30 @@ def generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timest
 if __name__ == "__main__":
     # 測試用例
     test_devices = [
-        {'device_sn': 'SPS2022PA000072', 'avg_time_diff': 2.00, 'match_rate': 0.20, 'precision': 1.00},
-        {'device_sn': 'SPS2022PA000090', 'avg_time_diff': 1.00, 'match_rate': 0.17, 'precision': 0.06}
+        {
+            'filename': 'cleaned_SPS2022PA000072_20250528_04_20250529_04_data.csv',
+            'device_sn': 'SPS2022PA000072', 
+            'start_date': '20250528',
+            'start_hour': 4,
+            'end_date': '20250529',
+            'end_hour': 4,
+            'avg_time_diff': 2.00, 
+            'match_rate': 0.20, 
+            'precision': 1.00,
+            'score': 65.5
+        },
+        {
+            'filename': 'cleaned_SPS2022PA000090_20250530_06_20250531_06_data.csv',
+            'device_sn': 'SPS2022PA000090', 
+            'start_date': '20250530',
+            'start_hour': 6,
+            'end_date': '20250531',
+            'end_hour': 6,
+            'avg_time_diff': 1.00, 
+            'match_rate': 0.17, 
+            'precision': 0.06,
+            'score': 45.2
+        }
     ]
     
     log_dir = "_logs/pyqt-viewer"
