@@ -4020,7 +4020,7 @@ def save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir):
 
 def batch_ftp_download_clicked():
     # 檢查CSV文件是否存在
-    csv_path = './serial_ids_20250529_full.csv'
+    csv_path = './serial_ids_20250529.csv'
     if not os.path.exists(csv_path):
         status_bar.showMessage(f'找不到檔案: {csv_path}')
         QApplication.processEvents()
