@@ -167,3 +167,11 @@ humetric_mqtt_certificate.pem
 .DS_Store
 poetry.lock
 .env
+
+onoff_bed_log.txt
+onoff_bed_simulation_log.txt
+serial_ids_20250519.csv
+serial_ids_20250519_full.csv
+startday_log.txt
+
+serial_ids*.csv

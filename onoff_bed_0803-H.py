@@ -49,8 +49,9 @@ from scipy.signal import savgol_filter, lfilter
 from PyQt5 import QtWidgets
 from pyqtgraph.Qt import QtCore
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QRadioButton, QCheckBox, qApp, QHeaderView
+from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QRadioButton, QCheckBox, qApp, QHeaderView, QLabel
 import pyqtgraph as pg
+import pyqtgraph.exporters
 from PyQt5.QtCore import Qt, QSizeF
 from PyQt5.QtGui import QPainter, QPdfWriter, QImage, QIcon, QColor
 import paho.mqtt.client as mqtt
@@ -61,19 +62,40 @@ import time
 from datetime import datetime, timedelta
 import json
 import ssl
+import pytz
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from matplotlib import rcParams
+import seaborn as sns
+from scipy import stats
 #import threading
+
+# 導入離群設備PDF生成工具
+try:
+    from outlier_pdf_generator import generate_outlier_screenshots_pdf
+except ImportError:
+    print("警告：outlier_pdf_generator模組未找到，PDF生成功能將不可用")
+    generate_outlier_screenshots_pdf = None
 
 global TAB_K
 TAB_K = 8
 
 # 確保 log_file 目錄存在
-LOG_DIR = "./_log_file"
+LOG_DIR = "./_logs/pyqt-viewer"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
 DATA_DIR = "./_data/pyqt_viewer"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
+
+TRAIN_DATA_DIR = "./_data/pyqt_viewer/training"
+if not os.path.exists(TRAIN_DATA_DIR):
+    os.makedirs(TRAIN_DATA_DIR)
+
+PREDICT_DATA_DIR = "./_data/training/prediction"
+if not os.path.exists(PREDICT_DATA_DIR):
+    os.makedirs(PREDICT_DATA_DIR)
 
 #--------------------------------------------------------------------------
 class CustomViewBox(pg.ViewBox):
@@ -157,7 +179,16 @@ class TimeAxisItem(pg.AxisItem):
         value = value % 86400
         if value == 0: 
             global startday
-            return (startday + timedelta(days=day)).strftime('%Y/%m/%d')
+            try:
+                date_str = (startday + timedelta(days=day)).strftime('%Y/%m/%d')
+                if day == 0:
+                    # 只在第一天打印，避免過多日誌
+                    # print(f"[DEBUG] 時間軸日期: {date_str}, 基於 startday = {startday}")
+                    pass
+                return date_str
+            except Exception as e:
+                print(f"[ERROR] 時間軸格式化錯誤: {e}, startday = {startday}, day = {day}")
+                return "日期錯誤"
         else:
             hours = int(value // 3600)
             minutes = int((value % 3600) // 60)
@@ -295,8 +326,7 @@ def toggle_marker():
                 raw_plot.vLine.sigPositionChanged.disconnect()
                 bit_plot.vLine.sigPositionChanged.disconnect()
             except:
-                pass
-                
+                pass                
             # 同步兩個圖表的標記線
             raw_plot.vLine.sigPositionChanged.connect(
                 lambda: bit_plot.vLine.setPos(raw_plot.vLine.value())
@@ -374,93 +404,506 @@ def GetParaTable():
     dist_thr      = int(para_table.item(0, 8).text())
     air_mattress  = int(para_table.item(2, 8).text())
 
+# 添加在檔案中的適當位置（例如在其他函數定義之後）
+def check_startday():
+    """打印當前 startday 的值"""
+    global startday
+    
+    try:
+        with open("startday_log.txt", "a") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - startday = {startday}\n")
+    except:
+        pass
+
 #-----------------------------------------------------------------------    
 def OpenCmbFile():
-    global cmb_name
-    status_bar.showMessage('Reading ' + cmb_name + ' ........')
-    QApplication.processEvents()  
-
-    global n10
-    global d10
-    global x10
-    global n10_sel
-    global d10_sel
-    global x10_sel
-
-    #---------------------------------------------------------
-    txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
-    with open(txt_path, mode='r', newline='') as file:
-        reader = csv.reader(file)
-        t = []
-        filelen = []
-        # 逐行读取数据并将其添加到列表中
-        for row in reader:
-            dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
-            gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
-            gmt_dt = gmt.localize(dt)                
-            tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
-            tw_dt = gmt_dt.astimezone(tz)
-            t.append(tw_dt)
-            filelen.append(int(row[1]))
-
-        t = np.array(t)
-        filelen = np.array(filelen)
-        bcg = np.median(filelen) == 3000
-
-    #---------------------------------------------------------
-    cmb_path = os.path.join(LOG_DIR, cmb_name)
-    with open(cmb_path, "rb") as f:            
-        iCueSN.setText(cmb_name.split('/')[-1][0:15])
-        status_bar.showMessage('Converting to 24bit data ........')
-        QApplication.processEvents()
-
-        data = f.read() # 讀取資料
-        data = np.frombuffer(data, dtype=np.uint8)
-        if bcg:
-            # 將數據重塑為每55字節一組
-            data = data.reshape(-1, 55)
-        else:
-            # 將數據重塑為每24字節一組
-            data = data.reshape(-1, 24)
-        # 提取每組的前18字節
-        data18 = data[:, :18].reshape(-1)
-        # 將前18字節的數據轉換為24位整數
-        # 每3字節為一組，將其轉換為24位整數
-        reshaped_data = np.int32(data18.reshape(-1, 3))
-        int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
-        int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
-
-    #---------------------------------------------------------
-    if radio_Normal.isChecked():
-        reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+    global txt_path, cmb_path, int_data, time_array, data_bcg, int_data, cmb_name, startday
+    
+    # 添加數據源記錄
+    log_file = open(f'{LOG_DIR}/data_source_log.txt', 'w', encoding='utf-8')
+    log_file.write(f"數據來源: {data_source.currentText()}\n")
+    
+    if data_source.currentText() == 'Elastic':
+        log_file.write("使用Elastic數據源\n")
+        # 記錄Elastic數據的基本信息
+        try:
+            log_file.write(f"設備序號: {iCueSN.text()}\n")
+            log_file.write(f"開始時間: {start_time.text()}\n")
+            log_file.write(f"結束時間: {end_time.text()}\n")
+        except Exception as e:
+            log_file.write(f"記錄Elastic參數時出錯: {str(e)}\n")
     else:
-        reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+        log_file.write("使用CMB文件數據源\n")
+        log_file.write(f"CMB文件名: {cmb_name}\n")
+    
+    log_file.close()
 
+    # 檢查是否有已存在的參數文件
+    param_filename = f"{cmb_name[:-4]}_parameters.csv"
+    param_filepath = os.path.join(DATA_DIR, param_filename)
+        
+    if os.path.exists(param_filepath):
+        # 如果參數文件存在，直接從文件讀取參數
+        try:
+            status_bar.showMessage(f'從參數文件 {param_filename} 讀取參數...')
+            QApplication.processEvents()
+            
+            # 讀取參數CSV文件
+            df_param = pd.read_csv(param_filepath)
+            reg_table = {}
+            
+            # 處理參數，按照參數名稱進行映射
+            for index, row in df_param.iterrows():
+                param_name = row['Parameter']
+                
+                # 處理通道參數
+                if param_name in ['min_preload', 'threshold_1', 'threshold_2', 'offset level']:
+                    param_index = ['min_preload', 'threshold_1', 'threshold_2', 'offset level'].index(param_name)
+                    
+                    # 根據參數類型設置對應的寄存器
+                    if param_name == 'min_preload':  # 42-47
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+42)] = int(ch_value)
+                    
+                    elif param_name == 'threshold_1':  # 48-53
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+48)] = int(ch_value)
+                    
+                    elif param_name == 'threshold_2':  # 58-63
+                        for ch in range(6):
+                            ch_value = row[f'Channel_{ch+1}']
+                            if pd.notna(ch_value) and ch_value != '':
+                                reg_table[str(ch+58)] = int(ch_value)
+                
+                # 處理其他參數
+                elif param_name == 'Total':
+                    reg_table['41'] = int(row['Channel_1'])
+                elif param_name == 'Noise_1':
+                    reg_table['55'] = int(row['Channel_1'])
+                elif param_name == 'Noise_2':
+                    reg_table['54'] = int(row['Channel_1'])
+                elif param_name == 'Set Flip':
+                    reg_table['56'] = int(row['Channel_1'])
+                elif param_name == 'Air_Mattress':
+                    reg_table['57'] = int(row['Channel_1'])
+            
+            status_bar.showMessage(f'成功從參數文件讀取參數')
+            QApplication.processEvents()
+            
+        except Exception as e:
+            status_bar.showMessage(f'讀取參數文件失敗: {str(e)}，將從MQTT獲取參數')
+            QApplication.processEvents()
+            
+            # 讀取失敗時從MQTT獲取
+            if radio_Normal.isChecked():
+                reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+            else:
+                reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+    else:
+        # 如果沒有參數文件，從MQTT獲取參數
+        status_bar.showMessage('未找到參數文件，從MQTT獲取參數...')
+        QApplication.processEvents()
+        
+        if radio_Normal.isChecked():
+            reg_table = MQTT_get_reg("mqtt.humetrics.ai", "device", "!dF-9DXbpVKHDRgBryRJJBEdqCihwN", iCueSN.text())
+        else:
+            reg_table = MQTT_get_reg("rdtest.mqtt.humetrics.ai", "device", "BMY4dqh2pcw!rxa4hdy", iCueSN.text())
+
+    # 更新參數表格
     for ch in range(6):
         para_table.item(0, ch).setText(str(reg_table[str(ch+42)]))
         para_table.item(1, ch).setText(str(reg_table[str(ch+48)]))
         para_table.item(2, ch).setText(str(reg_table[str(ch+58)]))
     
     para_table.item(0, 6).setText(str(reg_table[str(41)]))
-
     para_table.item(2, 7).setText(str(reg_table[str(54)]))
     para_table.item(0, 7).setText(str(reg_table[str(55)]))
-
     para_table.item(0, 8).setText(str(reg_table[str(56)]))
     para_table.item(2, 8).setText(str(reg_table[str(57)]))
+    
+    if data_source.currentText() == 'Elastic':
 
-    # 重新塑形數組以分開通道
+        # 從 Elastic 資料庫取得資料
+        status_bar.showMessage('從 Elastic 資料庫取得資料中...')
+        QApplication.processEvents()
+        
+        # 準備時間參數
+        start_date_str = start_time.text()
+        end_date_str = end_time.text()
+        
+        # 將時間格式從 yyyyMMdd_HHMMSS 轉為 yyyy-MM-dd HH:MM:SS
+        start_dt = datetime.strptime(start_date_str, '%Y%m%d_%H%M%S')
+        end_dt = datetime.strptime(end_date_str, '%Y%m%d_%H%M%S')
+        
+        start_iso = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+        end_iso = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 設定 cmb_name 為當前時間+序號
+        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        cmb_name = f"{iCueSN.text()}_{current_time}.cmb"
+        
+        try:
+            # 設定 Elasticsearch 連線
+            es_sensor_config = {
+                "hosts": "https://es.humetrics.ai",
+                "verify_certs": False,
+                "api_key": "RUdMcDhJc0JYdktWbjlFeEVZZGY6b1NNSUZzMUZTQkdXN1E1NFgteFZTUQ=="
+            }
+            
+            es_config = {
+                "hosts": es_sensor_config["hosts"],
+                "request_timeout": 30,
+                "retry_on_timeout": True,
+                "max_retries": 3,
+                "ssl_show_warn": False
+            }
+            
+            if es_sensor_config.get("api_key"):
+                es_config["api_key"] = es_sensor_config["api_key"]
+                
+            if es_sensor_config["hosts"].startswith("https"):
+                es_config["verify_certs"] = es_sensor_config["verify_certs"]
+                
+            from elasticsearch import Elasticsearch
+            es = Elasticsearch(**es_config)
+
+            # 轉換為 ISO 格式
+            start_iso_es = start_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+            end_iso_es = end_dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+            print(f"查詢時間範圍：{start_iso_es} 到 {end_iso_es}")
+            status_bar.showMessage(f'查詢時間範圍：{start_iso_es} 到 {end_iso_es}')
+            QApplication.processEvents()
+
+            # 建立查詢條件
+            query_sensor_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": iCueSN.text()}},
+                            {"range": {"created_at": {
+                                "gte": start_iso_es,
+                                "lte": end_iso_es
+                            }}}
+                        ]
+                    }
+                },
+                "sort": [{"created_at": "asc"}],
+                "size": 500
+            }
+
+            query_notify_data = {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {"match": {"serial_id": iCueSN.text()}},
+                            {"range": {"created_at": {
+                                "gte": start_iso_es,
+                                "lte": end_iso_es   
+                            }}}
+                        ]
+                    }
+                },
+                "size": 500
+            }
+            
+            # 使用 scroll API 獲取資料
+            page = es.search(
+                index="sensor_data",
+                body=query_sensor_data,
+                scroll='5m'
+            )
+            
+            scroll_id = page['_scroll_id']
+            hits = page['hits']['hits']
+
+            print(f"獲取到 {len(hits)} 筆資料")
+            status_bar.showMessage(f'獲取到 {len(hits)} 筆資料')
+            QApplication.processEvents()
+         
+            # 用於儲存所有記錄
+            all_records = []
+            limit = 90000  # 設定資料筆數限制
+            
+            # 當還有資料時，持續獲取，但不超過限制
+            while len(hits) > 0 and len(all_records) < limit:
+                # 處理當前批次的資料
+                records = []
+                for hit in hits:
+                    if len(all_records) >= limit:
+                        break
+                    source = hit['_source']
+                    records.append({
+                        'created_at': source.get('created_at'),
+                        'serial_id': source.get('serial_id'),
+                        'ch0': source.get('ch0', source.get('Channel_1_Raw')),
+                        'ch1': source.get('ch1', source.get('Channel_2_Raw')),
+                        'ch2': source.get('ch2', source.get('Channel_3_Raw')),
+                        'ch3': source.get('ch3', source.get('Channel_4_Raw')),
+                        'ch4': source.get('ch4', source.get('Channel_5_Raw')),
+                        'ch5': source.get('ch5', source.get('Channel_6_Raw')),
+                        'Angle': source.get('angle'),
+                        'timestamp': source.get('timestamp')
+                    })
+                
+                all_records.extend(records)
+                
+                # 顯示進度
+                print(f"已獲取 {len(all_records)}/{limit} 筆資料")
+                status_bar.showMessage(f'已獲取 {len(all_records)}/{limit} 筆資料')
+                QApplication.processEvents()
+                
+                # 如果已達到限制，跳出迴圈
+                if len(all_records) >= limit:
+                    break
+                    
+                # 獲取下一批資料
+                page = es.scroll(
+                    scroll_id=scroll_id,
+                    scroll='5m'
+                )
+                hits = page['hits']['hits']
+
+            # 清理 scroll
+            es.clear_scroll(scroll_id=scroll_id)
+
+            # 獲取通知資料
+            notify_page = es.search(
+                index="notify-*",
+                body=query_notify_data,
+                scroll='5m'
+            )
+
+            notify_hits = notify_page['hits']['hits']
+            notify_dict = {}
+            
+            # 處理通知資料
+            notify_scroll_id = notify_page.get('_scroll_id')
+            notify_count = 0
+            notify_limit = 90000  # 設定通知資料筆數限制
+            
+            print(f"開始獲取通知資料...")
+            status_bar.showMessage(f'開始獲取通知資料...')
+            QApplication.processEvents()
+            
+            # 當還有通知資料時，持續獲取
+            while notify_hits and notify_count < notify_limit:
+                # 處理當前批次的通知資料
+                for hit in notify_hits:
+                    if notify_count >= notify_limit:
+                        break
+                        
+                    source = hit['_source']
+                    timestamp = source.get('timestamp')
+                    if timestamp:
+                        # 確保timestamp是字符串
+                        timestamp_str = str(timestamp)
+                        notify_dict[timestamp_str] = source.get('statusType')
+                        notify_count += 1
+                
+                # 如果已達到限制，跳出迴圈
+                if notify_count >= notify_limit:
+                    break
+                    
+                # 獲取下一批通知資料
+                if notify_scroll_id:
+                    notify_page = es.scroll(
+                        scroll_id=notify_scroll_id,
+                        scroll='5m'
+                    )
+                    notify_hits = notify_page['hits']['hits']
+                else:
+                    break
+            
+            # 清理通知資料的 scroll
+            if notify_scroll_id:
+                es.clear_scroll(scroll_id=notify_scroll_id)
+            
+            print(f"成功獲取 {notify_count} 筆通知資料")
+            status_bar.showMessage(f'成功獲取 {notify_count} 筆通知資料')
+            QApplication.processEvents()
+            
+            # 將通知資料整合到感測器資料中
+            if notify_dict and all_records:
+                matched_count = 0
+                for record in all_records:
+                    timestamp = record.get('timestamp')
+                    # 轉換timestamp格式，確保匹配
+                    timestamp_str = str(timestamp)
+                    if timestamp_str in notify_dict:
+                        record['notify_status'] = notify_dict[timestamp_str]
+                        matched_count += 1
+                
+                print(f"成功將 {matched_count} 筆通知資料整合到感測器資料中")
+                status_bar.showMessage(f'成功將 {matched_count} 筆通知資料整合到感測器資料中')
+                QApplication.processEvents()
+            
+            if all_records:
+                # 解析資料並準備int_data
+                print(f"開始處理 {len(all_records)} 筆資料")
+                status_bar.showMessage(f'開始處理 {len(all_records)} 筆資料')
+                QApplication.processEvents()
+                
+                # 將資料轉換成需要的格式
+                # 1. 創建時間陣列
+                time_array = []
+                for record in all_records:
+                    timestamp_str = record['timestamp']
+                    if timestamp_str:
+                        try:
+                            dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                            tz = pytz.timezone('Asia/Taipei')
+                            tw_dt = tz.localize(dt)
+                            time_array.append(tw_dt)
+                        except:
+                            # 如果時間解析失敗，嘗試其他方式
+                            try:
+                                created_at = record['created_at']
+                                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                tz = pytz.timezone('Asia/Taipei')
+                                tw_dt = dt.astimezone(tz)
+                                time_array.append(tw_dt)
+                            except:
+                                # 如果還是失敗，使用現在時間
+                                print(f"無法解析時間: {timestamp_str}, {record.get('created_at')}")
+                                time_array.append(datetime.now(pytz.timezone('Asia/Taipei')))
+                
+                time_array = np.array(time_array)
+                
+                # 設定 startday 為第一筆資料的日期，時間為 00:00:00
+                if len(time_array) > 0:
+                    startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # 2. 創建資料陣列
+                data_list = []
+                for record in all_records:
+                    data_row = [
+                        int(record.get('ch0', 0)),
+                        int(record.get('ch1', 0)),
+                        int(record.get('ch2', 0)),
+                        int(record.get('ch3', 0)),
+                        int(record.get('ch4', 0)),
+                        int(record.get('ch5', 0))
+                    ]
+                    data_list.append(data_row)
+                
+                # 轉換為 numpy 數組
+                int_data = np.array(data_list).flatten()
+                
+                status_bar.showMessage(f'成功從 Elastic 資料庫取得 {len(all_records)} 筆資料')
+                QApplication.processEvents()
+            else:
+                # 如果沒有資料，使用空數組
+                int_data = np.array([])
+                time_array = []
+                bcg = False
+                status_bar.showMessage(f'未找到符合條件的資料')
+                QApplication.processEvents()
+                
+        except Exception as e:
+            print(f"從 Elastic 資料庫取得資料時發生錯誤: {str(e)}")
+            status_bar.showMessage(f'從 Elastic 資料庫取得資料時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            
+            # 如果發生錯誤，使用空數組
+            int_data = np.array([])
+            time_array = []
+            bcg = False
+            
+    else:
+        status_bar.showMessage('Reading ' + cmb_name + ' ........')
+        QApplication.processEvents()  
+
+        global n10
+        global d10
+        global x10
+
+        #---------------------------------------------------------
+        txt_path = os.path.join(LOG_DIR, f'{cmb_name[:-4]}.txt')
+        with open(txt_path, mode='r', newline='') as file:
+            reader = csv.reader(file)
+            time_array = []
+            filelen = []
+            # 逐行读取数据并将其添加到列表中
+            for row in reader:
+                dt = datetime.strptime(row[0], "%Y%m%d_%H%M%S.dat")
+                gmt = pytz.timezone('GMT')  # 建立 GMT+0 時區的時間
+                gmt_dt = gmt.localize(dt)                
+                tz = pytz.timezone('Asia/Taipei') # 轉換成 GMT+8 時區的時間
+                tw_dt = gmt_dt.astimezone(tz)
+                time_array.append(tw_dt)
+                filelen.append(int(row[1]))
+
+            time_array = np.array(time_array)
+            filelen = np.array(filelen)
+            bcg = np.median(filelen) == 3000
+  
+    #---------------------------------------------------------
+        with open(f'{LOG_DIR}/{cmb_name}', "rb") as f:            
+            iCueSN.setText(cmb_name.split('/')[-1][0:15])
+            status_bar.showMessage('Converting to 24bit data ........')
+            QApplication.processEvents()
+
+            data = f.read() # 讀取資料
+            data = np.frombuffer(data, dtype=np.uint8)
+            if bcg:
+                # 將數據重塑為每55字節一組
+                data = data.reshape(-1, 55)
+            else:
+                # 將數據重塑為每24字節一組
+                data = data.reshape(-1, 24)
+            # 提取每組的前18字節
+            data18 = data[:, :18].reshape(-1)
+            # 將前18字節的數據轉換為24位整數
+            # 每3字節為一組，將其轉換為24位整數
+            reshaped_data = np.int32(data18.reshape(-1, 3))
+            int_data = reshaped_data[:, 2] + (reshaped_data[:, 1] << 8) + (reshaped_data[:, 0] << 16)
+            int_data = np.where(int_data & 0x800000, int_data - 0x1000000, int_data)
+    
+    print(f"int_data 的長度: {len(int_data)}")
+    print(f"time_array 的長度: {len(time_array)}")
+    
+    # # 添加數據一致性檢查
+    # if len(int_data) % 6 != 0:
+    #     error_msg = f"數據長度不是6的倍數: {len(int_data)}"
+    #     print(error_msg)
+    #     status_bar.showMessage(error_msg)
+    #     QApplication.processEvents()
+    #     return
+    
+    # if len(int_data) // 6 != len(time_array):
+    #     error_msg = f"數據點數({len(int_data) // 6})與時間點數({len(time_array)})不匹配"
+    #     print(error_msg)
+    #     status_bar.showMessage(error_msg)
+    #     QApplication.processEvents()
+    #     return
+    
     data = int_data.reshape(-1, 6)
     global data_bcg
     #data_bcg = [x, y, z]
 
-    # 將為處理的訊號存成CSV
-    data_csv = pd.DataFrame(data)
-    data_csv.to_csv(f"{cmb_name[:-4]}_raw.csv", index=False)
+    # 初始化日誌檔案
+    preprocess_log_file = open(f'{LOG_DIR}/{cmb_name[:-4]}_preprocess_log.txt', 'w', encoding='utf-8')
+    preprocess_log_file.write("=== 資料前處理函數日誌 ===\n")
+    preprocess_log_file.write(f"檔案名稱: {cmb_name}\n")
+    preprocess_log_file.write(f"資料形狀: {data.shape}\n")
+    preprocess_log_file.write(f"是否為BCG資料: {bcg}\n")
+    preprocess_log_file.write(f"資料時間點數量: {len(time_array)}\n")
+    preprocess_log_file.write(f"資料時間範圍: {time_array[0]} 到 {time_array[-1]}\n\n")
 
     # --------------------------------------------------------------------
     lpf = [26, 28, 32, 39, 48, 60, 74, 90, 108, 126, 146, 167, 187, 208, 227, 246, 264, 280, 294, 306, 315, 322, 326, 328, 326, 322, 315, 306, 294, 280, 264, 246, 227, 208, 187, 167, 146, 126, 108, 90, 74, 60, 48, 39, 32, 28, 26]        
     
+    preprocess_log_file.write("低通濾波器係數: " + str(lpf) + "\n\n")
+    
+    global dist
+    global dist_air
     global n10
     global d10
     global x10
@@ -471,49 +914,96 @@ def OpenCmbFile():
     d10 = []
     x10 = []
     data_resp = []
-    dist = 0
-    dist_air = 0
+    # 初始化dist和dist_air為空numpy數組，將在後續處理時根據需要重新初始化為適當大小
+    dist = np.array([0], dtype=np.float64)  # 使用numpy數組而不是單一數值
+    dist_air = np.array([0], dtype=np.float64)  # 使用numpy數組而不是單一數值
 
     for ch in range(6):
         status_bar.showMessage(f'Processing CH{ch+1} ........')
         QApplication.processEvents()
+        preprocess_log_file.write(f"正在處理通道 {ch+1}:\n")
+        
         # --------------------------------------------------------
-        hp = np.convolve(data[:,ch], [-1, -2, -3, -4, 4, 3, 2, 1], mode='same')
-        n = np.convolve(np.abs(hp / 16), lpf, mode='full')
-        n = n[10:-37] / 4096
-        n = n[::10]
+        orig_len = data.shape[0]
+        # Step 1: 每3點取median（非滑動）
+        channel_data = data[:, ch]
+        channel_data = np.roll(channel_data, 3)
+        reshaped = channel_data[:orig_len - orig_len % 3].reshape(-1, 3)  # 分成3個一組
+        med3_ds = np.median(reshaped, axis=1)  # 每3點取median
+        # Step 2: 差分
+        diff_series = pd.Series(np.diff(med3_ds, prepend=med3_ds[0]))  # 頭補上第一個值維持長度
+        # Step 3: Rolling MAD on diff_series
+        mad_series = diff_series.rolling(window=15, center=True).apply(
+            lambda x: np.mean(np.abs(x - x.mean())), raw=True
+        ).fillna(0)
+        # Step 4: Upsample 回原長度 ×3，並補0
+        upsampled = np.repeat(mad_series.values, 3)  # 每個值複製3次
+        padded = np.zeros(orig_len)  # 初始化為0
+        padded[:min(len(upsampled), orig_len)] = upsampled[:orig_len]  # 補到原始長度
+        n = padded[::10]
+        
         n10.append(np.int32(n))
+        preprocess_log_file.write(f"  通道 {ch+1} 噪聲值前10個元素: {n[:10]}\n")
+        
         # --------------------------------------------------------
         data_pd = pd.Series(data[:,ch]) # 將通道的數據轉換為Pandas的Series數據結構
         med10 = data_pd.rolling(window=10, min_periods=1, center=True).mean() # 計算每個窗口的中位數，窗口大小為10
         med10 = np.array(med10)
         med10 = med10[::10]
         d10.append(np.int32(med10))
+        preprocess_log_file.write(f"  通道 {ch+1} 中值前10個元素: {med10[:10]}\n")
+        
         # --------------------------------------------------------
         max10 = data_pd.rolling(window=10, min_periods=1, center=True).max() # 計算每個窗口的最大值，窗口大小為10 
         max10 = np.array(max10)
         max10 = np.int32(max10[::10])
         x10.append(np.int32(max10))
+        preprocess_log_file.write(f"  通道 {ch+1} 最大值前10個元素: {max10[:10]}\n")
+        
         # --------------------------------------------------------
         resp = data[:,ch] - savgol_filter(data[:,ch], 105, 3)
         resp = np.repeat(resp, 10).astype(np.float64)
         resp = savgol_filter(resp, 151, 3)
         #data_bcg.append(resp)
+        preprocess_log_file.write(f"  通道 {ch+1} 呼吸訊號前10個元素: {resp[:10]}\n")
+        
         # 計算 dist ----------------------------------------------   
         a = [1, -1023/1024]
         b = [1/1024, 0]
+        preprocess_log_file.write(f"  IIR濾波器係數 a: {a}, b: {b}\n")
+        
+        # 確保dist在第一次使用前已被正確初始化為numpy數組
+        if ch == 0:
+            # 第一個通道時初始化dist為全零數組
+            dist = np.zeros_like(med10, dtype=np.float64)
+            dist_air = np.zeros_like(med10, dtype=np.float64)
+            
         pos_iirmean = lfilter(b, a, med10) # 1 second # IIR濾波
+        preprocess_log_file.write(f"  通道 {ch+1} IIR濾波後前10個元素: {pos_iirmean[:10]}\n")
+        
         med10_pd = pd.Series(med10)
         mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為30 
         mean_30sec = np.int32(mean_30sec)        
+        preprocess_log_file.write(f"  通道 {ch+1} 30秒平均值前10個元素: {mean_30sec[:10]}\n")
+        
         diff = (mean_30sec - pos_iirmean) / 256
         if ch == 1:
             diff = diff / 3
+            preprocess_log_file.write(f"  通道 {ch+1} 差值除以3後前10個元素: {diff[:10]}\n")
+        else:
+            preprocess_log_file.write(f"  通道 {ch+1} 差值前10個元素: {diff[:10]}\n")
+            
+        dist_before = dist.copy()
         dist = dist + np.square(diff) # 累加平方差
         dist[dist > 8000000] = 8000000 # 限制最大值
+        preprocess_log_file.write(f"  累加通道 {ch+1} 後的位移前10個元素: {dist[:10]}\n")
+        preprocess_log_file.write(f"  通道 {ch+1} 對位移的貢獻前10個元素: {(dist - dist_before)[:10]}\n")
+        
         # 計算 dist (air mattress) -------------------------------
         mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean() # 計算每個窗口的平均值，窗口大小為60 
         mean_60sec = np.int32(mean_60sec)
+        preprocess_log_file.write(f"  通道 {ch+1} 60秒平均值前10個元素: {mean_60sec[:10]}\n")
+        
         # [60][60][60][60][60][60][60][60][60][60]
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        
         #                     10 minutes mean ->|         b[60]
@@ -524,38 +1014,47 @@ def OpenCmbFile():
         for s in range(10):
             b[s*60 + 180] = -0.1
         b[60] = 1
+        preprocess_log_file.write(f"  空氣床濾波器係數 a 非零元素位置: {np.where(a != 0)[0]}, 值: {a[np.where(a != 0)[0]]}\n")
+        preprocess_log_file.write(f"  空氣床濾波器係數 b 非零元素位置: {np.where(b != 0)[0]}, 值: {b[np.where(b != 0)[0]]}\n")
+        
         diff = lfilter(b, a, mean_60sec) # 1 second
         if ch == 1:
             diff = diff / 3
+            preprocess_log_file.write(f"  通道 {ch+1} 空氣床差值除以3後前10個元素: {diff[:10]}\n")
+        else:
+            preprocess_log_file.write(f"  通道 {ch+1} 空氣床差值前10個元素: {diff[:10]}\n")
+        
+        dist_air_before = dist_air.copy()
         dist_air = dist_air + np.square(diff / 256)
+        preprocess_log_file.write(f"  累加通道 {ch+1} 後的空氣床位移前10個元素: {dist_air[:10]}\n")
+        preprocess_log_file.write(f"  通道 {ch+1} 對空氣床位移的貢獻前10個元素: {(dist_air - dist_air_before)[:10]}\n\n")
 
     # 一般床墊的位移差值計算
+    preprocess_log_file.write("計算一般床墊的位移差值:\n")
     # Convert to pandas Series
     dist = pd.Series(dist)
     # Calculate the difference with a shift of 60
     shift = 60
-    rising_dist = dist.shift(-shift) - dist
-    # Fill NaN values resulting from the shift to maintain the same length as the original array
-    rising_dist = np.int32(rising_dist.fillna(0))
-    rising_dist[rising_dist < 0] = 0
-    rising_dist = rising_dist // 127
-    rising_dist[rising_dist > 1000] = 1000
+    preprocess_log_file.write(f"  位移差值計算使用的偏移量: {shift}\n")
+    
+    rising_dist = calculate_rising_dist(dist, preprocess_log_file)
+    preprocess_log_file.write(f"  計算後的位移差值前10個元素: {rising_dist[:10]}\n\n")
 
     # 空氣床墊的位移差值計算
+    preprocess_log_file.write("計算空氣床墊的位移差值:\n")
     # Convert to pandas Series
     dist_air = pd.Series(dist_air)
     # Calculate the difference with a shift of 60
     shift = 60
-    rising_dist_air = dist_air.shift(-shift) - dist_air
-    # Fill NaN values resulting from the shift to maintain the same length as the original array
-    rising_dist_air = np.int32(rising_dist_air.fillna(0))
-    rising_dist_air[rising_dist_air < 0] = 0
-    rising_dist_air = rising_dist_air // 127
-    rising_dist_air[rising_dist_air > 1000] = 1000
+    preprocess_log_file.write(f"  空氣床位移差值計算使用的偏移量: {shift}\n")
     
+    rising_dist_air = calculate_rising_dist(dist_air, preprocess_log_file)
+    preprocess_log_file.write(f"  計算後的空氣床位移差值前10個元素: {rising_dist_air[:10]}\n\n")
+
     global idx10
     global idx1sec
     # 由檔案開始時間/資料長度計算對應 index --------------------------------------------   
+    preprocess_log_file.write("計算時間索引:\n")
     idx1sec = np.array([])
     idx100 = np.array([])
     idx10 = np.array([])
@@ -564,44 +1063,63 @@ def OpenCmbFile():
 
     # 迭代資料的每一個索引 i
     for i in range(filelen.shape[0]):
-
+        preprocess_log_file.write(f"  處理時間索引 {i}:\n")
+        
         if i < filelen.shape[0] - 1:
-            t_diff = np.int32((t[i + 1] - t[i]).total_seconds())  # 計算相鄰時間之差（秒）
+            t_diff = np.int32((time_array[i + 1] - time_array[i]).total_seconds())  # 計算相鄰時間之差（秒）
         else:
             t_diff = 600  # 若為最後一個數據，設定時間差為 600 秒
+        preprocess_log_file.write(f"    時間差: {t_diff} 秒\n")
 
         if t_diff > 660:
             t_blank = t_diff - 600  # 若時間差超過 660 秒，計算空白時間
             t_diff = 600  # 設定時間差為 600 秒
+            preprocess_log_file.write(f"    時間差過大，調整為 {t_diff} 秒，空白時間: {t_blank} 秒\n")
         else:
             t_blank = 0
+            preprocess_log_file.write(f"    時間差正常，空白時間: {t_blank} 秒\n")
 
         # 將索引值加入對應的陣列中
         # 生成三種不同採樣率的索引：
         # - idx1sec: 1秒一個點
         # - idx100: 100ms一個點
         # - idx10: 10ms一個點
+        idx1sec_old_len = len(idx1sec)
+        idx100_old_len = len(idx100)
+        idx10_old_len = len(idx10)
+        
         idx1sec = np.append(idx1sec, np.floor(np.linspace(0, filelen[i]//10 - 1, t_diff)) + idx100_sum//10)
         idx100 = np.append(idx100, np.floor(np.linspace(0, filelen[i] - 1, t_diff*10)) + idx100_sum)
         idx10 = np.append(idx10, np.floor(np.linspace(0, filelen[i]*10 - 1, t_diff*100)) + idx10_sum)
-
+        
+        preprocess_log_file.write(f"    新增索引點數: idx1sec: {len(idx1sec) - idx1sec_old_len}, idx100: {len(idx100) - idx100_old_len}, idx10: {len(idx10) - idx10_old_len}\n")
+        
         # 處理空白時間
-        idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
-        idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
-        idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
+        if t_blank > 0:
+            blank_1sec_old_len = len(idx1sec)
+            blank_100_old_len = len(idx100)
+            blank_10_old_len = len(idx10)
+            
+            idx1sec = np.append(idx1sec, np.tile(filelen[i]//10 - 1 + idx100_sum//10, (t_blank, 1)))  # 將空白時間的索引值重複添加
+            idx100 = np.append(idx100, np.tile(filelen[i] - 1 + idx100_sum, (t_blank*10, 1)))  # 將空白時間的索引值重複添加
+            idx10 = np.append(idx10, np.tile(filelen[i]*10 - 1 + idx10_sum, (t_blank*100, 1)))  # 將空白時間的索引值重複添加
+            
+            preprocess_log_file.write(f"    空白時間索引點數: idx1sec: {len(idx1sec) - blank_1sec_old_len}, idx100: {len(idx100) - blank_100_old_len}, idx10: {len(idx10) - blank_10_old_len}\n")
 
         idx100_sum = idx100_sum + filelen[i]  # 更新索引值總和
         idx10_sum = idx10_sum + filelen[i]*10  # 更新索引值總和
+        preprocess_log_file.write(f"    索引累計: idx100_sum: {idx100_sum}, idx10_sum: {idx10_sum}\n")
         
 
     # 計算不同取樣率對應的時間 --------------------------------------------------------    
-    st = (t[0] - t[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
-    global startday
-    startday = t[0].replace(hour=0, minute=0, second=0, microsecond=0)
-
     global t10ms
     global t1sec
-    t1sec = np.array(range(np.int32((t[-1] - t[0]).total_seconds()) + 600)) + st
+    
+    st = (time_array[0] - time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
+    startday = time_array[0].replace(hour=0, minute=0, second=0, microsecond=0)
+    preprocess_log_file.write(f"\n基準時間: {startday}, 起始秒數: {st}\n")
+
+    t1sec = np.array(range(np.int32((time_array[-1] - time_array[0]).total_seconds()) + 600)) + st
     idx1sec = np.int32(idx1sec)
     idx100 = np.int32(idx100)
     idx10 = np.int32(idx10)
@@ -609,6 +1127,17 @@ def OpenCmbFile():
     t10ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*100)
     t100ms = np.around(t100ms, decimals=1)
     t10ms = np.around(t10ms, decimals=2)
+    
+    preprocess_log_file.write(f"時間向量: t1sec 長度: {len(t1sec)}, 範圍: {t1sec[0]} 到 {t1sec[-1]}\n")
+    preprocess_log_file.write(f"時間向量: t100ms 長度: {len(t100ms)}, 範圍: {t100ms[0]} 到 {t100ms[-1]}\n")
+    preprocess_log_file.write(f"時間向量: t10ms 長度: {len(t10ms)}, 範圍: {t10ms[0]} 到 {t10ms[-1]}\n")
+    
+    preprocess_log_file.write(f"索引向量: idx1sec 長度: {len(idx1sec)}, 範圍: {idx1sec[0] if len(idx1sec) > 0 else 'N/A'} 到 {idx1sec[-1] if len(idx1sec) > 0 else 'N/A'}\n")
+    preprocess_log_file.write(f"索引向量: idx100 長度: {len(idx100)}, 範圍: {idx100[0] if len(idx100) > 0 else 'N/A'} 到 {idx100[-1] if len(idx100) > 0 else 'N/A'}\n")
+    preprocess_log_file.write(f"索引向量: idx10 長度: {len(idx10)}, 範圍: {idx10[0] if len(idx10) > 0 else 'N/A'} 到 {idx10[-1] if len(idx10) > 0 else 'N/A'}\n")
+    
+    preprocess_log_file.write("\n前處理完成\n")
+    preprocess_log_file.close()
 
     # for ch in range(9):   
     #     data_bcg[ch] = data_bcg[ch][idx10]
@@ -701,9 +1230,37 @@ def OpenCmbFile():
         data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
         data_dict['OnBed_Status'] = onbed
         
-        # 轉換為DataFrame並保存
+        # 轉換為DataFrame
         df = pd.DataFrame(data_dict)
-        df.to_csv(csv_filepath, index=False)
+        
+        # 過濾DataFrame，只保留12:00:00到隔天12:00:00的資料
+        try:
+            # 設定過濾時間
+            noon_today = startday.replace(hour=12, minute=0, second=0)
+            noon_tomorrow = noon_today + timedelta(days=1)
+            
+            # 使用 DateTime 欄位進行過濾
+            filtered_df = df[(df['DateTime'] >= noon_today) & (df['DateTime'] <= noon_tomorrow)]
+            
+            # 檢查過濾後的資料是否為空
+            if len(filtered_df) == 0:
+                status_bar.showMessage('警告：過濾後的資料為空，將使用全部資料')
+                QApplication.processEvents()
+                filtered_df = df
+            else:
+                status_bar.showMessage(f'已過濾資料為 {noon_today.strftime("%Y-%m-%d %H:%M:%S")} 到 {noon_tomorrow.strftime("%Y-%m-%d %H:%M:%S")}')
+                QApplication.processEvents()
+        except Exception as e:
+            status_bar.showMessage(f'過濾時間範圍時發生錯誤: {str(e)}，將使用全部資料')
+            QApplication.processEvents()
+            filtered_df = df
+        
+        # 保存過濾後的資料
+        filtered_df.to_csv(csv_filepath, index=False)
+        
+        # 同時儲存原始完整資料（如有需要）
+        full_csv_filepath = os.path.join(DATA_DIR, f"{cmb_name[:-4]}_full_data.csv")
+        df.to_csv(full_csv_filepath, index=False)
         
         # 儲存參數設定
         param_filename = f"{cmb_name[:-4]}_parameters.csv"
@@ -717,7 +1274,7 @@ def OpenCmbFile():
         }
         
         # 收集參數表中的所有數據
-        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset_level']
+        param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
         for row in range(4):
             param_dict['Parameter'].append(param_names[row])
             for col in range(6):  # 前6個通道
@@ -746,23 +1303,320 @@ def OpenCmbFile():
         df_param = pd.DataFrame(param_dict)
         df_param.to_csv(param_filepath, index=False)
         
-        status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}')
+        status_bar.showMessage(f'已儲存參數至 {param_filename}')
+        QApplication.processEvents()
+        
+        # 儲存實驗用的降採樣資料
+        output_dir = os.path.join('_data', 'experiment')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 取得裝置序號和時間
+        serial_id = iCueSN.text()
+        timestamp_str = startday.strftime('%Y%m%d%H%M%S')
+        
+        # 建立保存檔案路徑
+        downsampled_csv_path = os.path.join(output_dir, f'{serial_id}_downsampled_{timestamp_str}.csv')
+        downsampled_json_path = os.path.join(output_dir, f'{serial_id}_downsampled_{timestamp_str}.json')
+        
+        # 準備過濾時間條件
+        noon_today = startday.replace(hour=12, minute=0, second=0)
+        noon_tomorrow = noon_today + timedelta(days=1)
+        
+        # 準備CSV資料
+        csv_data = []
+        timestamps = []
+        
+        # 確保所有通道的d10長度一致
+        min_length = min(len(d10[ch]) for ch in range(6))
+        min_length = min(min_length, len(t1sec))  # 也與t1sec比較
+        
+        # 取得降採樣後的資料
+        for i in range(min_length):
+            # 建立與localrawviewer1217_elastic.py相容的時間戳格式
+            iso_timestamp = startday + timedelta(seconds=i)
+            
+            # 過濾時間範圍 - 只包含中午12點到隔天中午12點的資料
+            if noon_today <= iso_timestamp <= noon_tomorrow:
+                timestamp = iso_timestamp.strftime('%Y%m%d%H%M%S')
+                timestamps.append(timestamp)
+                
+                # 建立一筆資料
+                row = {
+                    'created_at': iso_timestamp.isoformat(),
+                    'timestamp': timestamp,
+                    'ch0': int(d10[0][i]),
+                    'ch1': int(d10[1][i]),
+                    'ch2': int(d10[2][i]),
+                    'ch3': int(d10[3][i]),
+                    'ch4': int(d10[4][i]),
+                    'ch5': int(d10[5][i])
+                }
+                csv_data.append(row)
+        
+        # 檢查過濾後的資料是否為空
+        if len(csv_data) == 0:
+            status_bar.showMessage('警告：降採樣資料過濾後為空，將使用原始資料')
+            QApplication.processEvents()
+            
+            # 重新準備不過濾的資料
+            csv_data = []
+            timestamps = []
+            for i in range(min_length):
+                iso_timestamp = startday + timedelta(seconds=i)
+                timestamp = iso_timestamp.strftime('%Y%m%d%H%M%S')
+                timestamps.append(timestamp)
+                
+                row = {
+                    'created_at': iso_timestamp.isoformat(),
+                    'timestamp': timestamp,
+                    'ch0': int(d10[0][i]),
+                    'ch1': int(d10[1][i]),
+                    'ch2': int(d10[2][i]),
+                    'ch3': int(d10[3][i]),
+                    'ch4': int(d10[4][i]),
+                    'ch5': int(d10[5][i])
+                }
+                csv_data.append(row)
+            
+        # 準備JSON資料
+        json_data = {
+            'serial_id': serial_id,
+            'start_time': noon_today.isoformat() if csv_data else startday.isoformat(),
+            'end_time': noon_tomorrow.isoformat() if csv_data else (startday + timedelta(seconds=min_length)).isoformat(),
+            'data': csv_data,
+            # 加入處理後的資料結構，以便直接被localrawviewer1217_elastic.py使用
+            'n10': [n10_array.tolist() for n10_array in n10],
+            'd10': [d10_array.tolist() for d10_array in d10],
+            'x10': [x10_array.tolist() for x10_array in x10],
+            'rising_dist': rising_dist.tolist() if isinstance(rising_dist, np.ndarray) else rising_dist,
+            'rising_dist_air': rising_dist_air.tolist() if isinstance(rising_dist_air, np.ndarray) else rising_dist_air
+        }
+        
+        # 儲存CSV檔案
+        with open(downsampled_csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['created_at', 'timestamp', 'ch0', 'ch1', 'ch2', 'ch3', 'ch4', 'ch5']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in csv_data:
+                writer.writerow(row)
+        
+        # 儲存JSON檔案
+        with open(downsampled_json_path, 'w') as jsonfile:
+            json.dump(json_data, jsonfile, indent=2)
+        
+        # 儲存參數檔案供實驗使用
+        parameter_path = os.path.join(output_dir, f'{serial_id}_parameters_{timestamp_str}.csv')
+        with open(parameter_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Parameter ID', 'Description', 'Value'])
+            
+            # 儲存時間範圍信息
+            writer.writerow(['Time_Range', 'Time Filter Start', noon_today.strftime('%Y-%m-%d %H:%M:%S')])
+            writer.writerow(['Time_Range', 'Time Filter End', noon_tomorrow.strftime('%Y-%m-%d %H:%M:%S')])
+            
+            # 儲存總和閾值
+            writer.writerow(['41', 'Total Sum', str(bed_threshold)])
+            
+            # 儲存預載值
+            for ch in range(6):
+                writer.writerow([f'{42+ch}', f'Channel {ch+1} min_preload', str(preload_edit[ch])])
+            
+            # 儲存閾值1
+            for ch in range(6):
+                writer.writerow([f'{48+ch}', f'Channel {ch+1} threshold_1', str(th1_edit[ch])])
+            
+            # 儲存噪聲參數
+            writer.writerow(['54', 'Noise 2', str(noise_offbed)])
+            writer.writerow(['55', 'Noise 1', str(noise_onbed)])
+            
+            # 儲存翻身閾值
+            writer.writerow(['56', 'Set Flip', str(dist_thr)])
+            
+            # 儲存氣墊床設定
+            writer.writerow(['57', 'Air mattress', str(air_mattress)])
+            
+            # 儲存閾值2
+            for ch in range(6):
+                writer.writerow([f'{58+ch}', f'Channel {ch+1} threshold_2', str(th2_edit[ch])])
+        
+        # 顯示狀態訊息
+        status_bar.showMessage(f'檔案處理中，準備進行時間過濾...')
+        QApplication.processEvents()
+        
+        status_bar.showMessage(f'數據和參數已保存至 {csv_filename} 和 {param_filename}，實驗用降採樣資料已保存至 {downsampled_csv_path}')
+        QApplication.processEvents()
+        
+        # 限制顯示的時間範圍為12:00:00到隔天的12:00:00
+        try:
+            # 創建時間範圍過濾掩碼 - 使用相對於startday的時間
+            noon_today = startday.replace(hour=12, minute=0, second=0)
+            noon_tomorrow = noon_today + timedelta(days=1)
+            
+            start_time_seconds = (noon_today - startday).total_seconds()
+            end_time_seconds = (noon_tomorrow - startday).total_seconds()
+            
+            # 確保時間範圍不超出實際數據範圍
+            start_time_seconds = max(start_time_seconds, t1sec[0])
+            end_time_seconds = min(end_time_seconds, t1sec[-1])
+            
+            # 創建一個掩碼，只保留在指定時間範圍內的數據點
+            time_mask = (t1sec >= start_time_seconds) & (t1sec <= end_time_seconds)
+            
+            # 確保掩碼至少有一個True值
+            if np.sum(time_mask) == 0:
+                status_bar.showMessage('警告：指定的時間範圍內沒有數據點，顯示全部數據')
+                QApplication.processEvents()
+            else:
+                # 使用掩碼過濾時間軸和相應的數據點
+                t1sec_filtered = t1sec[time_mask]
+                
+                # 先備份原來的idx1sec
+                original_idx1sec = idx1sec.copy()
+                
+                # 創建與過濾後的t1sec長度相同的新idx1sec
+                filtered_indices = np.where(time_mask)[0]  # 獲取True值的索引
+                idx1sec = original_idx1sec[filtered_indices]  # 使用這些索引來過濾idx1sec
+                
+                # 將過濾後的數據替換原來的數據
+                t1sec = t1sec_filtered
+                
+                # 同時調整其他相關時間向量
+                t100ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*10)
+                t10ms = np.linspace(t1sec[0], t1sec[-1], t1sec.shape[0]*100)
+                t100ms = np.around(t100ms, decimals=1)
+                t10ms = np.around(t10ms, decimals=2)
+                
+                # 調整onbed變量，如果已計算
+                if 'onbed' in globals() and isinstance(globals()['onbed'], np.ndarray) and len(globals()['onbed']) >= len(filtered_indices):
+                    try:
+                        globals()['onbed'] = globals()['onbed'][filtered_indices]
+                    except Exception as e:
+                        status_bar.showMessage(f'調整onbed時發生錯誤: {str(e)}')
+                        QApplication.processEvents()
+                
+                # 也調整rising_dist和rising_dist_air
+                try:
+                    # 確保rising_dist存在並是一個數組
+                    if 'rising_dist' in globals() and isinstance(globals()['rising_dist'], (np.ndarray, pd.Series)):
+                        # 確保索引在有效範圍內
+                        valid_indices = idx1sec[idx1sec < len(globals()['rising_dist'])]
+                        if len(valid_indices) > 0:
+                            globals()['rising_dist'] = globals()['rising_dist'][valid_indices]
+                except Exception as e:
+                    status_bar.showMessage(f'調整rising_dist時發生錯誤: {str(e)}')
+                    QApplication.processEvents()
+                
+                try:
+                    # 確保rising_dist_air存在並是一個數組
+                    if 'rising_dist_air' in globals() and isinstance(globals()['rising_dist_air'], (np.ndarray, pd.Series)):
+                        # 確保索引在有效範圍內
+                        valid_indices = idx1sec[idx1sec < len(globals()['rising_dist_air'])]
+                        if len(valid_indices) > 0:
+                            globals()['rising_dist_air'] = globals()['rising_dist_air'][valid_indices]
+                except Exception as e:
+                    status_bar.showMessage(f'調整rising_dist_air時發生錯誤: {str(e)}')
+                    QApplication.processEvents()
+                
+                status_bar.showMessage(f'已過濾顯示時間範圍為 12:00:00 到隔天 12:00:00')
+                QApplication.processEvents()
+                
+                # 確保使用過濾後的數據更新圖表
+                update_raw_plot()
+                update_bit_plot()
+                
+        except Exception as e:
+            status_bar.showMessage(f'限制時間範圍時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+
+        # 測試計算值顯示
+        update_calculated_value(122)
+        
+        # 最終的狀態欄訊息 - 只保留一個
+        status_bar.showMessage(f'資料處理完成：已過濾顯示(12:00-12:00)並儲存過濾資料={os.path.basename(csv_filepath)}，完整資料={os.path.basename(full_csv_filepath)}')
         QApplication.processEvents()
         
     except Exception as e:
         status_bar.showMessage(f'保存檔案時發生錯誤: {str(e)}')
         QApplication.processEvents()
 
+    # 最後檢查 startday 的值
+    check_startday()
+    status_bar.showMessage(f"載入完成，檔案日期: {startday.strftime('%Y/%m/%d')}")
+    
+    # 在OpenCmbFile最後，所有處理完成後，再嘗試自動讀取CSV
+    try:
+        # 獲取SN和時間範圍
+        sn = iCueSN.text()
+        start_time_str = start_time.text()
+        end_time_str = end_time.text()
+        
+        # 解析時間字符串
+        start_date = start_time_str[:8]  # 取得 YYYYMMDD
+        start_time_value = start_time_str[9:15]  # 取得 HHMMSS
+        end_date = end_time_str[:8]  # 取得 YYYYMMDD
+        end_time_value = end_time_str[9:15]  # 取得 HHMMSS
+        
+        # 構建CSV檔案名稱
+        csv_filename = f"cleaned_{sn}_{start_date}_{start_time_value[:2]}_{end_date}_{end_time_value[:2]}_data.csv"
+        csv_path = os.path.join(PREDICT_DATA_DIR, csv_filename)
+        
+        # 檢查檔案是否存在
+        if os.path.exists(csv_path):
+            status_bar.showMessage(f'自動載入CSV檔案: {csv_filename}')
+            QApplication.processEvents()
+            
+            # 讀取 CSV 檔案
+            df = pd.read_csv(csv_path)
+            
+            # 繪製數據並獲取處理後的數據
+            result = plot_csv_data(df, startday, t1sec)
+            if result is not None:
+                aligned_data, aligned_pred_data, true_events, pred_events = result
+
+                # 計算預測指標
+                score, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+                status_bar.showMessage(result_msg)
+                update_calculated_value(score)
+                QApplication.processEvents()
+            else:
+                status_bar.showMessage(f'找到CSV檔案但無法正確繪製: {csv_filename}')
+        else:
+            status_bar.showMessage(f'找不到CSV檔案: {csv_filename}')
+        # 如果檔案不存在，不顯示錯誤訊息，讓用戶手動點選
+
+    except Exception as e:
+        # 自動載入失敗，但不顯示錯誤，讓用戶可以手動選擇
+        print(f"自動載入CSV時發生錯誤: {str(e)}")
+
 #-----------------------------------------------------------------------
 def update_raw_plot():
     global raw_plot_ch
+    check_startday()  # 添加這行以記錄 startday 的值
     GetParaTable()
     # --------------------------------------------------------------------
     data_median = []
     data_max = []
     data_noise = []
     for ch in range(6):
-        data_median.append(d10[ch][idx1sec] + offset_edit[ch])
+        try:
+            # 確保索引不會越界
+            valid_indices = idx1sec[idx1sec < len(d10[ch])]
+            if len(valid_indices) > 0:
+                # 使用有效索引
+                values = d10[ch][valid_indices] + offset_edit[ch]
+                # 填充到原始長度
+                if len(values) < len(idx1sec):
+                    padding = np.full(len(idx1sec) - len(values), values[-1] if len(values) > 0 else 0)
+                    values = np.concatenate([values, padding])
+                data_median.append(values)
+            else:
+                # 如果沒有有效索引，使用默認值
+                data_median.append(np.zeros(len(idx1sec)) + offset_edit[ch])
+        except Exception as e:
+            status_bar.showMessage(f'處理通道 {ch+1} 數據時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            # 使用默認值
+            data_median.append(np.zeros(len(idx1sec)) + offset_edit[ch])
     # Save show / hide settings
     isVisible = []
     try:
@@ -793,7 +1647,9 @@ def update_raw_plot():
     # 繪製一般床墊的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[6]))
     x = t1sec[::flip_interval]
-    y = rising_dist[idx1sec[::flip_interval]] * -100
+    # 確保索引不會越界，使用最小值來限制
+    valid_indices = np.minimum(idx1sec[::flip_interval], len(rising_dist)-1)
+    y = rising_dist[valid_indices] * -100
     raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Normal'))
 
     raw_plot_ch[6].hide()
@@ -801,8 +1657,10 @@ def update_raw_plot():
     # 繪製氣墊床的翻身數據
     pen = pg.mkPen(color=hex_to_rgb(hex_colors[7]))
     x = t1sec[::flip_interval]
-    y = rising_dist_air[idx1sec[::flip_interval]] * -100
-    raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Air'))    
+    # 確保索引不會越界，使用最小值來限制
+    valid_indices = np.minimum(idx1sec[::flip_interval], len(rising_dist_air)-1)
+    y = rising_dist_air[valid_indices] * -100
+    raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Air'))
 
     raw_plot_ch[7].hide()
 
@@ -813,14 +1671,25 @@ def update_raw_plot():
     raw_plot_ch.append(raw_plot.plot(x, y, pen=pen, name=f'Threshold'))  
 
     if air_mattress == 0:
-        flip = (rising_dist > dist_thr) * dist_thr
+        # 確保索引不會越界
+        valid_rising_dist = rising_dist[:len(t1sec)] if len(rising_dist) > len(t1sec) else rising_dist
+        flip = (valid_rising_dist > dist_thr) * dist_thr
     else:
-        flip = (rising_dist_air > dist_thr) * dist_thr
+        # 確保索引不會越界
+        valid_rising_dist_air = rising_dist_air[:len(t1sec)] if len(rising_dist_air) > len(t1sec) else rising_dist_air
+        flip = (valid_rising_dist_air > dist_thr) * dist_thr
 
     # 繪製翻身數據
     x = t1sec[::flip_interval]
-    y = flip[idx1sec[::flip_interval]] * -100
-    raw_plot_ch.append(raw_plot.plot(x, y, fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
+    # 確保索引和數據長度一致
+    max_idx = min(len(flip), len(idx1sec))
+    if max_idx > 0:
+        valid_indices = np.minimum(idx1sec[::flip_interval], max_idx-1)
+        y = flip[valid_indices] * -100
+        raw_plot_ch.append(raw_plot.plot(x, y, fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
+    else:
+        # 如果沒有有效數據，添加一個空的繪圖對象
+        raw_plot_ch.append(raw_plot.plot([], [], fillLevel=0, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[8])), pen=None, name='Flip'))
 
     # Restore original Y range
     y_range[0] = dist_thr * -200
@@ -845,11 +1714,20 @@ def update_bit_plot():
     #global bit_plot_label
     global t1sec
     global idx1sec
+    
+    check_startday()  # 添加這行以記錄 startday 的值
 
     global bit_plot_ch
     global bit_plot_sum
     global bit_plot_onff
-
+    global bit_plot_pred_offbed
+    global bit_plot_predicted
+    global predicted_offbed
+    global onload
+    global onbed
+    global t1sec
+    global idx1sec
+    
     try:
         t1sec
     except NameError:
@@ -859,10 +1737,40 @@ def update_bit_plot():
     # --------------------------------------------------------------------    
     onload, onbed = EvalParameters()
     # --------------------------------------------------------------------
-    for ch in range(6):
-        onload[ch] = onload[ch][idx1sec]
-    onbed = onbed[idx1sec]
+    # 確保 idx1sec 的索引在有效範圍內
+    try:
+        for ch in range(6):
+            if len(onload[ch]) > 0:  # 確保有數據
+                # 創建有效索引掩碼
+                valid_indices = idx1sec[idx1sec < len(onload[ch])]
+                if len(valid_indices) > 0:
+                    onload[ch] = onload[ch][valid_indices]
+                else:
+                    # 如果沒有有效索引，使用默認值
+                    onload[ch] = np.zeros(len(idx1sec))
+            else:
+                # 如果沒有數據，使用默認值
+                onload[ch] = np.zeros(len(idx1sec))
+                
+        # 同樣處理 onbed 變數
+        if len(onbed) > 0:
+            valid_indices = idx1sec[idx1sec < len(onbed)]
+            if len(valid_indices) > 0:
+                onbed = onbed[valid_indices]
+            else:
+                onbed = np.zeros(len(idx1sec))
+        else:
+            onbed = np.zeros(len(idx1sec))
+    except Exception as e:
+        status_bar.showMessage(f'處理數據索引時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        # 使用默認值
+        for ch in range(6):
+            onload[ch] = np.zeros(len(idx1sec))
+        onbed = np.zeros(len(idx1sec))
+
     # --------------------------------------------------------------------
+    
     # Save show / hide settings
     isVisible = []
     try:
@@ -877,6 +1785,12 @@ def update_bit_plot():
     onload_avg = np.sum(onbed * onload_sum) / np.sum(onbed)
     bit_plot_sum = bit_plot.plot(t1sec, onload_sum-7.5, fillLevel=-7.5, brush=pg.mkBrush(color=(100,100,100)), pen=None, name='SUM')
     bit_plot_onff = bit_plot.plot(t1sec, onbed - 8.5, fillLevel=-7.5, brush=pg.mkBrush(color=hex_to_rgb(hex_colors[0])), pen=None, name='OFFBED')
+    
+    # 初始化預測離床變數，但不產生模擬數據，之後由OpenCsvFile讀取實際資料
+    predicted_offbed = np.zeros_like(onbed)
+    # 初始化繪圖對象，但暫不繪製，等待真實數據載入
+    bit_plot_pred_offbed = None
+    bit_plot_predicted = None
 
     bit_plot_ch = []
     for ch in range(6):
@@ -903,6 +1817,11 @@ def EvalParameters():
 
     global onload
     global onbed
+    
+    global dist
+    global dist_air
+    global rising_dist
+    global rising_dist_air
 
     global zdata_final
     zdata_final = []
@@ -910,18 +1829,44 @@ def EvalParameters():
     global base_final
     base_final = []
 
+    # 初始化日誌檔案
+    log_file = open(f'{LOG_DIR}/onoff_bed_log.txt', 'w', encoding='utf-8')
+    log_file.write("=== EvalParameters 函數日誌 ===\n")
+    log_file.write(f"處理數據長度: {d10[0].shape[0]}\n")
+    log_file.write(f"參數設定: noise_onbed={noise_onbed}, noise_offbed={noise_offbed}, bed_threshold={bed_threshold}\n")
+    
+    # 確保全域變數 dist 和 dist_air 已被正確初始化
+    if not isinstance(dist, pd.Series) and (not isinstance(dist, np.ndarray) or len(dist) <= 1):
+        log_file.write("注意：正在初始化 dist 變數\n")
+        dist = np.zeros(d10[0].shape[0], dtype=np.float64)
+    
+    if not isinstance(dist_air, pd.Series) and (not isinstance(dist_air, np.ndarray) or len(dist_air) <= 1):
+        log_file.write("注意：正在初始化 dist_air 變數\n")
+        dist_air = np.zeros(d10[0].shape[0], dtype=np.float64)
+
     l = d10[0].shape[0]
     onbed = np.zeros((l,))  # 初始化在床狀態陣列
     onload = []             # 初始化負載狀態列表
     total = 0              # 初始化總負載
 
     for ch in range(6):
+        log_file.write(f"\n處理通道 {ch}:\n")
         max10 = x10[ch] + offset_edit[ch]    # 最大值加上偏移
         med10 = d10[ch] + offset_edit[ch]     # 中值加上偏移
         n = n10[ch]                           # 噪聲值
         preload = preload_edit[ch]            # 預載值
+        
+        log_file.write(f"  通道 {ch} 偏移值: {offset_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 預載值: {preload}\n")
+        log_file.write(f"  通道 {ch} 閾值1: {th1_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 閾值2: {th2_edit[ch]}\n")
+        log_file.write(f"  通道 {ch} 原始數據前10個值: {med10[:10]}\n")
+        log_file.write(f"  通道 {ch} 噪聲值前10個值: {n[:10]}\n")
+        
         # 判斷是否為零點（無負載狀態）
-        zeroing = np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5))
+        zeroing = (np.less(n * np.right_shift(max10, 5), noise_offbed * np.right_shift(preload, 5)) & (np.less(n, noise_offbed) | (ch > 3)))
+        log_file.write(f"  通道 {ch} 零點判定前10個值: {zeroing[:10]}\n")
+        
         th1 = th1_edit[ch]
         th2 = th2_edit[ch]
         approach = max10 - (th1 + th2)           # 計算接近度
@@ -929,6 +1874,10 @@ def EvalParameters():
         np.clip(speed, 1, 16, out=speed)         # 限制速度範圍
         app_sp = approach * speed                # 接近度與速度的乘積
         sp_1024 = 1024 - speed                   # 速度的補數
+        
+        log_file.write(f"  通道 {ch} 接近度前10個值: {approach[:10]}\n")
+        log_file.write(f"  通道 {ch} 速度前10個值: {speed[:10]}\n")
+        
         #----------------------------------------------------
         base = (app_sp[0] // 1024 + med10[0]) // 2
         base = np.int64(base)
@@ -939,8 +1888,15 @@ def EvalParameters():
             base = (base * sp_1024[i] + app_sp[i]) // 1024  # 動態更新基線
             baseline[i] = base
         
-        total = total + med10[:] - baseline      # 累加所有通道的淨負載
-        o = np.less(th1, med10[:] - baseline)    # 判斷是否超過閾值
+        log_file.write(f"  通道 {ch} 基線前10個值: {baseline[:10]}\n")
+        
+        channel_total = med10[:] - baseline      # 計算通道負載
+        log_file.write(f"  通道 {ch} 負載前10個值: {channel_total[:10]}\n")
+        
+        total = total + channel_total      # 累加所有通道的淨負載
+        o = np.less(th1, channel_total)    # 判斷是否超過閾值
+        log_file.write(f"  通道 {ch} 負載狀態前10個值: {o[:10]}\n")
+        
         onload.append(o)                         # 記錄該通道的負載狀態
         onbed = onbed + o                        # 累加到總體在床狀態
 
@@ -948,8 +1904,101 @@ def EvalParameters():
         zdata_final.append(d_zero)
         base_final.append(baseline)
 
-    onbed = onbed + np.less(bed_threshold, total)  # 加入總負載判斷
-    onbed = np.int32(onbed > 0)                    # 轉換為0/1狀態
+    log_file.write(f"\n總負載前10個值: {total[:10]}\n")
+    bed_threshold_check = np.less(bed_threshold, total)
+    log_file.write(f"床閾值檢查前10個值: {bed_threshold_check[:10]}\n")
+    
+    onbed = onbed + bed_threshold_check 
+    onbed = np.int32(onbed > 0)
+    
+    log_file.write(f"最終在床狀態前10個值: {onbed[:10]}\n")
+    log_file.write(f"在床狀態統計: 在床={np.sum(onbed)}, 離床={len(onbed) - np.sum(onbed)}\n")
+    
+    # 關閉日誌檔案
+    log_file.close()
+    
+    # 儲存結果檔案用於比較
+    try:
+        # 建立輸出路徑
+        output_dir = os.path.join('_data', 'experiment')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 取得裝置序號和時間
+        serial_id = iCueSN.text()
+        timestamp_str = startday.strftime('%Y%m%d%H%M%S')
+        
+        # # 獲取dist和dist_air的全域變數
+        # global dist
+        # global dist_air
+        
+        # 確保dist和dist_air變數存在
+        if not isinstance(dist, (pd.Series, np.ndarray)) or len(dist) == 0:
+            log_file.write("警告：dist變數未正確定義，將使用默認值\n")
+            dist = np.zeros(d10[0].shape[0], dtype=np.float64)
+        
+        if not isinstance(dist_air, (pd.Series, np.ndarray)) or len(dist_air) == 0:
+            log_file.write("警告：dist_air變數未正確定義，將使用默認值\n")
+            dist_air = np.zeros(d10[0].shape[0], dtype=np.float64)
+        
+        # 計算位移差值 - 同樣的算法，確保結果一致
+        dist_series = pd.Series(dist)
+        shift = 60
+        rising_dist = dist_series.shift(-shift) - dist_series
+        rising_dist = rising_dist.fillna(0)
+        rising_dist = np.int32(rising_dist)
+        rising_dist[rising_dist < 0] = 0
+        rising_dist = rising_dist // 127
+        rising_dist[rising_dist > 1000] = 1000
+        
+        # 計算氣墊床位移差值
+        dist_air_series = pd.Series(dist_air)
+        rising_dist_air = dist_air_series.shift(-shift) - dist_air_series
+        rising_dist_air = rising_dist_air.fillna(0)
+        rising_dist_air = np.int32(rising_dist_air)
+        rising_dist_air[rising_dist_air < 0] = 0
+        rising_dist_air = rising_dist_air // 127
+        rising_dist_air[rising_dist_air > 1000] = 1000
+        
+        # 建立保存檔案路徑
+        results_path = os.path.join(output_dir, f'{serial_id}_results_{timestamp_str}.csv')
+        
+        # 準備時間戳
+        timestamps = [(startday + timedelta(seconds=i)).strftime('%Y%m%d%H%M%S') for i in range(len(onbed))]
+        
+        # 確保所有陣列長度一致
+        data_length = len(onbed)
+        
+        # 如果rising_dist和rising_dist_air長度超過onbed長度，截斷它們
+        rising_dist_trimmed = rising_dist[:data_length] if len(rising_dist) > data_length else rising_dist
+        rising_dist_air_trimmed = rising_dist_air[:data_length] if len(rising_dist_air) > data_length else rising_dist_air
+        
+        # 如果它們長度不足，則用最後一個元素填充到相同長度
+        if len(rising_dist_trimmed) < data_length:
+            rising_dist_trimmed = np.pad(rising_dist_trimmed, 
+                                      (0, data_length - len(rising_dist_trimmed)), 
+                                      'edge')
+        
+        if len(rising_dist_air_trimmed) < data_length:
+            rising_dist_air_trimmed = np.pad(rising_dist_air_trimmed, 
+                                          (0, data_length - len(rising_dist_air_trimmed)), 
+                                          'edge')
+        
+        # 建立結果 DataFrame
+        results_df = pd.DataFrame({
+            'timestamp': timestamps,
+            'bed_status': onbed,
+            'rising_dist': rising_dist_trimmed,  # 使用處理後的陣列
+            'rising_dist_air': rising_dist_air_trimmed  # 使用處理後的陣列
+        })
+        
+        # 儲存結果
+        results_df.to_csv(results_path, index=False)
+        status_bar.showMessage(f'已儲存分析結果檔案至: {results_path}')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'儲存結果檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
     
     return onload, onbed
 
@@ -1017,8 +2066,16 @@ def OpenJsonFile():
         return
     
     try:
+        # 初始化日誌檔案
+        json_log_file = open(f'{LOG_DIR}/{os.path.basename(json_path)[:-5]}_preprocess_log.txt', 'w', encoding='utf-8')
+        json_log_file.write("=== JSON資料前處理函數日誌 ===\n")
+        json_log_file.write(f"檔案名稱: {os.path.basename(json_path)}\n")
+        
         # 讀取 JSON 資料
+        json_log_file.write("正在讀取JSON資料...\n")
         timestamps, channels_data = load_json_data(json_path)
+        json_log_file.write(f"讀取完成，資料點數: {len(timestamps)}\n")
+        json_log_file.write(f"時間範圍: {timestamps[0]} 到 {timestamps[-1]}\n\n")
         
         # 初始化資料陣列
         d10 = []  # 中值
@@ -1029,56 +2086,101 @@ def OpenJsonFile():
         dist = np.zeros(len(timestamps))
         dist_air = np.zeros(len(timestamps))
         
+        json_log_file.write("開始處理通道資料...\n")
+        
         # 處理每個通道的資料
         for ch, ch_data in enumerate(channels_data):
+            json_log_file.write(f"\n處理通道 {ch+1}:\n")
             ch_data = np.array(ch_data)
             med10 = ch_data  # 原始值作為中值
+            json_log_file.write(f"  通道 {ch+1} 原始數據前10個值: {med10[:10]}\n")
             
             # 計算雜訊值（可以根據需求調整計算方法）
             noise = np.abs(np.diff(med10, prepend=med10[0])) 
             noise = np.maximum.accumulate(noise)
+            json_log_file.write(f"  通道 {ch+1} 噪聲值前10個值: {noise[:10]}\n")
             
             d10.append(med10)
             n10.append(noise)
             x10.append(med10)  # 最大值暫時使用原始值
             
             # 計算位移值（與原始程式相同的計算邏輯）
+            json_log_file.write("  計算位移值:\n")
             a = [1, -1023/1024]
             b = [1/1024, 0]
+            json_log_file.write(f"    IIR濾波器係數 a: {a}, b: {b}\n")
+            
             pos_iirmean = lfilter(b, a, med10)
+            json_log_file.write(f"    IIR濾波後前10個值: {pos_iirmean[:10]}\n")
+            
             med10_pd = pd.Series(med10)
             mean_30sec = med10_pd.rolling(window=30, min_periods=1, center=False).mean()
             mean_30sec = np.int32(mean_30sec)
+            json_log_file.write(f"    30秒平均值前10個值: {mean_30sec[:10]}\n")
             
             diff = (mean_30sec - pos_iirmean) / 256
             if ch == 1:  # 現在 ch 已經定義了
                 diff = diff / 3
+                json_log_file.write(f"    通道 {ch+1} 差值除以3後前10個值: {diff[:10]}\n")
+            else:
+                json_log_file.write(f"    通道 {ch+1} 差值前10個值: {diff[:10]}\n")
+            
+            dist_before = dist.copy()
             dist = dist + np.square(diff)
             dist[dist > 8000000] = 8000000
+            json_log_file.write(f"    累加通道 {ch+1} 後的位移前10個值: {dist[:10]}\n")
+            json_log_file.write(f"    通道 {ch+1} 對位移的貢獻前10個值: {(dist - dist_before)[:10]}\n")
             
             # 計算空氣床墊的位移值
+            json_log_file.write("  計算空氣床墊位移值:\n")
             mean_60sec = med10_pd.rolling(window=60, min_periods=1, center=False).mean()
             mean_60sec = np.int32(mean_60sec)
+            json_log_file.write(f"    60秒平均值前10個值: {mean_60sec[:10]}\n")
             
+            # 濾波器係數
             a = np.zeros([780,])
             a[0] = 1
             b = np.zeros([780,])
             for s in range(10):
                 b[s*60 + 180] = -0.1
             b[60] = 1
+            json_log_file.write(f"    空氣床濾波器係數 a 非零元素位置: {np.where(a != 0)[0]}, 值: {a[np.where(a != 0)[0]]}\n")
+            json_log_file.write(f"    空氣床濾波器係數 b 非零元素位置: {np.where(b != 0)[0]}, 值: {b[np.where(b != 0)[0]]}\n")
+            
             diff = lfilter(b, a, mean_60sec)
             if ch == 1:
                 diff = diff / 3
+                json_log_file.write(f"    通道 {ch+1} 空氣床差值除以3後前10個值: {diff[:10]}\n")
+            else:
+                json_log_file.write(f"    通道 {ch+1} 空氣床差值前10個值: {diff[:10]}\n")
+            
+            dist_air_before = dist_air.copy()
             dist_air = dist_air + np.square(diff / 256)
+            json_log_file.write(f"    累加通道 {ch+1} 後的空氣床位移前10個值: {dist_air[:10]}\n")
+            json_log_file.write(f"    通道 {ch+1} 對空氣床位移的貢獻前10個值: {(dist_air - dist_air_before)[:10]}\n")
         
         # 計算翻身指標
-        rising_dist = calculate_rising_dist(dist)
-        rising_dist_air = calculate_rising_dist(dist_air)
+        json_log_file.write("\n計算翻身指標:\n")
+        json_log_file.write("  一般床墊:\n")
+        rising_dist = calculate_rising_dist(dist, json_log_file)
+        json_log_file.write(f"    翻身指標前10個值: {rising_dist[:10]}\n")
+        
+        json_log_file.write("  空氣床墊:\n")
+        rising_dist_air = calculate_rising_dist(dist_air, json_log_file)
+        json_log_file.write(f"    翻身指標前10個值: {rising_dist_air[:10]}\n")
         
         # 設定時間相關變數
         startday = timestamps[0].replace(hour=0, minute=0, second=0, microsecond=0)
+        json_log_file.write(f"\n基準時間: {startday}\n")
+        
         t1sec = np.array([(t - startday).total_seconds() for t in timestamps])
+        json_log_file.write(f"時間向量t1sec前10個值: {t1sec[:10]}\n")
+        
         idx1sec = np.arange(len(t1sec))
+        json_log_file.write(f"索引向量idx1sec前10個值: {idx1sec[:10]}\n")
+        
+        json_log_file.write("\nJSON資料前處理完成\n")
+        json_log_file.close()
         
         # 計算在床狀態
         EvalParameters()
@@ -1093,16 +2195,1401 @@ def OpenJsonFile():
         status_bar.showMessage(f"載入 JSON 檔案時發生錯誤: {str(e)}")
         QApplication.processEvents()
 
-def calculate_rising_dist(dist):
-    """計算翻身指標的輔助函數"""
+def OpenCsvFile():
+    global csv_path, predicted_offbed, bit_plot_pred_offbed, onbed, cmb_name
+    
+    # 詢問用戶是否要批量處理
+    msg_box = QtWidgets.QMessageBox()
+    msg_box.setWindowTitle("選擇處理模式")
+    msg_box.setText("請選擇處理模式:")
+    
+    single_button = msg_box.addButton("單檔案處理", QtWidgets.QMessageBox.ActionRole)
+    batch_button = msg_box.addButton("批量處理資料夾", QtWidgets.QMessageBox.ActionRole)
+    cancel_button = msg_box.addButton(QtWidgets.QMessageBox.Cancel)
+    
+    msg_box.exec_()
+    
+    clicked_button = msg_box.clickedButton()
+    
+    if clicked_button == cancel_button:
+        return
+    elif clicked_button == batch_button:
+        # 批量處理模式
+        batch_process_csv_files()
+        return
+    
+    # 原有的單檔案處理邏輯
+    # 獲取SN和時間範圍
+    sn = iCueSN.text()
+    start_time_str = start_time.text()
+    end_time_str = end_time.text()
+    
+    # 解析時間字符串
+    start_date = start_time_str[:8]  # 取得 YYYYMMDD
+    start_time_value = start_time_str[9:15]  # 取得 HHMMSS
+    end_date = end_time_str[:8]  # 取得 YYYYMMDD
+    end_time_value = end_time_str[9:15]  # 取得 HHMMSS
+    
+    # 構建CSV檔案名稱
+    csv_filename = f"cleaned_{sn}_{start_date}_{start_time_value[:2]}_{end_date}_{end_time_value[:2]}_data_processed.csv"
+    csv_path = os.path.join(TRAIN_DATA_DIR, csv_filename)
+    
+    # 檢查檔案是否存在
+    if not os.path.exists(csv_path):
+        csv_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None, 
+            "選擇 CSV 檔案", 
+            "/Users/chenhunglun/Documents/Procjects/Humetrics_raw/_data/training/prediction/",
+            "CSV files (*.csv)"
+        )
+        
+    if not csv_path:
+        return
+    
+    # 處理單個檔案
+    process_single_csv_file(csv_path)
+
+
+def batch_process_csv_files():
+    """批量處理資料夾中的所有 *_data.csv 檔案"""
+    global startday, t1sec
+    
+    # 選擇要處理的資料夾
+    folder_path = QtWidgets.QFileDialog.getExistingDirectory(
+        None, 
+        "選擇包含 CSV 檔案的資料夾",
+        "/Users/chenhunglun/Documents/Procjects/Humetrics_raw/_data/training/prediction/"
+    )
+    
+    if not folder_path:
+        return
+    
+    # 找出所有符合條件的 CSV 檔案
+    import glob
+    csv_files = glob.glob(os.path.join(folder_path, "*_data.csv"))
+    
+    if not csv_files:
+        status_bar.showMessage("在選擇的資料夾中未找到任何 *_data.csv 檔案")
+        QApplication.processEvents()
+        return
+    
+    status_bar.showMessage(f"找到 {len(csv_files)} 個 CSV 檔案，開始批量處理...")
+    QApplication.processEvents()
+    
+    # 準備結果收集
+    batch_results = []
+    processed_count = 0
+    skipped_count = 0
+    
+    # 處理每個 CSV 檔案
+    for i, csv_file in enumerate(csv_files):
+        try:
+            status_bar.showMessage(f"處理檔案 {i+1}/{len(csv_files)}: {os.path.basename(csv_file)}")
+            QApplication.processEvents()
+            
+            # 從檔案名稱解析資訊
+            filename = os.path.basename(csv_file)
+            file_info = parse_csv_filename(filename)
+            
+            if file_info is None:
+                status_bar.showMessage(f"跳過檔案 {filename}：無法解析檔名格式")
+                QApplication.processEvents()
+                skipped_count += 1
+                continue
+            
+            device_sn, start_date_part, start_hour_part, end_date_part, end_hour_part = file_info
+            
+            # 暫時更新面板資訊用於處理
+            original_sn = iCueSN.text()
+            original_start = start_time.text()
+            original_end = end_time.text()
+            
+            iCueSN.setText(device_sn)
+            start_time.setText(f"{start_date_part}_{start_hour_part}0000")
+            end_time.setText(f"{end_date_part}_{end_hour_part}0000")
+            
+            # 初始化 cmb 相關參數
+            try:
+                OpenCmbFile()  # 這會設定 startday 和 t1sec
+            except Exception:
+                # 如果 OpenCmbFile 失敗，使用預設值
+                startday = datetime.strptime(start_date_part, '%Y%m%d')
+                t1sec = np.arange(0, 86400)  # 預設一天的秒數
+            
+            # 處理檔案並收集結果
+            result = process_single_csv_file_for_batch(csv_file, device_sn, start_date_part, start_hour_part, end_date_part, end_hour_part)
+            
+            if result:
+                batch_results.append(result)
+                processed_count += 1
+            else:
+                skipped_count += 1
+            
+            # 恢復原始面板資訊
+            iCueSN.setText(original_sn)
+            start_time.setText(original_start)
+            end_time.setText(original_end)
+            
+        except Exception as e:
+            status_bar.showMessage(f"處理檔案 {filename} 時發生錯誤: {str(e)}")
+            QApplication.processEvents()
+            skipped_count += 1
+            continue
+    
+    # 儲存批量處理結果
+    if batch_results:
+        save_batch_results(batch_results, folder_path)
+        status_bar.showMessage(f"批量處理完成！成功處理 {processed_count} 個檔案，跳過 {skipped_count} 個檔案，結果已儲存")
+    else:
+        status_bar.showMessage(f"批量處理完成，但沒有成功處理的檔案（跳過 {skipped_count} 個檔案）")
+    
+    QApplication.processEvents()
+
+
+def parse_csv_filename(filename):
+    """解析 CSV 檔案名稱，提取設備資訊和時間資訊"""
+    # 解析檔名格式: cleaned_SPS2021PA000484_20250528_04_20250529_04_data.csv
+    parts = filename.split('_')
+    if len(parts) >= 6 and parts[0] == 'cleaned':
+        try:
+            device_sn = parts[1]  # SPS2021PA000484
+            start_date_part = parts[2]  # 20250528
+            start_hour_part = parts[3]  # 04
+            end_date_part = parts[4]  # 20250529
+            end_hour_part = parts[5]  # 04
+            return device_sn, start_date_part, start_hour_part, end_date_part, end_hour_part
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def process_single_csv_file_for_batch(csv_file, device_sn, start_date_part, start_hour_part, end_date_part, end_hour_part):
+    """為批量處理而設計的單檔案處理函數"""
+    global startday, t1sec
+    
+    try:
+        # 讀取 CSV 檔案
+        df = pd.read_csv(csv_file)
+        
+        # 繪製數據並獲取處理後的數據
+        result = plot_csv_data(df, startday, t1sec)
+        if result is None:
+            return None
+            
+        aligned_data, aligned_pred_data, true_events, pred_events = result
+        
+        # 計算預測指標
+        score, metrics_dict, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+        
+        # 準備返回的結果資料，包含所有解析的指標欄位
+        result_data = {
+            'filename': os.path.basename(csv_file),
+            'device_sn': device_sn,
+            'start_date': start_date_part,
+            'start_hour': start_hour_part,
+            'end_date': end_date_part,
+            'end_hour': end_hour_part,
+            'score': metrics_dict['score'],
+            'total_true_events': metrics_dict['total_true_events'],
+            'total_pred_events': metrics_dict['total_pred_events'],
+            'matched_pairs': metrics_dict['matched_pairs'],
+            'false_negatives': metrics_dict['false_negatives'],
+            'false_positives': metrics_dict['false_positives'],
+            'avg_time_diff': metrics_dict['avg_time_diff'],
+            'match_rate': metrics_dict['match_rate'],
+            'precision': metrics_dict['precision'],
+            'time_diff_score': metrics_dict['time_diff_score'],
+            'early_samples': metrics_dict['early_samples'],
+            'avg_early_time': metrics_dict['avg_early_time'],
+            'late_samples': metrics_dict['late_samples'],
+            'avg_late_time': metrics_dict['avg_late_time'],
+            'result_message': result_msg,
+            'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        return result_data
+        
+    except Exception as e:
+        return {
+            'filename': os.path.basename(csv_file),
+            'device_sn': device_sn,
+            'start_date': start_date_part,
+            'start_hour': start_hour_part,
+            'end_date': end_date_part,
+            'end_hour': end_hour_part,
+            'score': 0,
+            'total_true_events': 0,
+            'total_pred_events': 0,
+            'matched_pairs': 0,
+            'false_negatives': 0,
+            'false_positives': 0,
+            'avg_time_diff': 0.0,
+            'match_rate': 0.0,
+            'precision': 0.0,
+            'time_diff_score': 0.0,
+            'early_samples': 0,
+            'avg_early_time': 0.0,
+            'late_samples': 0,
+            'avg_late_time': 0.0,
+            'result_message': f"處理錯誤: {str(e)}",
+            'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+
+def save_batch_results(batch_results, folder_path):
+    """將批量處理結果儲存到 CSV 檔案和文字報告"""
+    try:
+        # 產生結果檔案名稱
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 建立結果儲存目錄
+        results_dir = os.path.join('_logs', 'pyqt-viewer', 'batch_prediction_results')
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # CSV 檔案路徑
+        csv_filename = f"batch_prediction_results_{timestamp}.csv"
+        csv_path = os.path.join(results_dir, csv_filename)
+        
+        # 文字報告路徑
+        txt_filename = f"batch_prediction_report_{timestamp}.txt"
+        txt_path = os.path.join(results_dir, txt_filename)
+        
+        # 圖檔路徑
+        plot_filename = f"batch_prediction_analysis_{timestamp}.png"
+        plot_path = os.path.join(results_dir, plot_filename)
+        
+        # 將結果轉換為 DataFrame
+        df_results = pd.DataFrame(batch_results)
+        
+        # 按評分排序（由高到低）
+        df_results = df_results.sort_values('score', ascending=False)
+        
+        # 儲存到 CSV 檔案
+        df_results.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        
+        # 生成圖檔總結
+        generate_batch_analysis_plots(df_results, plot_path)
+        
+        # 生成文字報告
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write("批量預測結果分析報告\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"處理時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"處理檔案數量: {len(batch_results)}\n\n")
+            
+            # 統計摘要
+            scores = [result['score'] for result in batch_results]
+            f.write("評分統計:\n")
+            f.write(f"  平均評分: {np.mean(scores):.2f}\n")
+            f.write(f"  最高評分: {np.max(scores):.2f}\n")
+            f.write(f"  最低評分: {np.min(scores):.2f}\n")
+            f.write(f"  標準差: {np.std(scores):.2f}\n\n")
+            
+            # 離群值分析
+            outliers_info = analyze_outliers(df_results)
+            f.write("離群值分析:\n")
+            f.write("-" * 30 + "\n")
+            
+            # 按指標名稱排序顯示離群值
+            for metric in sorted(outliers_info.keys()):
+                outliers = outliers_info[metric]
+                if outliers:
+                    f.write(f"\n{metric} 離群值:\n")
+                    # 按設備序號排序
+                    sorted_outliers = sorted(outliers, key=lambda x: x['device_sn'])
+                    for outlier in sorted_outliers:
+                        f.write(f"  - {outlier['device_sn']} ({outlier['filename']}): {outlier['value']:.2f}\n")
+            
+            # 共同離群設備分析
+            common_outlier_devices = find_common_outlier_devices(outliers_info, df_results)
+            if common_outlier_devices:
+                f.write(f"\n共同離群設備資料分析:\n")
+                f.write("-" * 30 + "\n")
+                f.write("在 avg_time_diff, match_rate, precision 三個指標都為離群值的設備資料:\n")
+                for record_info in sorted(common_outlier_devices, key=lambda x: (x['device_sn'], x['start_date'], x['start_hour'])):
+                    # 確保 start_hour 和 end_hour 轉換為整數
+                    start_hour = int(record_info['start_hour'])
+                    end_hour = int(record_info['end_hour'])
+                    f.write(f"  - {record_info['device_sn']} ({record_info['start_date']} {start_hour:02d}:00 - {record_info['end_date']} {end_hour:02d}:00):  ")
+                    f.write(f"    時差={record_info['avg_time_diff']:.2f}秒, "
+                           f"配對率={record_info['match_rate']:.2f}, "
+                           f"精確率={record_info['precision']:.2f}, "
+                           f"評分={record_info['score']:.2f}\n")
+            else:
+                f.write(f"\n共同離群設備資料分析:\n")
+                f.write("-" * 30 + "\n")
+                f.write("沒有設備資料在三個關鍵指標(avg_time_diff, match_rate, precision)都為離群值\n")
+
+            # 詳細結果（按評分排序）
+            f.write("\n\n詳細結果 (按評分排序):\n")
+            f.write("-" * 50 + "\n")
+            
+            for i, result in enumerate(df_results.to_dict('records'), 1):
+                # 確保 start_hour 和 end_hour 轉換為整數
+                start_hour = int(result['start_hour'])
+                end_hour = int(result['end_hour'])
+                f.write(f"\n{i}. {result['filename']}\n")
+                f.write(f"   設備序號: {result['device_sn']}\n")
+                f.write(f"   時間範圍: {result['start_date']} {start_hour:02d}:00 - {result['end_date']} {end_hour:02d}:00\n")
+                f.write(f"   評分: {result['score']:.2f}\n")
+                f.write(f"   真實事件: {result['total_true_events']}, 預測事件: {result['total_pred_events']}\n")
+                f.write(f"   配對: {result['matched_pairs']}, 漏報: {result['false_negatives']}, 誤報: {result['false_positives']}\n")
+                f.write(f"   配對率: {result['match_rate']:.2f}, 精確率: {result['precision']:.2f}\n")
+                f.write(f"   平均時差: {result['avg_time_diff']:.2f}秒, 時間差指標: {result['time_diff_score']:.2f}\n")
+                f.write(f"   提早樣本: {result['early_samples']} (平均: {result['avg_early_time']:.2f}秒)\n")
+                f.write(f"   延遲樣本: {result['late_samples']} (平均: {result['avg_late_time']:.2f}秒)\n")
+        
+        status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}")
+        QApplication.processEvents()
+        
+        # 生成離群設備截圖PDF報告
+        if common_outlier_devices and generate_outlier_screenshots_pdf is not None:
+            try:
+                pdf_path = generate_outlier_screenshots_pdf(common_outlier_devices, results_dir, timestamp, LOG_DIR)
+                if pdf_path:
+                    status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}\nPDF: {pdf_path}")
+                    QApplication.processEvents()
+            except Exception as e:
+                print(f"生成離群設備PDF時發生錯誤: {str(e)}")
+                status_bar.showMessage(f"批量處理結果已儲存至:\nCSV: {csv_path}\n報告: {txt_path}\n圖檔: {plot_path}\n(PDF生成失敗)")
+                QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f"儲存批量處理結果時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+
+
+def generate_batch_analysis_plots(df_results, plot_path):
+    """生成批量分析圖檔，包含各指標的分布圖和離群值分析"""
+    try:
+        # 設定中文字體
+        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 定義要分析的指標
+        metrics = {
+            'total_true_events': '真實事件數',
+            'total_pred_events': '預測事件數', 
+            'matched_pairs': '配對數',
+            'false_negatives': '漏報數',
+            'false_positives': '誤報數',
+            'avg_time_diff': '平均時差(秒)',
+            'match_rate': '配對率',
+            'precision': '精確率',
+            'time_diff_score': '時間差指標',
+            'early_samples': '提早樣本數',
+            'avg_early_time': '平均提早時間(秒)',
+            'late_samples': '延遲樣本數',
+            'avg_late_time': '平均延遲時間(秒)'
+        }
+        
+        # 建立子圖
+        fig, axes = plt.subplots(5, 3, figsize=(20, 25))
+        fig.suptitle('批量預測結果分析 - 指標分布圖', fontsize=16, fontweight='bold')
+        
+        axes = axes.flatten()
+        
+        for i, (metric, title) in enumerate(metrics.items()):
+            if i >= len(axes):
+                break
+                
+            ax = axes[i]
+            
+            # 取得數據
+            data = df_results[metric].dropna()
+            
+            if len(data) == 0:
+                ax.text(0.5, 0.5, '無數據', ha='center', va='center', transform=ax.transAxes)
+                ax.set_title(title)
+                continue
+            
+            # 計算離群值
+            Q1 = data.quantile(0.25)
+            Q3 = data.quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            outliers = data[(data < lower_bound) | (data > upper_bound)]
+            
+            # 繪製直方圖
+            ax.hist(data, bins=min(20, len(data.unique())), alpha=0.7, color='skyblue', edgecolor='black')
+            
+            # 標記離群值
+            if len(outliers) > 0:
+                for outlier_val in outliers:
+                    ax.axvline(x=outlier_val, color='red', linestyle='--', alpha=0.7)
+            
+            # 添加統計資訊
+            mean_val = data.mean()
+            median_val = data.median()
+            std_val = data.std()
+            
+            ax.axvline(x=mean_val, color='green', linestyle='-', linewidth=2, label=f'平均: {mean_val:.2f}')
+            ax.axvline(x=median_val, color='orange', linestyle='-', linewidth=2, label=f'中位數: {median_val:.2f}')
+            
+            # 設定標題和標籤
+            ax.set_title(f'{title}\n(標準差: {std_val:.2f}, 離群值: {len(outliers)}個)', fontsize=10)
+            ax.set_xlabel('數值')
+            ax.set_ylabel('頻率')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            
+            # 在圖上標註離群值的設備
+            if len(outliers) > 0:
+                outlier_devices = []
+                for outlier_val in outliers:
+                    devices = df_results[df_results[metric] == outlier_val]['device_sn'].tolist()
+                    outlier_devices.extend(devices)
+                
+                if outlier_devices:
+                    outlier_text = f"離群設備: {', '.join(set(outlier_devices[:3]))}"
+                    if len(set(outlier_devices)) > 3:
+                        outlier_text += f" 等{len(set(outlier_devices))}個"
+                    ax.text(0.02, 0.98, outlier_text, transform=ax.transAxes, 
+                           fontsize=8, verticalalignment='top', 
+                           bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+        
+        # 隱藏多餘的子圖
+        for i in range(len(metrics), len(axes)):
+            axes[i].set_visible(False)
+        
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # 生成相關性熱力圖
+        correlation_plot_path = plot_path.replace('.png', '_correlation.png')
+        generate_correlation_heatmap(df_results, correlation_plot_path, metrics)
+        
+    except Exception as e:
+        print(f"生成分析圖檔時發生錯誤: {str(e)}")
+
+
+def generate_correlation_heatmap(df_results, plot_path, metrics):
+    """生成指標間相關性熱力圖"""
+    try:
+        # 選擇數值型指標
+        numeric_metrics = [col for col in metrics.keys() if col in df_results.columns]
+        correlation_data = df_results[numeric_metrics].corr()
+        
+        plt.figure(figsize=(12, 10))
+        
+        # 建立熱力圖
+        mask = np.triu(np.ones_like(correlation_data, dtype=bool))
+        sns.heatmap(correlation_data, 
+                   mask=mask,
+                   annot=True, 
+                   cmap='coolwarm', 
+                   center=0,
+                   square=True,
+                   fmt='.2f',
+                   cbar_kws={"shrink": .8})
+        
+        plt.title('指標間相關性分析', fontsize=14, fontweight='bold', pad=20)
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+    except Exception as e:
+        print(f"生成相關性熱力圖時發生錯誤: {str(e)}")
+
+
+def analyze_outliers(df_results):
+    """分析指定指標的離群值"""
+    outliers_info = {}
+    
+    # 只分析這三個關鍵指標
+    metrics = ['avg_time_diff', 'match_rate', 'precision']
+    
+    for metric in metrics:
+        if metric not in df_results.columns:
+            continue
+            
+        data = df_results[metric].dropna()
+        if len(data) == 0:
+            continue
+        
+        # 使用 IQR 方法檢測離群值
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        outlier_mask = (data < lower_bound) | (data > upper_bound)
+        outlier_indices = data[outlier_mask].index
+        
+        outliers = []
+        for idx in outlier_indices:
+            outliers.append({
+                'filename': df_results.loc[idx, 'filename'],
+                'device_sn': df_results.loc[idx, 'device_sn'],
+                'value': df_results.loc[idx, metric]
+            })
+        
+        if outliers:
+            outliers_info[metric] = outliers
+    
+    return outliers_info
+
+def find_common_outlier_devices(outliers_info, df_results):
+    """找出在三個關鍵指標都為離群值的共同設備資料（設備+特定日期）"""
+    target_metrics = ['avg_time_diff', 'match_rate', 'precision']
+    
+    # 收集每個指標的離群資料（使用filename作為唯一識別）
+    outlier_records_by_metric = {}
+    for metric in target_metrics:
+        if metric in outliers_info:
+            outlier_records_by_metric[metric] = set([outlier['filename'] for outlier in outliers_info[metric]])
+        else:
+            outlier_records_by_metric[metric] = set()
+    
+    # 找出在所有三個指標都為離群值的資料記錄
+    if len(outlier_records_by_metric) >= 3:
+        common_records = outlier_records_by_metric['avg_time_diff']
+        for metric in ['match_rate', 'precision']:
+            if metric in outlier_records_by_metric:
+                common_records = common_records.intersection(outlier_records_by_metric[metric])
+        
+        # 為每個共同離群資料收集完整資訊
+        common_records_with_values = []
+        for filename in common_records:
+            # 找到該檔案的記錄
+            record_match = df_results[df_results['filename'] == filename]
+            if not record_match.empty:
+                record = record_match.iloc[0]
+                # 確保 start_hour 和 end_hour 轉換為整數
+                try:
+                    start_hour = int(record['start_hour'])
+                    end_hour = int(record['end_hour'])
+                except (ValueError, TypeError):
+                    start_hour = 0
+                    end_hour = 0
+                
+                record_info = {
+                    'filename': filename,
+                    'device_sn': record['device_sn'],
+                    'start_date': record['start_date'],
+                    'start_hour': start_hour,
+                    'end_date': record['end_date'],
+                    'end_hour': end_hour,
+                    'avg_time_diff': record['avg_time_diff'],
+                    'match_rate': record['match_rate'],
+                    'precision': record['precision'],
+                    'score': record['score']
+                }
+                common_records_with_values.append(record_info)
+        
+        return common_records_with_values
+    
+    return []
+
+def process_single_csv_file(csv_path):
+    """處理單個 CSV 檔案的原始邏輯"""
+    global startday, t1sec, cmb_name
+    
+    try:
+        # 檢查是否已有 t1sec 和 startday，如果沒有則從檔案名稱解析並更新面板欄位
+        if 't1sec' not in globals() or 'startday' not in globals():
+            # 從CSV檔案名稱解析資訊
+            filename = os.path.basename(csv_path)
+            
+            # 解析檔名格式: cleaned_SPS2021PA000484_20250528_04_20250529_04_data.csv
+            parts = filename.split('_')
+            if len(parts) >= 6 and parts[0] == 'cleaned':
+                try:
+                    # 提取設備序號和時間資訊
+                    device_sn = parts[1]  # SPS2021PA000484
+                    start_date_part = parts[2]  # 20250528
+                    start_hour_part = parts[3]  # 04
+                    end_date_part = parts[4]  # 20250529
+                    end_hour_part = parts[5]  # 04
+                    
+                    # 更新面板欄位
+                    iCueSN.setText(device_sn)
+                    start_time.setText(f"{start_date_part}_{start_hour_part}0000")
+                    end_time.setText(f"{end_date_part}_{end_hour_part}0000")
+                    
+                    # 在 LOG_DIR 中尋找對應的 cmb 檔案
+                    # 檔名格式通常是: {device_sn}_{start_date_part}_{start_hour_part}_{end_date_part}_{end_hour_part}.cmb
+                    potential_cmb_patterns = [
+                        f"{device_sn}_{start_date_part}_{start_hour_part}_{end_date_part}_{end_hour_part}.cmb",
+                        f"{device_sn}_{start_date_part[4:]}_{start_hour_part}_{end_date_part[4:]}_{end_hour_part}.cmb",
+                        f"{device_sn}*.cmb"  # 萬用字元模式
+                    ]
+                    
+                    found_cmb = None
+                    import glob
+                    
+                    # 尋找匹配的 cmb 檔案
+                    for pattern in potential_cmb_patterns:
+                        if '*' in pattern:
+                            # 使用萬用字元搜尋
+                            cmb_pattern = os.path.join(LOG_DIR, pattern)
+                            matching_files = glob.glob(cmb_pattern)
+                            if matching_files:
+                                # 取最新的檔案
+                                found_cmb = os.path.basename(max(matching_files, key=os.path.getmtime))
+                                break
+                        else:
+                            # 直接檢查檔案是否存在
+                            cmb_path = os.path.join(LOG_DIR, pattern)
+                            if os.path.exists(cmb_path):
+                                found_cmb = pattern
+                                break
+                    
+                    if found_cmb:
+                        cmb_name = found_cmb
+                        status_bar.showMessage(f"已找到對應的 cmb 檔案: {cmb_name}")
+                    else:
+                        # 如果找不到對應的 cmb 檔案，使用預設名稱
+                        current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        cmb_name = f"{device_sn}_{current_time}.cmb"
+                        status_bar.showMessage(f"未找到對應的 cmb 檔案，使用預設名稱: {cmb_name}")
+                    
+                    status_bar.showMessage(f"已從檔名更新面板資訊: {device_sn}, {start_date_part} {start_hour_part}:00")
+                    QApplication.processEvents()
+                    
+                    # 呼叫 OpenCmbFile() 來初始化 t1sec 和 startday
+                    OpenCmbFile()
+                    
+                except (ValueError, IndexError) as e:
+                    status_bar.showMessage(f"無法從檔名解析資訊: {str(e)}")
+                    QApplication.processEvents()
+                    return
+            else:
+                status_bar.showMessage("檔名格式不符預期，無法自動設定參數")
+                QApplication.processEvents()
+                return
+        
+        # 讀取 CSV 檔案
+        df = pd.read_csv(csv_path)
+        
+        # 繪製數據並獲取處理後的數據
+        result = plot_csv_data(df, startday, t1sec)
+        if result is None:
+            return
+            
+        aligned_data, aligned_pred_data, true_events, pred_events = result
+        
+        # 計算預測指標
+        score, metrics_dict, result_msg = calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events)
+        status_bar.showMessage(result_msg)
+        update_calculated_value(metrics_dict['score'])
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f"載入 CSV 檔案時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+
+        
+def calculate_rising_dist(dist, log_file=None):
+    """計算翻身指標的輔助函數
+    
+    Args:
+        dist: 位移資料
+        log_file: 日誌文件對象，如果提供則記錄計算過程
+    
+    Returns:
+        計算後的翻身指標
+    """
+    if log_file:
+        log_file.write("  計算翻身指標細節:\n")
+        log_file.write(f"    位移資料前10個值: {dist[:10]}\n")
+    
     dist_series = pd.Series(dist)
     shift = 60
+    
+    if log_file:
+        log_file.write(f"    使用的偏移量: {shift}\n")
+    
+    # 為了處理邊界情況，我們需要確保移位操作不會超出範圍
+    # 先計算移位差值，然後用0填充NaN（這會在序列末尾產生）
     rising_dist = dist_series.shift(-shift) - dist_series
-    rising_dist = np.int32(rising_dist.fillna(0))
+    
+    if log_file:
+        log_file.write(f"    偏移差值前10個值: {rising_dist[:10]}\n")
+    
+    # 用0填充NaN值，這會發生在序列的末尾
+    rising_dist = rising_dist.fillna(0)
+    
+    # 轉換為整數陣列（這樣我們可以在numpy陣列上操作）
+    rising_dist = np.int32(rising_dist)
+    
+    if log_file:
+        log_file.write(f"    填充NaN後前10個值: {rising_dist[:10]}\n")
+    
+    # 負值處理
     rising_dist[rising_dist < 0] = 0
+    
+    if log_file:
+        log_file.write(f"    負值處理後前10個值: {rising_dist[:10]}\n")
+    
+    # 縮放數值
     rising_dist = rising_dist // 127
+    
+    if log_file:
+        log_file.write(f"    除以127後前10個值: {rising_dist[:10]}\n")
+    
+    # 限制最大值
     rising_dist[rising_dist > 1000] = 1000
+    
+    if log_file:
+        log_file.write(f"    限制最大值後前10個值: {rising_dist[:10]}\n")
+        log_file.write(f"    最終翻身指標統計：最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}, 長度={len(rising_dist)}\n")
+    
     return rising_dist
+
+def plot_csv_data(df, startday, t1sec):
+    """
+    繪製CSV檔案中的離床事件和預測事件
+    
+    參數:
+    df - 包含event_binary和Predicted列的DataFrame
+    startday - 起始日期時間
+    t1sec - 時間向量
+    
+    返回:
+    (aligned_data, aligned_pred_data, true_events, pred_events) - 繪製後的數據和事件
+    或者在出錯時返回None
+    """
+    try:
+        # 檢查是否有必要的欄位
+        if 'event_binary' not in df.columns:
+            status_bar.showMessage("CSV 檔案中找不到 event_binary 欄位")
+            QApplication.processEvents()
+            return None
+        
+        # 檢查是否有Predicted欄位
+        if 'Predicted' not in df.columns:
+            status_bar.showMessage("CSV 檔案中找不到 Predicted 欄位")
+            QApplication.processEvents()
+            return None
+        
+        # 獲取event_binary數據
+        event_binary = df['event_binary'].values
+        predicted_binary = df['Predicted'].values
+        
+        # 更新predicted_offbed數據
+        global bit_plot_pred_offbed, bit_plot_predicted
+        if 'bit_plot_pred_offbed' in globals() and bit_plot_pred_offbed is not None:
+            bit_plot_pred_offbed.clear()
+        
+        if 'bit_plot_predicted' in globals() and bit_plot_predicted is not None:
+            bit_plot_predicted.clear()
+        
+        # 對齊數據到正確的時間位置 - 處理時間偏移問題
+        # 計算時間偏移量 - 假設第一個數據點對應於原始數據的第一天的12:00:00
+        first_day_timestamp = startday + timedelta(hours=12)  # 第一天的12:00:00
+        
+        # 計算第一個CSV數據點對應到原始時間向量t1sec中的索引
+        csv_start_time_seconds = (first_day_timestamp - startday).total_seconds()
+        start_index = np.searchsorted(t1sec, csv_start_time_seconds)
+        
+        # 創建與t1sec相同長度的臨時陣列
+        aligned_data = np.zeros_like(t1sec)
+        aligned_pred_data = np.zeros_like(t1sec)
+        
+        # 將event_binary數據填充到正確的位置
+        if start_index < len(t1sec):
+            # 計算可以放入的數據長度
+            data_length = min(len(event_binary), len(t1sec) - start_index)
+            aligned_data[start_index:start_index + data_length] = event_binary[:data_length]
+            
+            # 將predicted_binary數據填充到正確的位置
+            pred_length = min(len(predicted_binary), len(t1sec) - start_index)
+            aligned_pred_data[start_index:start_index + pred_length] = predicted_binary[:pred_length]
+        
+        # 替換離床事件數據
+        event_offbed = aligned_data
+        
+        # 使用線條繪製，而非填充區域
+        pen = pg.mkPen(color=(255, 70, 0), width=2)  # 使用橙紅色粗線條
+        bit_plot_pred_offbed = bit_plot.plot(t1sec, event_offbed - 9.5, 
+                                          pen=pen, name='ACTUAL OFFBED')
+        
+        # 繪製predicted_binary數據 - 使用藍色線條
+        pen_pred = pg.mkPen(color=(70, 130, 255), width=2)  # 使用藍色粗線條
+        bit_plot_predicted = bit_plot.plot(t1sec, aligned_pred_data - 10.5,
+                                         pen=pen_pred, name='PREDICTED DATA')
+        
+        # 找出所有事件的時間點
+        true_events = np.where(aligned_data == 1)[0]  # 真實事件的索引位置
+        all_pred_points = np.where(aligned_pred_data == 1)[0]  # 所有預測事件的索引位置
+        
+        # 將連續的預測點合併為預測事件
+        pred_events = []
+        if len(all_pred_points) > 0:
+            # 排序所有預測點
+            all_pred_points.sort()
+            
+            # 定義連續點的閾值（時間間隔）
+            continuity_threshold = 1  # 只有完全連續的點才視為同一事件（無間隔）
+            
+            # 初始化第一個事件
+            current_event = [all_pred_points[0]]
+            
+            # 遍歷剩餘點，將連續點合併為同一事件
+            for i in range(1, len(all_pred_points)):
+                # 如果當前點與前一點的時間差小於等於閾值，視為同一事件
+                if all_pred_points[i] - all_pred_points[i-1] <= continuity_threshold:
+                    current_event.append(all_pred_points[i])
+                else:
+                    # 當發現不連續點時，將當前事件添加到事件列表，並開始新事件
+                    pred_events.append(current_event)
+                    current_event = [all_pred_points[i]]
+            
+            # 添加最後一個事件
+            pred_events.append(current_event)
+            
+        return (aligned_data, aligned_pred_data, true_events, pred_events)
+    except Exception as e:
+        status_bar.showMessage(f"繪製CSV數據時發生錯誤: {str(e)}")
+        QApplication.processEvents()
+        return None
+
+def calculate_prediction_metrics(aligned_data, aligned_pred_data, true_events, pred_events):
+    """
+    計算預測指標
+    
+    參數:
+    aligned_data - 對齊後的真實事件數據
+    aligned_pred_data - 對齊後的預測事件數據
+    true_events - 真實事件索引陣列
+    pred_events - 預測事件索引陣列列表
+    
+    返回:
+    score - 綜合評分，如果無法計算則返回0
+    metrics_dict - 包含所有指標的字典
+    result_msg - 格式化的結果訊息
+    """
+    try:
+        # 如果沒有足夠事件進行分析，直接返回
+        if len(true_events) == 0 or len(pred_events) == 0:
+            score = 0.0
+            metrics_dict = {
+                'score': 0.0,
+                'total_true_events': len(true_events),
+                'total_pred_events': len(pred_events),
+                'matched_pairs': 0,
+                'false_negatives': 0,
+                'false_positives': 0,
+                'avg_time_diff': 0.0,
+                'match_rate': 0.0,
+                'precision': 0.0,
+                'time_diff_score': 0.0,
+                'early_samples': 0,
+                'avg_early_time': 0.0,
+                'late_samples': 0,
+                'avg_late_time': 0.0
+            }
+            result_msg = "已載入CSV檔案，但未找到足夠事件進行分析"
+            status_bar.showMessage(result_msg)
+            update_calculated_value(score)
+            QApplication.processEvents()
+            return score, metrics_dict, result_msg
+            
+        # 參數設定
+        tolerance_time = 7  # 容忍時間 7 秒
+        exclude_window = 180  # 排除時間窗 3 分鐘 (180 秒)
+        
+        # 初始化統計變量
+        matched_pairs = []  # 配對的事件
+        time_diffs = []     # 時間差異
+        false_positives = 0  # 誤報數量
+        false_negatives = 0  # 漏報數量
+        
+        # 記錄已配對的預測事件索引
+        matched_pred_event_indices = set()
+        
+        # 建立一個標記數組，表示預測事件是否在排除窗口內
+        in_exclusion_window = np.zeros(len(aligned_pred_data), dtype=bool)
+        
+        # 1. 先配對離「真實事件」最近的「預測事件」
+        for true_idx in true_events:
+            closest_pred_event_idx = None
+            min_diff = float('inf')
+            closest_pred_point = None
+            
+            # 對每個預測事件計算與當前真實事件的時間差
+            for event_idx, pred_event in enumerate(pred_events):
+                if event_idx in matched_pred_event_indices:
+                    continue  # 跳過已配對的預測事件
+                
+                # 計算事件中每個點與真實事件的時間差，取最小值
+                for pred_point in pred_event:
+                    time_diff = abs(pred_point - true_idx)  # 時間差 (以索引差表示)
+                    
+                    # 檢查是否在容忍時間內且是最小的時間差
+                    if time_diff <= tolerance_time and time_diff < min_diff:
+                        min_diff = time_diff
+                        closest_pred_event_idx = event_idx
+                        closest_pred_point = pred_point
+            
+            # 如果找到符合條件的最近預測事件
+            if closest_pred_event_idx is not None and closest_pred_point is not None:
+                matched_pairs.append((true_idx, closest_pred_point))
+                time_diffs.append(closest_pred_point - true_idx)  # 正值表示預測滯後，負值表示預測提早
+                matched_pred_event_indices.add(closest_pred_event_idx)
+                
+                # 3. 標記排除窗口 - 對應預測事件後3分鐘
+                # 使用事件中的所有點來標記排除窗口
+                for pred_point in pred_events[closest_pred_event_idx]:
+                    start_exclude = pred_point
+                    end_exclude = min(pred_point + exclude_window, len(aligned_pred_data))
+                    in_exclusion_window[start_exclude:end_exclude] = True
+            else:
+                # 如果沒有找到符合條件的預測事件，視為漏報
+                false_negatives += 1
+        
+        # 4. 統計誤報 - 未被配對且不在排除窗口的預測事件
+        false_positives = 0
+        for event_idx, pred_event in enumerate(pred_events):
+            if event_idx in matched_pred_event_indices:
+                continue  # 跳過已配對的預測事件
+            
+            # 檢查事件中是否有任何時間點在排除窗口內
+            # 如果有任何一個點在排除窗口內，整個事件就不算作誤報
+            any_point_in_exclusion_window = False
+            for pred_point in pred_event:
+                if in_exclusion_window[pred_point]:
+                    any_point_in_exclusion_window = True
+                    break
+            
+            # 只有當事件的所有時間點都不在排除窗口內時，才算作誤報
+            if not any_point_in_exclusion_window:
+                false_positives += 1
+        
+        # 5. 計算綜合指標
+        total_matches = len(matched_pairs)
+        
+        # 分開計算提早和延遲的時間差
+        early_diffs = [diff for diff in time_diffs if diff < 0]  # 提早（負值）
+        late_diffs = [diff for diff in time_diffs if diff >= 0]  # 延遲（正值）
+        
+        # 計算平均提早和延遲時間
+        avg_early_diff = np.mean(np.abs(early_diffs)) if early_diffs else 0
+        avg_late_diff = np.mean(late_diffs) if late_diffs else 0
+        avg_time_diff = np.mean(np.abs(time_diffs)) if time_diffs else 0
+        
+        # 初始化變數，避免在else分支中引用未定義的變數
+        match_rate = 0.0
+        precision = 0.0
+        time_diff_score = 0.0
+        
+        # 計算一個綜合評分 (0-100)，考慮配對率、時間差和誤報/漏報
+        if total_matches > 0:
+            match_rate = total_matches / (total_matches + false_negatives)
+            precision = total_matches / (total_matches + false_positives) if (total_matches + false_positives) > 0 else 0
+            
+            # 時間差指標 - 分別考慮提早和延遲
+            # 延遲分數：延遲越小越好
+            late_score = max(0, 1.0 - (avg_late_diff / 10.0)) if avg_late_diff <= 10 else 0
+            print(f"延遲分數: {late_score}")
+            
+            # 提早分數：提早越多越好（最多提早10秒獲得滿分，完全不提早得0分）
+            early_score = min(1.0, avg_early_diff / 4.0) if avg_early_diff > 0 else 0
+            print(f"提早分數: {early_score}")
+            
+            # 綜合時間差分數：根據提早和延遲樣本的比例加權
+            if not time_diffs:
+                time_diff_score = 0
+            else:
+                early_weight = len(early_diffs) / len(time_diffs) if early_diffs else 0
+                late_weight = len(late_diffs) / len(time_diffs) if late_diffs else 0
+                time_diff_score = early_weight * early_score + late_weight * late_score
+            
+            # 綜合評分 (調整權重)
+            match_weight = 0.4
+            precision_weight = 0.2
+            time_diff_weight = 0.4
+            
+            score = 100 * (match_weight * match_rate + precision_weight * precision + time_diff_weight * time_diff_score)
+        else:
+            score = 0.0
+        
+        # 建立詳細指標字典
+        metrics_dict = {
+            'score': round(score, 2),
+            'total_true_events': len(true_events),
+            'total_pred_events': len(pred_events),
+            'matched_pairs': total_matches,
+            'false_negatives': false_negatives,
+            'false_positives': false_positives,
+            'avg_time_diff': round(avg_time_diff, 2),
+            'match_rate': round(match_rate, 2),
+            'precision': round(precision, 2),
+            'time_diff_score': round(time_diff_score, 2),
+            'early_samples': len(early_diffs),
+            'avg_early_time': round(avg_early_diff, 2),
+            'late_samples': len(late_diffs),
+            'avg_late_time': round(avg_late_diff, 2)
+        }
+        
+        # 顯示結果
+        early_late_msg = f"提早樣本: {len(early_diffs)}, 平均提早: {avg_early_diff:.2f}秒 | 延遲樣本: {len(late_diffs)}, 平均延遲: {avg_late_diff:.2f}秒"
+        result_msg = (f"評分: {score:.2f} | 所有事件: {len(true_events)} | 預測事件: {len(pred_events)} | "
+                      f"配對: {total_matches} | 漏報: {false_negatives} | 誤報: {false_positives} | 平均時差: {avg_time_diff:.2f}秒 | "
+                      f"配對率: {match_rate:.2f} | 精確率: {precision:.2f} | 時間差指標: {time_diff_score:.2f} | {early_late_msg}")
+        
+        status_bar.showMessage(f"{result_msg}")
+        update_calculated_value(score)
+        QApplication.processEvents()
+        
+        return score, metrics_dict, result_msg
+    except Exception as e:
+        error_msg = f"計算預測指標時發生錯誤: {str(e)}"
+        metrics_dict = {
+            'score': 0.0,
+            'total_true_events': 0,
+            'total_pred_events': 0,
+            'matched_pairs': 0,
+            'false_negatives': 0,
+            'false_positives': 0,
+            'avg_time_diff': 0.0,
+            'match_rate': 0.0,
+            'precision': 0.0,
+            'time_diff_score': 0.0,
+            'early_samples': 0,
+            'avg_early_time': 0.0,
+            'late_samples': 0,
+            'avg_late_time': 0.0
+        }
+        status_bar.showMessage(error_msg)
+        QApplication.processEvents()
+        return 0, metrics_dict, error_msg
+
+        
+def calculate_rising_dist(dist, log_file=None):
+    """計算翻身指標的輔助函數
+    
+    Args:
+        dist: 位移資料
+        log_file: 日誌文件對象，如果提供則記錄計算過程
+    
+    Returns:
+        計算後的翻身指標
+    """
+    if log_file:
+        log_file.write("  計算翻身指標細節:\n")
+        log_file.write(f"    位移資料前10個值: {dist[:10]}\n")
+    
+    dist_series = pd.Series(dist)
+    shift = 60
+    
+    if log_file:
+        log_file.write(f"    使用的偏移量: {shift}\n")
+    
+    # 為了處理邊界情況，我們需要確保移位操作不會超出範圍
+    # 先計算移位差值，然後用0填充NaN（這會在序列末尾產生）
+    rising_dist = dist_series.shift(-shift) - dist_series
+    
+    if log_file:
+        log_file.write(f"    偏移差值前10個值: {rising_dist[:10]}\n")
+    
+    # 用0填充NaN值，這會發生在序列的末尾
+    rising_dist = rising_dist.fillna(0)
+    
+    # 轉換為整數陣列（這樣我們可以在numpy陣列上操作）
+    rising_dist = np.int32(rising_dist)
+    
+    if log_file:
+        log_file.write(f"    填充NaN後前10個值: {rising_dist[:10]}\n")
+    
+    # 負值處理
+    rising_dist[rising_dist < 0] = 0
+    
+    if log_file:
+        log_file.write(f"    負值處理後前10個值: {rising_dist[:10]}\n")
+    
+    # 縮放數值
+    rising_dist = rising_dist // 127
+    
+    if log_file:
+        log_file.write(f"    除以127後前10個值: {rising_dist[:10]}\n")
+    
+    # 限制最大值
+    rising_dist[rising_dist > 1000] = 1000
+    
+    if log_file:
+        log_file.write(f"    限制最大值後前10個值: {rising_dist[:10]}\n")
+        log_file.write(f"    最終翻身指標統計：最小={np.min(rising_dist)}, 最大={np.max(rising_dist)}, 平均={np.mean(rising_dist):.2f}, 長度={len(rising_dist)}\n")
+    
+    return rising_dist
+
+
+
+def process_cmb_to_data_files(cmb_file_path, force_reprocess=False):
+    """
+    處理 CMB 檔案並產生對應的數據檔案
+    
+    Args:
+        cmb_file_path: CMB 檔案的完整路徑
+        force_reprocess: 是否強制重新處理（即使目標檔案已存在）
+    
+    Returns:
+        bool: 處理是否成功
+    """
+    try:
+        # 從檔案路徑提取檔案名稱
+        cmb_filename = os.path.basename(cmb_file_path)
+        base_name = cmb_filename[:-4]  # 移除 .cmb 副檔名
+        
+        # 檢查目標檔案是否已存在
+        data_csv_path = os.path.join(DATA_DIR, f"{base_name}_data.csv")
+        full_csv_path = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+        param_csv_path = os.path.join(DATA_DIR, f"{base_name}_parameters.csv")
+        
+        if not force_reprocess:
+            if all(os.path.exists(f) for f in [data_csv_path, full_csv_path, param_csv_path]):
+                status_bar.showMessage(f'檔案 {base_name} 的數據檔案已存在，跳過處理')
+                QApplication.processEvents()
+                return True
+        
+        # 保存當前的全域變數狀態
+        global cmb_name, startday, d10, n10, x10, rising_dist, rising_dist_air, onbed, t1sec, idx1sec
+        original_cmb_name = cmb_name if 'cmb_name' in globals() else None
+        
+        # 設定 cmb_name 為當前處理的檔案
+        cmb_name = cmb_filename
+        
+        status_bar.showMessage(f'正在處理 {cmb_filename}...')
+        QApplication.processEvents()
+        
+        # 檢查對應的 .txt 檔案是否存在
+        txt_path = os.path.join(LOG_DIR, f'{base_name}.txt')
+        if not os.path.exists(txt_path):
+            status_bar.showMessage(f'找不到對應的 .txt 檔案: {txt_path}')
+            QApplication.processEvents()
+            return False
+        
+        # 從檔案名稱解析設備序號和時間
+        parts = base_name.split('_')
+        if len(parts) >= 3:
+            device_sn = parts[0]
+            start_time_str = parts[1] + '_' + parts[2] + '00'
+            
+            # 設定 iCueSN
+            iCueSN.setText(device_sn)
+            
+            # 解析開始時間
+            try:
+                startday = datetime.strptime(start_time_str, '%Y%m%d_%H%M%S')
+            except:
+                startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            status_bar.showMessage(f'無法解析檔案名稱格式: {base_name}')
+            QApplication.processEvents()
+            return False
+        
+        # 執行 CMB 檔案處理（不重新下載，直接處理現有檔案）
+        try:
+            # 調用 OpenCmbFile 的核心處理邏輯
+            OpenCmbFile()
+            
+            # 確保數據處理完成
+            if 'd10' not in globals() or not d10:
+                status_bar.showMessage(f'數據處理失敗: {cmb_filename}')
+                QApplication.processEvents()
+                return False
+            
+            # 產生數據檔案（使用與 OpenCmbFile 相同的邏輯）
+            # 建立輸出檔案名稱
+            csv_filename = f"{base_name}_data.csv"
+            csv_filepath = os.path.join(DATA_DIR, csv_filename)
+            
+            # 準備數據
+            data_dict = {
+                'DateTime': [startday + timedelta(seconds=t) for t in t1sec],
+                'Timestamp': t1sec
+            }
+            
+            # 添加各通道的數據
+            for ch in range(6):
+                data_dict[f'Channel_{ch+1}_Raw'] = d10[ch][idx1sec]
+                data_dict[f'Channel_{ch+1}_Noise'] = n10[ch][idx1sec]
+                data_dict[f'Channel_{ch+1}_Max'] = x10[ch][idx1sec]
+            
+            # 添加位移和翻身數據
+            data_dict['Rising_Dist_Normal'] = rising_dist[idx1sec]
+            data_dict['Rising_Dist_Air'] = rising_dist_air[idx1sec]
+            data_dict['OnBed_Status'] = onbed
+            
+            # 轉換為DataFrame
+            df = pd.DataFrame(data_dict)
+            
+            # 過濾DataFrame，只保留12:00:00到隔天12:00:00的資料
+            try:
+                noon_today = startday.replace(hour=12, minute=0, second=0)
+                noon_tomorrow = noon_today + timedelta(days=1)
+                filtered_df = df[(df['DateTime'] >= noon_today) & (df['DateTime'] <= noon_tomorrow)]
+                
+                if len(filtered_df) == 0:
+                    filtered_df = df
+            except:
+                filtered_df = df
+            
+            # 保存過濾後的資料
+            filtered_df.to_csv(csv_filepath, index=False)
+            
+            # 同時儲存原始完整資料
+            full_csv_filepath = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+            df.to_csv(full_csv_filepath, index=False)
+            
+            # 儲存參數設定
+            param_filename = f"{base_name}_parameters.csv"
+            param_filepath = os.path.join(DATA_DIR, param_filename)
+            
+            # 準備參數數據
+            param_dict = {
+                'Parameter': [],
+                'Channel_1': [], 'Channel_2': [], 'Channel_3': [],
+                'Channel_4': [], 'Channel_5': [], 'Channel_6': []
+            }
+            
+            # 收集參數表中的所有數據
+            param_names = ['min_preload', 'threshold_1', 'threshold_2', 'offset level']
+            for row in range(4):
+                param_dict['Parameter'].append(param_names[row])
+                for col in range(6):
+                    try:
+                        value = para_table.item(row, col).text()
+                    except:
+                        value = "0"
+                    param_dict[f'Channel_{col+1}'].append(value)
+            
+            # 添加其他重要參數
+            additional_params = [
+                ('Total', str(globals().get('bed_threshold', 0))),
+                ('Noise_1', str(globals().get('noise_onbed', 0))),
+                ('Noise_2', str(globals().get('noise_offbed', 0))),
+                ('Set Flip', str(globals().get('dist_thr', 0))),
+                ('Air_Mattress', str(globals().get('air_mattress', 0))),
+                ('Device_SN', device_sn),
+                ('Start_Time', str(startday))
+            ]
+
+            for param_name, param_value in additional_params:
+                param_dict['Parameter'].append(param_name)
+                param_dict['Channel_1'].append(param_value)
+                for col in ['Channel_2', 'Channel_3', 'Channel_4', 'Channel_5', 'Channel_6']:
+                    param_dict[col].append('')
+            
+            # 轉換為DataFrame並保存
+            df_param = pd.DataFrame(param_dict)
+            df_param.to_csv(param_filepath, index=False)
+            
+            status_bar.showMessage(f'已成功處理 {cmb_filename} 並產生數據檔案')
+            QApplication.processEvents()
+            
+            return True
+            
+        except Exception as e:
+            status_bar.showMessage(f'處理 {cmb_filename} 時發生錯誤: {str(e)}')
+            QApplication.processEvents()
+            return False
+        
+        finally:
+            # 恢復原始的 cmb_name
+            if original_cmb_name:
+                cmb_name = original_cmb_name
+    
+    except Exception as e:
+        status_bar.showMessage(f'處理檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        return False
+
+def batch_process_existing_cmb_files():
+    """
+    批量處理 ./_logs/pyqt-viewer 目錄下現有的 CMB 檔案
+    """
+    try:
+        # 掃描 LOG_DIR 目錄下的所有 .cmb 檔案
+        cmb_files = []
+        for filename in os.listdir(LOG_DIR):
+            if filename.endswith('.cmb'):
+                cmb_path = os.path.join(LOG_DIR, filename)
+                cmb_files.append(cmb_path)
+        
+        if not cmb_files:
+            status_bar.showMessage('在 ./_logs/pyqt-viewer 目錄下未找到任何 .cmb 檔案')
+            QApplication.processEvents()
+            return
+        
+        status_bar.showMessage(f'找到 {len(cmb_files)} 個 .cmb 檔案，開始批量處理...')
+        QApplication.processEvents()
+        
+        processed_count = 0
+        skipped_count = 0
+        
+        for cmb_path in cmb_files:
+            filename = os.path.basename(cmb_path)
+            base_name = filename[:-4]
+            
+            # 檢查對應的數據檔案是否已存在
+            data_csv_path = os.path.join(DATA_DIR, f"{base_name}_data.csv")
+            full_csv_path = os.path.join(DATA_DIR, f"{base_name}_full_data.csv")
+            param_csv_path = os.path.join(DATA_DIR, f"{base_name}_parameters.csv")
+            
+            if all(os.path.exists(f) for f in [data_csv_path, full_csv_path, param_csv_path]):
+                status_bar.showMessage(f'跳過已處理的檔案: {filename}')
+                QApplication.processEvents()
+                skipped_count += 1
+                
+                # 即使跳過處理，也檢查是否需要複製到預測目錄
+                copy_to_prediction_dir(base_name)
+                continue
+            
+            # 處理檔案
+            if process_cmb_to_data_files(cmb_path, force_reprocess=False):
+                processed_count += 1
+                # 處理完成後，複製到預測目錄
+                copy_to_prediction_dir(base_name)
+            
+            # 短暫延遲以避免界面凍結
+            time.sleep(0.1)
+        
+        status_bar.showMessage(f'批量處理完成！處理了 {processed_count} 個檔案，跳過 {skipped_count} 個已存在的檔案')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'批量處理時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+
+def copy_to_prediction_dir(base_name):
+    """
+    將處理後的檔案複製到預測目錄
+    """
+    try:
+        # 檢查 _data 和 _full_data 檔案
+        for suffix in ['_data', '_full_data']:
+            source_path = os.path.join(DATA_DIR, f"{base_name}{suffix}.csv")
+            if os.path.exists(source_path):
+                # 創建 cleaned_ 檔案名
+                cleaned_filename = f"cleaned_{base_name}{suffix}.csv"
+                dest_path = os.path.join(PREDICT_DATA_DIR, cleaned_filename)
+                
+                # 複製檔案
+                import shutil
+                shutil.copy2(source_path, dest_path)
+                print(f"已複製 {source_path} 到 {dest_path}")
+                
+    except Exception as e:
+        print(f"複製檔案到預測目錄時發生錯誤: {str(e)}")
+
+# 需要在業務邏輯處理的部分添加更新數值顯示的函數
+def update_calculated_value(value):
+    """
+    更新界面上顯示的計算值
+    
+    Args:
+        value (float): 要顯示的計算值
+    """
+    value_display.setText(f"{value:.2f}")  # 顯示兩位小數
+    QApplication.processEvents()  # 立即更新界面
+    return f"{value:.2f}"  # 同時返回格式化的值，以便在其他地方使用
 
 #-----------------------------------------------------------------------   
 class CalendarDialog(QDialog):
@@ -1187,7 +3674,7 @@ def download_files_by_time_range(FILE_PATH, ST_TIME, ED_TIME, FTP_ADDR, USER, PA
 
 #--------------------------------------------------------------------------
 def loadClicked(event):
-    global cmb_name  # 將global宣告移到函數開頭
+    global cmb_name, startday  # 將global宣告移到函數開頭並添加startday
     
     ST_TIME = start_time.text()
     ED_TIME = end_time.text()
@@ -1392,8 +3879,12 @@ def change_NightMode(state):
         wav_plot.setBackground([255,255,255])
         bit_plot.setBackground([255,255,255])
         legend_bg = pg.mkBrush(color=hex_to_rgb('e0e0e0'))  # Red background for the legend
-    legend_raw.setBrush(legend_bg)
-    legend_bit.setBrush(legend_bg)
+    
+    # 確保legend_raw和legend_bit已被定義後再使用
+    if 'legend_raw' in globals() and legend_raw is not None:
+        legend_raw.setBrush(legend_bg)
+    if 'legend_bit' in globals() and legend_bit is not None:
+        legend_bit.setBrush(legend_bg)
 
 #--------------------------------------------------------------------------
 def horizontal_header_clicked(section):
@@ -1492,10 +3983,161 @@ def generate_annotation():
             
     status_bar.showMessage(f'標注檔案已儲存: {filename}')
 
+def save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir):
+    """
+    保存當前圖表的截圖
+    
+    參數:
+    serial_id - 設備序號
+    st_time - 開始時間字符串
+    ed_time - 結束時間字符串  
+    screenshot_dir - 截圖保存目錄
+    """
+    try:
+        # 確保圖表已經完全繪製
+        QApplication.processEvents()
+        
+        # 生成檔案名稱
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 截圖整個主視窗
+        main_window_filename = f"{serial_id}_{st_time}_{ed_time}_main_window_{timestamp}.png"
+        main_window_path = os.path.join(screenshot_dir, main_window_filename)
+        
+        # 截圖整個主視窗
+        pixmap = mw.grab()
+        pixmap.save(main_window_path)
+        
+        status_bar.showMessage(f'已保存截圖: {serial_id} ({st_time}-{ed_time})')
+        QApplication.processEvents()
+        
+    except Exception as e:
+        status_bar.showMessage(f'截圖保存失敗: {str(e)}')
+        QApplication.processEvents()
+        print(f"截圖錯誤詳情: {str(e)}")
+
+#--------------------------------------------------------------------------
+
+def batch_ftp_download_clicked():
+    # 檢查CSV文件是否存在
+    csv_path = './serial_ids_20250529_full.csv'
+    if not os.path.exists(csv_path):
+        status_bar.showMessage(f'找不到檔案: {csv_path}')
+        QApplication.processEvents()
+        return
+    
+    # 讀取CSV文件中的設備ID
+    serial_ids = []
+    try:
+        with open(csv_path, 'r') as f:
+            lines = f.readlines()
+            for i, line in enumerate(lines):
+                line = line.strip()
+                # 跳過標題行和空行
+                if i == 0 and line.lower() in ['serial_id', 'serialid', 'id']:
+                    continue
+                if line and not line.lower().startswith('serial'):  # 確保ID不是空的且不是標題
+                    serial_ids.append(line)
+    except Exception as e:
+        status_bar.showMessage(f'讀取CSV檔案時發生錯誤: {str(e)}')
+        QApplication.processEvents()
+        return
+    
+    if not serial_ids:
+        status_bar.showMessage('CSV檔案中沒有找到有效的設備ID')
+        QApplication.processEvents()
+        return
+    
+    status_bar.showMessage(f'找到 {len(serial_ids)} 個設備ID，開始批量下載...')
+    QApplication.processEvents()
+    
+    # 創建截圖保存目錄
+    screenshot_dir = os.path.join(LOG_DIR, 'batch_screenshots')
+    if not os.path.exists(screenshot_dir):
+        os.makedirs(screenshot_dir)
+    
+    # 獲取當前時間
+    now_utc = datetime.now(pytz.utc)
+    gmt8 = pytz.timezone('Asia/Singapore')
+    today = now_utc.astimezone(gmt8)
+    
+    # 計算最近三天的日期
+    # days = [today - timedelta(days=i) for i in range(2, 5)]  # 前2,3,4天
+    days = [today - timedelta(days=3)]  # 前 2 天開始加
+    
+    # 保存原始UI設置
+    original_sn = iCueSN.text()
+    original_start = start_time.text()
+    original_end = end_time.text()
+    
+    # 設置數據源為FTP:\\RAW
+    original_source = data_source.currentText()
+    data_source.setCurrentText('FTP:\\RAW')
+    
+    # 對每個ID和每一天下載數據
+    for serial_id in serial_ids:
+        status_bar.showMessage(f'處理設備 {serial_id}...')
+        QApplication.processEvents()
+        
+        # 設置設備ID
+        iCueSN.setText(serial_id)
+        
+        for day in days:
+            # 設置當天4:00到隔天4:00的時間範圍
+            day_start = day.replace(hour=4, minute=0, second=0)
+            day_end = day_start + timedelta(days=1)
+            
+            # 格式化時間為YYYYMMDD_HHMMSS
+            st_time = day_start.strftime('%Y%m%d_040000')
+            ed_time = day_end.strftime('%Y%m%d_040000')
+            
+            status_bar.showMessage(f'下載設備 {serial_id} 從 {st_time} 到 {ed_time} 的數據...')
+            QApplication.processEvents()
+            
+            # 設置時間範圍
+            start_time.setText(st_time)
+            end_time.setText(ed_time)
+            
+            # 執行下載 - 直接調用loadClicked模擬點擊事件
+            try:
+                # 創建一個模擬的鼠標點擊事件
+                loadClicked(None)
+                # 等待一段時間以確保下載和繪圖完成
+                QApplication.processEvents()
+                time.sleep(3)  # 增加等待時間確保圖表完全繪製
+                
+                # 截圖保存
+                save_plot_screenshots(serial_id, st_time, ed_time, screenshot_dir)
+                
+            except Exception as e:
+                status_bar.showMessage(f'下載時發生錯誤: {str(e)}')
+                QApplication.processEvents()
+    
+    # 恢復原始UI設置
+    iCueSN.setText(original_sn)
+    start_time.setText(original_start)
+    end_time.setText(original_end)
+    data_source.setCurrentText(original_source)
+    
+    status_bar.showMessage(f'批量下載完成，截圖已保存至: {screenshot_dir}')
+    QApplication.processEvents()
+    
+    # 自動處理下載的 CMB 檔案，產生數據檔案
+    status_bar.showMessage('開始自動處理下載的數據檔案...')
+    QApplication.processEvents()
+    
+    try:
+        batch_process_existing_cmb_files()
+        status_bar.showMessage('批量下載和數據處理全部完成！')
+    except Exception as e:
+        status_bar.showMessage(f'數據處理時發生錯誤: {str(e)}')
+    
+    QApplication.processEvents()
+
 #--------------------------------------------------------------------------
 # Create the QTableWidget and add it to the layout
-global startday
-startday = datetime.now()
+
+startday = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # 確保初始值也設為當天的0點
 
 radio_Normal = QRadioButton('Normal')
 radio_Test = QRadioButton('Test')
@@ -1511,6 +4153,7 @@ data_source.addItem('FTP:\\RAW_COLLECT')
 data_source.addItem('RD_FTP:\\RAW')
 data_source.addItem('FTP:\\BCGRAW')
 data_source.addItem('RD_FTP:\\BCGRAW')
+data_source.addItem('Elastic')
 #data_source.addItem('Z:\RAW')
 #data_source.addItem('Z:\RAW_COLLECT')
 data_source.textActivated.connect(loadClicked)
@@ -1518,7 +4161,7 @@ data_source.setToolTip('選擇FTP下載目錄')
 
 # 在第 0 列的第 1 個位置，加入一個 QLineEdit 物件，並設置初始值為 "SPS2021PA000000"
 iCueSN = QLineEdit()
-iCueSN.setText('SPS2021PA000329')
+iCueSN.setText('SPS2025PA000146')
 iCueSN.setFixedWidth(120)
 iCueSN.setToolTip('輸入iCue編號')
 # Get the current datetime in GMT
@@ -1531,7 +4174,7 @@ yesterday = today - timedelta(days=1)
 # 在第 0 列的第 3 個位置，加入一個 QLineEdit 物件，並設置初始值為 "20220220_000000"
 
 start_time = QLineEdit()  # 建立起始時間的 QLineEdit 元件
-start_time.setText(yesterday.strftime('%Y%m%d_040000'))  # 設定起始時間為昨天，格式為 '%Y%m%d_040000'
+start_time.setText(yesterday.strftime('%Y%m%d_035000'))  # 設定起始時間為昨天，格式為 '%Y%m%d_040000'
 start_time.setFixedWidth(120)
 start_time.mouseDoubleClickEvent = start_calendar  # 設定起始時間元件的雙擊事件為 start_calendar 方法
 start_time.setToolTip('選擇開始日期')
@@ -1549,6 +4192,52 @@ check_NightMode = QCheckBox('Night Mode')
 check_NightMode.setChecked(True)
 check_NightMode.stateChanged.connect(change_NightMode)
 check_NightMode.setChecked(False)
+
+# 在 UI 元件初始化部分新增
+check_get_para = QCheckBox('Get Parameters First')
+check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
+
+# 在主視窗的初始化程式碼中新增：
+json_button = QtWidgets.QPushButton("開啟 JSON")
+json_button.clicked.connect(OpenJsonFile)
+
+csv_button = QtWidgets.QPushButton("開啟 CSV")
+csv_button.clicked.connect(OpenCsvFile)
+
+batch_ftp_download = QPushButton('Batch FTP Download')
+batch_ftp_download.clicked.connect(batch_ftp_download_clicked)
+
+# 新增批量處理現有檔案的按鈕
+batch_process_button = QPushButton('Process Existing CMB Files')
+batch_process_button.clicked.connect(batch_process_existing_cmb_files)
+batch_process_button.setToolTip('批量處理 ./_logs/pyqt-viewer 目錄下現有的 CMB 檔案，產生對應的數據檔案')
+
+# 新增批量計算預測結果的按鈕
+batch_prediction_button = QPushButton('批量計算預測結果')
+batch_prediction_button.clicked.connect(batch_process_csv_files)
+batch_prediction_button.setToolTip('批量處理資料夾中的所有 CSV 檔案，計算預測指標並生成詳細報告')
+
+# 標記相關按鈕
+marker_btn = QPushButton('開始標記')
+marker_btn.clicked.connect(toggle_marker)
+marker_btn.setToolTip('顯示/隱藏標記線')
+
+marker_type_combo = QComboBox()
+marker_type_combo.addItems(['離床', '上床', '翻身'])
+marker_type_combo.setToolTip('選擇要標記的事件類型')
+
+save_marker_btn = QPushButton('儲存標記')
+save_marker_btn.clicked.connect(save_marker)
+save_marker_btn.setToolTip('儲存目前標記線位置')
+
+# 新增數值顯示欄位
+value_display_label = QLabel("計算值: ")
+value_display_label.setStyleSheet("font-weight: bold; color: black;")
+value_display = QLabel("0.00")
+value_display.setFixedWidth(100)  # 加大寬度
+value_display.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+value_display.setStyleSheet("background-color: white; color: black; border: 2px solid #666; border-radius: 4px; padding: 3px; font-weight: bold; font-size: 14px;")
+value_display.setToolTip('演算法計算的數值')
 
 # 更新 MQTT 參數
 Mqtt_set = QPushButton('MQTT_SET_PARA')
@@ -1620,18 +4309,7 @@ para_table.cellClicked.connect(cell_clicked)
 layout = QtWidgets.QGridLayout(cw)
 cw.setLayout(layout)
 
-#row_layout.addWidget(self.wav_gain)  # 在佈局中添加self.data_source下拉選單，位置為(0, 0)
-layout.addWidget(raw_plot,   1, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
-layout.addWidget(para_table, 3, 0, 1, 10)
-layout.addWidget(bit_plot,   2, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
-layout.setColumnStretch(0,10)
-
-layout.setRowStretch(0,1)
-layout.setRowStretch(1,20)
-layout.setRowStretch(2,20)
-layout.setRowStretch(3,8)
-bit_plot.setXLink(raw_plot) 
-
+# 第一行按鈕布局
 row_widget = QtWidgets.QWidget()
 row_layout = QtWidgets.QHBoxLayout(row_widget)
 row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1639,8 +4317,6 @@ row_layout.addWidget(iCueSN)
 row_layout.addWidget(start_time)
 row_layout.addWidget(end_time)
 row_layout.addWidget(data_source)
-#row_layout.addWidget(Ftp_raw)
-
 row_layout.addWidget(radio_Normal)
 row_layout.addWidget(radio_Test)
 row_layout.addWidget(Read_cmb)
@@ -1648,27 +4324,50 @@ row_layout.addWidget(check_96DPI)
 row_layout.addWidget(check_NightMode)
 row_layout.addWidget(Mqtt_set)
 row_layout.addWidget(Mqtt_get)
+# 第二行按鈕布局
+marker_row_widget = QtWidgets.QWidget()
+marker_row_layout = QtWidgets.QHBoxLayout(marker_row_widget)
+marker_row_layout.setContentsMargins(0, 0, 0, 0)
+marker_row_layout.setAlignment(QtCore.Qt.AlignLeft)  # 設置按鈕靠左對齊
 
-# 在這裡加入新按鈕
-marker_btn = QPushButton('開始標記')
-marker_btn.clicked.connect(toggle_marker)
-marker_btn.setToolTip('顯示/隱藏標記線')
+# 移除這些行，看起來重複的按鈕
+marker_row_layout.addWidget(check_get_para)
+marker_row_layout.addWidget(json_button)
+marker_row_layout.addWidget(csv_button)
+marker_row_layout.addWidget(batch_ftp_download)  # 添加批量下載按鈕
+marker_row_layout.addWidget(batch_process_button)  # 添加批量處理按鈕
+marker_row_layout.addWidget(batch_prediction_button)  # 添加批量計算預測結果按鈕
 
-marker_type_combo = QComboBox()
-marker_type_combo.addItems(['離床', '上床', '翻身'])
-marker_type_combo.setToolTip('選擇要標記的事件類型')
+marker_row_layout.addWidget(marker_btn)
+marker_row_layout.addWidget(marker_type_combo)
+marker_row_layout.addWidget(save_marker_btn)
 
-save_marker_btn = QPushButton('儲存標記')
-save_marker_btn.clicked.connect(save_marker)
-save_marker_btn.setToolTip('儲存目前標記線位置')
+# 添加數值顯示欄位
+marker_row_layout.addWidget(value_display_label)
+marker_row_layout.addWidget(value_display)
 
-# 將按鈕加入layout
-row_layout.addWidget(marker_btn)
-row_layout.addWidget(marker_type_combo)  # 新增的下拉選單
-row_layout.addWidget(save_marker_btn)
+# 添加彈性空間，吸收多餘空間
+marker_row_layout.addStretch(1)
 
-layout.addWidget(row_widget,0,0,1,3)
-layout.addWidget(status_bar,5,0,1,9)
+# 將兩個行布局加入到主布局
+layout.addWidget(row_widget, 0, 0, 1, 3)
+layout.addWidget(marker_row_widget, 1, 0, 1, 3)
+layout.addWidget(status_bar, 5, 0, 1, 9)
+
+#row_layout.addWidget(self.wav_gain)  # 在佈局中添加self.data_source下拉選單，位置為(0, 0)
+layout.addWidget(raw_plot,   2, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
+layout.addWidget(para_table, 4, 0, 1, 10)
+layout.addWidget(bit_plot,   3, 0, 1, 10)  # wav_plot 放置在第 1 行、第 0 列
+layout.setColumnStretch(0,10)
+
+layout.setRowStretch(0,1)  # 第一行按鈕
+layout.setRowStretch(1,1)  # 第二行標記按鈕
+layout.setRowStretch(2,20) # 原始數據圖表
+layout.setRowStretch(3,20) # 位元圖表
+layout.setRowStretch(4,8)  # 參數表格
+layout.setRowStretch(5,1)  # 狀態欄
+bit_plot.setXLink(raw_plot) 
+
 
 # 獲取當前腳本檔案的絕對路徑
 script_path = os.path.abspath(__file__)
@@ -1677,19 +4376,11 @@ script_name = script_path.split('\\')[-1]
 mw.setWindowTitle(f'OnOFF Bed   ({script_name})')  # 設置視窗標題為'OnOFF Bed'
 mw.setWindowIcon(QIcon('Humetrics.ico'))  # 設置視窗圖標為'Humetrics.ico'
 
-# 在 UI 元件初始化部分新增
-check_get_para = QCheckBox('Get Parameters First')
-check_get_para.setToolTip('在下載資料前先獲取MQTT參數')
-
-# 在 row_layout 中加入這個新的 checkbox
-row_layout.addWidget(check_get_para)
-
-# 在主視窗的初始化程式碼中新增：
-json_button = QtWidgets.QPushButton("開啟 JSON")
-json_button.clicked.connect(OpenJsonFile)
-row_layout.addWidget(json_button)  # 使用已存在的 row_layout 而不是 toolbar
-
+# 顯示窗口
 mw.show()
-#mw.setGeometry(1, 50, 1920, 1080)
-app.exec_()
 
+# # 使用定時器在窗口顯示後設置計算值
+# timer = QtCore.QTimer()
+# timer.singleShot(500, lambda: update_calculated_value(123.45))
+
+app.exec_()
